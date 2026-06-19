@@ -363,6 +363,94 @@ message.
 Deletes every tracked stats page in the server without presenting the
 selection menu. This is an administrator-only bulk operation.
 
+## Stats activity commands
+
+Activity reports use the same permissions as other stats creation and refresh
+commands. Every response is ephemeral.
+
+Text activity is tracked from the time this feature is deployed. The bot stores
+hourly counts and basic member/channel metadata only. It does **not** store
+message content, deleted-message content, or private DMs. Bot messages are
+ignored.
+
+Join and leave events are also tracked going forward, so reports covering
+periods before deployment may be incomplete.
+
+### `/stats activity overview [days]`
+
+Shows a private community overview containing:
+
+- Total tracked messages
+- Unique active members
+- Joins and leaves
+- Top text channel
+- Busiest and quietest UTC dates
+- Tracked VC time and top VC channel, when available
+- A deterministic volume/concentration summary
+
+`days` defaults to 7.
+
+### `/stats activity channels [days] [limit]`
+
+Shows the top text channels by tracked message count, including unique posters
+and percentage of tracked messages.
+
+- `days` defaults to 7.
+- `limit` defaults to 10 and supports up to 25.
+
+### `/stats activity quiet [days] [limit]`
+
+Shows visible text channels with low tracked activity and their last tracked
+activity time. This is intended for neutral channel-planning decisions and
+does not assess or shame individual members.
+
+- `days` defaults to 14.
+- `limit` defaults to 10 and supports up to 25.
+
+### `/stats activity members [days] [limit]`
+
+Shows members with the highest tracked message counts. Text and VC activity are
+not combined into a synthetic score.
+
+- `days` defaults to 7.
+- `limit` defaults to 10 and supports up to 25.
+
+### `/stats activity vc [days] [limit]`
+
+Reads completed sessions from the `vc_sessions` table managed by
+`cogs/vc_stats.py`. It shows total tracked time, completed sessions, top voice
+channels, and top voice participants.
+
+If the VC tracking table is unavailable, the command reports:
+`VC activity tracking is not available yet.`
+
+### `/stats activity export [days] [include_vc]`
+
+Exports a private CSV with a `section` column. Sections can include:
+
+- Overview metrics
+- Hourly message metadata
+- Channel summaries
+- Member summaries
+- Joins
+- Leaves
+- VC sessions, when requested and available
+
+`days` defaults to 7 and `include_vc` defaults to true. Large exports should
+use a shorter date range if they exceed Discord's upload limit.
+
+### Activity database tables
+
+The activity feature creates these tables in `data.db`:
+
+- `stats_message_activity`
+- `stats_member_joins`
+- `stats_member_leaves`
+- `stats_activity_settings`
+
+`stats_message_activity` uses one row per guild, text channel, member, and UTC
+hour, incrementing `message_count` as messages arrive.
+
 ## Bank commands
 
 Bank commands use the separate `brobank.db` SQLite database.

@@ -20,6 +20,27 @@ from utils.stats_reports import (
 
 PERMISSION_DENIED_MESSAGE = "You do not have permission to use stats commands."
 DEBOUNCE_SECONDS = 2.0
+MAX_ACTIVITY_EXPORT_BYTES = 24 * 1024 * 1024
+
+
+def format_duration(seconds: int) -> str:
+    seconds = max(0, int(seconds or 0))
+    if seconds < 60:
+        return f"{seconds}s"
+    minutes = seconds // 60
+    days, remainder = divmod(minutes, 24 * 60)
+    hours, minutes = divmod(remainder, 60)
+    if days:
+        return f"{days}d {hours}h" if hours else f"{days}d"
+    if hours:
+        return f"{hours}h {minutes}m" if minutes else f"{hours}h"
+    return f"{minutes}m"
+
+
+def safe_channel_display(channel_id: int, channel_name: Optional[str]) -> str:
+    if channel_id:
+        return f"<#{channel_id}>"
+    return discord.utils.escape_markdown(channel_name or "Unknown channel")
 
 
 def allowed_stats_role_ids() -> Set[int]:
@@ -180,6 +201,11 @@ class Stats(commands.Cog):
         name="stats",
         description="Create and manage live role membership embeds",
     )
+    activity = app_commands.Group(
+        name="activity",
+        description="Community activity reports",
+        parent=stats,
+    )
 
     def __init__(self, bot: commands.Bot):
         self.bot = bot
@@ -225,6 +251,82 @@ class Stats(commands.Cog):
                 updated_at TEXT NOT NULL
             )
             """
+        )
+        await self.bot.db.execute(
+            """
+            CREATE TABLE IF NOT EXISTS stats_message_activity (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                guild_id INTEGER NOT NULL,
+                channel_id INTEGER NOT NULL,
+                channel_name TEXT,
+                user_id INTEGER NOT NULL,
+                display_name TEXT,
+                username TEXT,
+                activity_date TEXT NOT NULL,
+                activity_hour TEXT NOT NULL,
+                message_count INTEGER DEFAULT 0,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            )
+            """
+        )
+        await self.bot.db.execute(
+            """
+            CREATE UNIQUE INDEX IF NOT EXISTS idx_stats_message_activity_hour
+            ON stats_message_activity (
+                guild_id,
+                channel_id,
+                user_id,
+                activity_hour
+            )
+            """
+        )
+        await self.bot.db.execute(
+            """
+            CREATE INDEX IF NOT EXISTS idx_stats_message_activity_guild_date
+            ON stats_message_activity (guild_id, activity_date)
+            """
+        )
+        await self.bot.db.execute(
+            """
+            CREATE TABLE IF NOT EXISTS stats_member_joins (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                guild_id INTEGER NOT NULL,
+                user_id INTEGER NOT NULL,
+                display_name TEXT,
+                username TEXT,
+                joined_at TEXT NOT NULL,
+                created_at TEXT NOT NULL
+            )
+            """
+        )
+        await self.bot.db.execute(
+            """
+            CREATE TABLE IF NOT EXISTS stats_member_leaves (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                guild_id INTEGER NOT NULL,
+                user_id INTEGER NOT NULL,
+                display_name TEXT,
+                username TEXT,
+                left_at TEXT NOT NULL,
+                created_at TEXT NOT NULL
+            )
+            """
+        )
+        await self.bot.db.execute(
+            """
+            CREATE TABLE IF NOT EXISTS stats_activity_settings (
+                key TEXT PRIMARY KEY,
+                value TEXT
+            )
+            """
+        )
+        await self.bot.db.execute(
+            """
+            INSERT OR IGNORE INTO stats_activity_settings (key, value)
+            VALUES ('activity_tracking_started_at', ?)
+            """,
+            (self._utcnow().isoformat(),),
         )
         cursor = await self.bot.db.execute("PRAGMA table_info(role_stat_embeds)")
         columns = {row[1] for row in await cursor.fetchall()}
@@ -434,6 +536,392 @@ class Stats(commands.Cog):
                 message += f" {failed} could not be refreshed."
 
         await interaction.followup.send(message, ephemeral=True)
+
+    @activity.command(
+        name="overview",
+        description="Show a private community activity overview",
+    )
+    @app_commands.describe(days="Number of days to include")
+    @app_commands.guild_only()
+    @app_commands.check(has_stats_access)
+    async def activity_overview(
+        self,
+        interaction: discord.Interaction,
+        days: app_commands.Range[int, 1, 3650] = 7,
+    ) -> None:
+        await interaction.response.defer(ephemeral=True, thinking=True)
+        data = await self._activity_overview_data(interaction.guild_id, days)
+        embed = discord.Embed(
+            title=f"Community activity overview — last {days} days",
+            color=discord.Color(COLOR),
+            timestamp=self._utcnow(),
+        )
+        embed.add_field(
+            name="Messages tracked",
+            value=f"{data['total_messages']:,}",
+            inline=True,
+        )
+        embed.add_field(
+            name="Unique active members",
+            value=f"{data['active_members']:,}",
+            inline=True,
+        )
+        embed.add_field(
+            name="Joins / Leaves",
+            value=f"{data['joins']:,} / {data['leaves']:,}",
+            inline=True,
+        )
+        embed.add_field(
+            name="Top text channel",
+            value=data["top_text_channel"],
+            inline=True,
+        )
+        embed.add_field(
+            name="Busiest day",
+            value=data["busiest_day"],
+            inline=True,
+        )
+        embed.add_field(
+            name="Quietest day",
+            value=data["quietest_day"],
+            inline=True,
+        )
+        if data["vc_available"]:
+            embed.add_field(
+                name="Tracked VC time",
+                value=format_duration(data["vc_seconds"]),
+                inline=True,
+            )
+            embed.add_field(
+                name="Top VC channel",
+                value=data["top_vc_channel"],
+                inline=True,
+            )
+        else:
+            embed.add_field(
+                name="Voice activity",
+                value="VC activity tracking is not available yet.",
+                inline=False,
+            )
+        embed.add_field(
+            name="Deterministic vibe summary",
+            value=data["vibe"],
+            inline=False,
+        )
+        embed.set_footer(
+            text=(
+                f"Activity tracking began {data['tracking_started']}. "
+                "Older periods may be incomplete."
+            )
+        )
+        await interaction.followup.send(embed=embed, ephemeral=True)
+
+    @activity.command(
+        name="channels",
+        description="Show top text channels by message activity",
+    )
+    @app_commands.describe(
+        days="Number of days to include",
+        limit="Number of channels to show",
+    )
+    @app_commands.guild_only()
+    @app_commands.check(has_stats_access)
+    async def activity_channels(
+        self,
+        interaction: discord.Interaction,
+        days: app_commands.Range[int, 1, 3650] = 7,
+        limit: app_commands.Range[int, 1, 25] = 10,
+    ) -> None:
+        await interaction.response.defer(ephemeral=True)
+        cutoff = self._activity_cutoff(days)
+        rows = await self._fetchall(
+            """
+            SELECT channel_id, MAX(channel_name), SUM(message_count),
+                   COUNT(DISTINCT user_id)
+            FROM stats_message_activity
+            WHERE guild_id = ? AND activity_hour >= ?
+            GROUP BY channel_id
+            ORDER BY SUM(message_count) DESC
+            LIMIT ?
+            """,
+            (interaction.guild_id, cutoff, limit),
+        )
+        total_row = await self._fetchone(
+            """
+            SELECT COALESCE(SUM(message_count), 0)
+            FROM stats_message_activity
+            WHERE guild_id = ? AND activity_hour >= ?
+            """,
+            (interaction.guild_id, cutoff),
+        )
+        total = total_row[0] if total_row else 0
+        embed = discord.Embed(
+            title=f"Top text channels — last {days} days",
+            color=discord.Color(COLOR),
+        )
+        if not rows:
+            embed.description = "No text activity has been tracked for this period."
+        for index, (channel_id, channel_name, messages, posters) in enumerate(
+            rows, start=1
+        ):
+            percentage = messages / total * 100 if total else 0
+            embed.add_field(
+                name=f"{index}. {safe_channel_display(channel_id, channel_name)}",
+                value=(
+                    f"**{messages:,}** messages • **{posters:,}** unique posters "
+                    f"• **{percentage:.1f}%** of tracked messages"
+                ),
+                inline=False,
+            )
+        embed.set_footer(text="Use /stats activity export for complete data.")
+        await interaction.followup.send(embed=embed, ephemeral=True)
+
+    @activity.command(
+        name="quiet",
+        description="Show visible text channels with low activity",
+    )
+    @app_commands.describe(
+        days="Number of days to include",
+        limit="Number of channels to show",
+    )
+    @app_commands.guild_only()
+    @app_commands.check(has_stats_access)
+    async def activity_quiet(
+        self,
+        interaction: discord.Interaction,
+        days: app_commands.Range[int, 1, 3650] = 14,
+        limit: app_commands.Range[int, 1, 25] = 10,
+    ) -> None:
+        await interaction.response.defer(ephemeral=True)
+        cutoff = self._activity_cutoff(days)
+        rows = await self._fetchall(
+            """
+            SELECT channel_id, SUM(
+                       CASE WHEN activity_hour >= ? THEN message_count ELSE 0 END
+                   ) AS period_messages,
+                   MAX(activity_hour)
+            FROM stats_message_activity
+            WHERE guild_id = ?
+            GROUP BY channel_id
+            """,
+            (cutoff, interaction.guild_id),
+        )
+        tracked = {
+            row[0]: {"messages": row[1] or 0, "last": row[2]} for row in rows
+        }
+        tracking_started = await self._tracking_started_datetime()
+        candidates = []
+        me = interaction.guild.me
+        for channel in interaction.guild.text_channels:
+            if me and not channel.permissions_for(me).view_channel:
+                continue
+            data = tracked.get(channel.id)
+            if data is None and tracking_started and channel.created_at >= tracking_started:
+                continue
+            candidates.append(
+                (
+                    data["messages"] if data else 0,
+                    data["last"] if data else None,
+                    channel,
+                )
+            )
+        candidates.sort(key=lambda item: (item[0], item[1] or ""))
+        embed = discord.Embed(
+            title=f"Low-activity text channels — last {days} days",
+            color=discord.Color(COLOR),
+            description=(
+                "Neutral activity signal for channel planning. "
+                "This does not evaluate individual members."
+            ),
+        )
+        for messages, last_activity, channel in candidates[:limit]:
+            last_text = (
+                f"<t:{int(datetime.datetime.fromisoformat(last_activity).timestamp())}:R>"
+                if last_activity
+                else "No tracked activity yet"
+            )
+            embed.add_field(
+                name=channel.mention,
+                value=f"**{messages:,}** messages • Last tracked: {last_text}",
+                inline=False,
+            )
+        if not candidates:
+            embed.add_field(
+                name="No results",
+                value="No eligible visible text channels were found.",
+                inline=False,
+            )
+        await interaction.followup.send(embed=embed, ephemeral=True)
+
+    @activity.command(
+        name="members",
+        description="Show members with the most tracked text activity",
+    )
+    @app_commands.describe(
+        days="Number of days to include",
+        limit="Number of members to show",
+    )
+    @app_commands.guild_only()
+    @app_commands.check(has_stats_access)
+    async def activity_members(
+        self,
+        interaction: discord.Interaction,
+        days: app_commands.Range[int, 1, 3650] = 7,
+        limit: app_commands.Range[int, 1, 25] = 10,
+    ) -> None:
+        await interaction.response.defer(ephemeral=True)
+        rows = await self._fetchall(
+            """
+            SELECT user_id, MAX(username), MAX(display_name),
+                   SUM(message_count) AS total
+            FROM stats_message_activity
+            WHERE guild_id = ? AND activity_hour >= ?
+            GROUP BY user_id
+            ORDER BY total DESC
+            LIMIT ?
+            """,
+            (interaction.guild_id, self._activity_cutoff(days), limit),
+        )
+        embed = discord.Embed(
+            title=f"Top text participants — last {days} days",
+            color=discord.Color(COLOR),
+            description="Message counts only; no activity score or inactivity judgment.",
+        )
+        if not rows:
+            embed.add_field(
+                name="No results",
+                value="No text activity has been tracked for this period.",
+                inline=False,
+            )
+        for index, (user_id, username, display_name, total) in enumerate(
+            rows, start=1
+        ):
+            label = username or display_name or str(user_id)
+            embed.add_field(
+                name=f"{index}. {discord.utils.escape_markdown(label)}",
+                value=f"<@{user_id}> • **{total:,}** messages",
+                inline=False,
+            )
+        await interaction.followup.send(embed=embed, ephemeral=True)
+
+    @activity.command(
+        name="vc",
+        description="Show voice-channel activity from VC tracking",
+    )
+    @app_commands.describe(
+        days="Number of days to include",
+        limit="Number of channels and members to show",
+    )
+    @app_commands.guild_only()
+    @app_commands.check(has_stats_access)
+    async def activity_vc(
+        self,
+        interaction: discord.Interaction,
+        days: app_commands.Range[int, 1, 3650] = 7,
+        limit: app_commands.Range[int, 1, 20] = 10,
+    ) -> None:
+        await interaction.response.defer(ephemeral=True)
+        if not await self._table_exists("vc_sessions"):
+            await interaction.followup.send(
+                "VC activity tracking is not available yet.",
+                ephemeral=True,
+            )
+            return
+        cutoff = self._activity_cutoff(days)
+        total = await self._fetchone(
+            """
+            SELECT COALESCE(SUM(duration_seconds), 0), COUNT(*)
+            FROM vc_sessions
+            WHERE guild_id = ? AND left_at >= ?
+            """,
+            (interaction.guild_id, cutoff),
+        )
+        channel_rows = await self._fetchall(
+            """
+            SELECT channel_id, MAX(channel_name), SUM(duration_seconds)
+            FROM vc_sessions
+            WHERE guild_id = ? AND left_at >= ?
+            GROUP BY channel_id
+            ORDER BY SUM(duration_seconds) DESC
+            LIMIT ?
+            """,
+            (interaction.guild_id, cutoff, limit),
+        )
+        member_rows = await self._fetchall(
+            """
+            SELECT user_id, MAX(username), MAX(display_name),
+                   SUM(duration_seconds)
+            FROM vc_sessions
+            WHERE guild_id = ? AND left_at >= ?
+            GROUP BY user_id
+            ORDER BY SUM(duration_seconds) DESC
+            LIMIT ?
+            """,
+            (interaction.guild_id, cutoff, limit),
+        )
+        embed = discord.Embed(
+            title=f"Voice activity — last {days} days",
+            color=discord.Color(COLOR),
+            description=(
+                f"**{format_duration(total[0])}** tracked across "
+                f"**{total[1]:,}** completed sessions."
+            ),
+        )
+        if channel_rows:
+            embed.add_field(
+                name="Top VC channels",
+                value="\n".join(
+                    f"{index}. {safe_channel_display(row[0], row[1])} — "
+                    f"**{format_duration(row[2])}**"
+                    for index, row in enumerate(channel_rows, start=1)
+                )[:1024],
+                inline=False,
+            )
+        if member_rows:
+            embed.add_field(
+                name="Top VC members",
+                value="\n".join(
+                    f"{index}. <@{row[0]}> — **{format_duration(row[3])}**"
+                    for index, row in enumerate(member_rows, start=1)
+                )[:1024],
+                inline=False,
+            )
+        await interaction.followup.send(embed=embed, ephemeral=True)
+
+    @activity.command(
+        name="export",
+        description="Export tracked community activity to CSV",
+    )
+    @app_commands.describe(
+        days="Number of days to include",
+        include_vc="Include VC sessions when available",
+    )
+    @app_commands.guild_only()
+    @app_commands.check(has_stats_access)
+    async def activity_export(
+        self,
+        interaction: discord.Interaction,
+        days: app_commands.Range[int, 1, 3650] = 7,
+        include_vc: bool = True,
+    ) -> None:
+        await interaction.response.defer(ephemeral=True, thinking=True)
+        file = await self._activity_export_file(
+            interaction.guild_id,
+            days,
+            include_vc,
+        )
+        if file is None:
+            await interaction.followup.send(
+                "That activity export is too large for Discord. "
+                "Try a shorter date range.",
+                ephemeral=True,
+            )
+            return
+        await interaction.followup.send(
+            f"Exported activity metadata for the last **{days}** days.",
+            file=file,
+            ephemeral=True,
+        )
 
     @stats.command(
         name="rolecompare",
@@ -1142,13 +1630,119 @@ class Stats(commands.Cog):
         await self._queue_tracked_role_refreshes(after.guild.id, changed_role_ids)
 
     @commands.Cog.listener()
+    async def on_message(self, message: discord.Message) -> None:
+        if (
+            message.guild is None
+            or message.author.bot
+        ):
+            return
+        now = self._utcnow()
+        activity_hour = now.replace(
+            minute=0,
+            second=0,
+            microsecond=0,
+        ).isoformat()
+        channel_name = getattr(message.channel, "name", None)
+        await self.bot.db.execute(
+            """
+            INSERT INTO stats_message_activity (
+                guild_id,
+                channel_id,
+                channel_name,
+                user_id,
+                display_name,
+                username,
+                activity_date,
+                activity_hour,
+                message_count,
+                created_at,
+                updated_at
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?)
+            ON CONFLICT(guild_id, channel_id, user_id, activity_hour)
+            DO UPDATE SET
+                channel_name = excluded.channel_name,
+                display_name = excluded.display_name,
+                username = excluded.username,
+                message_count = message_count + 1,
+                updated_at = excluded.updated_at
+            """,
+            (
+                message.guild.id,
+                message.channel.id,
+                channel_name,
+                message.author.id,
+                message.author.display_name,
+                self._member_username(message.author),
+                now.date().isoformat(),
+                activity_hour,
+                now.isoformat(),
+                now.isoformat(),
+            ),
+        )
+        await self.bot.db.commit()
+
+    @commands.Cog.listener()
     async def on_member_join(self, member: discord.Member) -> None:
+        if not member.bot:
+            now = self._utcnow().isoformat()
+            joined_at = (
+                member.joined_at.astimezone(datetime.timezone.utc).isoformat()
+                if member.joined_at
+                else now
+            )
+            await self.bot.db.execute(
+                """
+                INSERT INTO stats_member_joins (
+                    guild_id,
+                    user_id,
+                    display_name,
+                    username,
+                    joined_at,
+                    created_at
+                )
+                VALUES (?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    member.guild.id,
+                    member.id,
+                    member.display_name,
+                    self._member_username(member),
+                    joined_at,
+                    now,
+                ),
+            )
+            await self.bot.db.commit()
         await self._queue_tracked_role_refreshes(
             member.guild.id, (role.id for role in member.roles)
         )
 
     @commands.Cog.listener()
     async def on_member_remove(self, member: discord.Member) -> None:
+        if not member.bot:
+            now = self._utcnow().isoformat()
+            await self.bot.db.execute(
+                """
+                INSERT INTO stats_member_leaves (
+                    guild_id,
+                    user_id,
+                    display_name,
+                    username,
+                    left_at,
+                    created_at
+                )
+                VALUES (?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    member.guild.id,
+                    member.id,
+                    member.display_name,
+                    self._member_username(member),
+                    now,
+                    now,
+                ),
+            )
+            await self.bot.db.commit()
         await self._queue_tracked_role_refreshes(
             member.guild.id, (role.id for role in member.roles)
         )
@@ -1481,6 +2075,397 @@ class Stats(commands.Cog):
                 filename.startswith("role_roster_")
                 and filename.endswith(".png")
             )
+        )
+
+    async def _fetchone(self, query: str, parameters=()):
+        cursor = await self.bot.db.execute(query, parameters)
+        row = await cursor.fetchone()
+        await cursor.close()
+        return row
+
+    async def _fetchall(self, query: str, parameters=()):
+        cursor = await self.bot.db.execute(query, parameters)
+        rows = await cursor.fetchall()
+        await cursor.close()
+        return rows
+
+    async def _table_exists(self, table_name: str) -> bool:
+        row = await self._fetchone(
+            """
+            SELECT 1
+            FROM sqlite_master
+            WHERE type = 'table' AND name = ?
+            """,
+            (table_name,),
+        )
+        return row is not None
+
+    def _activity_cutoff(self, days: int) -> str:
+        return (
+            self._utcnow() - datetime.timedelta(days=days)
+        ).replace(minute=0, second=0, microsecond=0).isoformat()
+
+    async def _tracking_started_datetime(self):
+        row = await self._fetchone(
+            """
+            SELECT value
+            FROM stats_activity_settings
+            WHERE key = 'activity_tracking_started_at'
+            """
+        )
+        if not row:
+            return None
+        try:
+            value = datetime.datetime.fromisoformat(row[0])
+            if value.tzinfo is None:
+                value = value.replace(tzinfo=datetime.timezone.utc)
+            return value.astimezone(datetime.timezone.utc)
+        except (TypeError, ValueError):
+            return None
+
+    async def _activity_overview_data(self, guild_id: int, days: int):
+        cutoff = self._activity_cutoff(days)
+        message_summary = await self._fetchone(
+            """
+            SELECT COALESCE(SUM(message_count), 0), COUNT(DISTINCT user_id)
+            FROM stats_message_activity
+            WHERE guild_id = ? AND activity_hour >= ?
+            """,
+            (guild_id, cutoff),
+        )
+        total_messages, text_active_count = message_summary or (0, 0)
+        text_users = {
+            row[0]
+            for row in await self._fetchall(
+                """
+                SELECT DISTINCT user_id
+                FROM stats_message_activity
+                WHERE guild_id = ? AND activity_hour >= ?
+                """,
+                (guild_id, cutoff),
+            )
+        }
+        joins = await self._fetchone(
+            """
+            SELECT COUNT(*)
+            FROM stats_member_joins
+            WHERE guild_id = ? AND joined_at >= ?
+            """,
+            (guild_id, cutoff),
+        )
+        leaves = await self._fetchone(
+            """
+            SELECT COUNT(*)
+            FROM stats_member_leaves
+            WHERE guild_id = ? AND left_at >= ?
+            """,
+            (guild_id, cutoff),
+        )
+        top_text = await self._fetchone(
+            """
+            SELECT channel_id, MAX(channel_name), SUM(message_count)
+            FROM stats_message_activity
+            WHERE guild_id = ? AND activity_hour >= ?
+            GROUP BY channel_id
+            ORDER BY SUM(message_count) DESC
+            LIMIT 1
+            """,
+            (guild_id, cutoff),
+        )
+        daily_rows = await self._fetchall(
+            """
+            SELECT activity_date, SUM(message_count)
+            FROM stats_message_activity
+            WHERE guild_id = ? AND activity_hour >= ?
+            GROUP BY activity_date
+            """,
+            (guild_id, cutoff),
+        )
+        daily = {}
+        today = self._utcnow().date()
+        for offset in range(days):
+            day = today - datetime.timedelta(days=offset)
+            daily[day.isoformat()] = 0
+        for date_value, count in daily_rows:
+            daily[date_value] = count
+        busiest_date, busiest_count = max(
+            daily.items(),
+            key=lambda item: (item[1], item[0]),
+        )
+        quietest_date, quietest_count = min(
+            daily.items(),
+            key=lambda item: (item[1], item[0]),
+        )
+
+        vc_available = await self._table_exists("vc_sessions")
+        vc_seconds = 0
+        top_vc_channel = "No tracked VC activity"
+        if vc_available:
+            vc_total = await self._fetchone(
+                """
+                SELECT COALESCE(SUM(duration_seconds), 0)
+                FROM vc_sessions
+                WHERE guild_id = ? AND left_at >= ?
+                """,
+                (guild_id, cutoff),
+            )
+            vc_seconds = vc_total[0] if vc_total else 0
+            top_vc = await self._fetchone(
+                """
+                SELECT channel_id, MAX(channel_name), SUM(duration_seconds)
+                FROM vc_sessions
+                WHERE guild_id = ? AND left_at >= ?
+                GROUP BY channel_id
+                ORDER BY SUM(duration_seconds) DESC
+                LIMIT 1
+                """,
+                (guild_id, cutoff),
+            )
+            if top_vc:
+                top_vc_channel = (
+                    f"{safe_channel_display(top_vc[0], top_vc[1])} "
+                    f"({format_duration(top_vc[2])})"
+                )
+            vc_users = await self._fetchall(
+                """
+                SELECT DISTINCT user_id
+                FROM vc_sessions
+                WHERE guild_id = ? AND left_at >= ?
+                """,
+                (guild_id, cutoff),
+            )
+            text_users.update(row[0] for row in vc_users)
+
+        average = total_messages / days if days else 0
+        concentration = (
+            top_text[2] / total_messages * 100
+            if top_text and total_messages
+            else 0
+        )
+        if not total_messages:
+            vibe = "No text activity has been tracked during this period."
+        elif average < 25:
+            vibe = (
+                f"Low-volume period, averaging {average:.1f} tracked messages "
+                "per day."
+            )
+        elif concentration >= 60:
+            vibe = (
+                f"Conversation was concentrated: the top channel accounted for "
+                f"{concentration:.1f}% of tracked messages."
+            )
+        else:
+            vibe = (
+                f"Activity was distributed across channels, averaging "
+                f"{average:.1f} tracked messages per day."
+            )
+
+        tracking_started = await self._tracking_started_datetime()
+        return {
+            "total_messages": total_messages,
+            "active_members": len(text_users) or text_active_count,
+            "joins": joins[0] if joins else 0,
+            "leaves": leaves[0] if leaves else 0,
+            "top_text_channel": (
+                f"{safe_channel_display(top_text[0], top_text[1])} "
+                f"({top_text[2]:,})"
+                if top_text
+                else "No tracked text activity"
+            ),
+            "busiest_day": f"{busiest_date} ({busiest_count:,})",
+            "quietest_day": f"{quietest_date} ({quietest_count:,})",
+            "vc_available": vc_available,
+            "vc_seconds": vc_seconds,
+            "top_vc_channel": top_vc_channel,
+            "vibe": vibe,
+            "tracking_started": (
+                tracking_started.date().isoformat()
+                if tracking_started
+                else "when this feature was deployed"
+            ),
+        }
+
+    async def _activity_export_file(
+        self,
+        guild_id: int,
+        days: int,
+        include_vc: bool,
+    ) -> Optional[discord.File]:
+        cutoff = self._activity_cutoff(days)
+        output = io.StringIO(newline="")
+        headers = [
+            "section",
+            "guild_id",
+            "channel_id",
+            "channel_name",
+            "user_id",
+            "username",
+            "display_name",
+            "activity_date",
+            "activity_hour",
+            "message_count",
+            "event_time",
+            "duration_seconds",
+            "duration_readable",
+            "counted_seconds",
+            "counted_readable",
+            "reward_eligible",
+            "metric",
+            "value",
+        ]
+        writer = csv.DictWriter(output, fieldnames=headers)
+        writer.writeheader()
+
+        overview = await self._activity_overview_data(guild_id, days)
+        for metric in (
+            "total_messages",
+            "active_members",
+            "joins",
+            "leaves",
+            "vc_seconds",
+        ):
+            writer.writerow(
+                {
+                    "section": "overview",
+                    "guild_id": guild_id,
+                    "metric": metric,
+                    "value": overview[metric],
+                }
+            )
+
+        message_rows = await self._fetchall(
+            """
+            SELECT channel_id, channel_name, user_id, username, display_name,
+                   activity_date, activity_hour, message_count
+            FROM stats_message_activity
+            WHERE guild_id = ? AND activity_hour >= ?
+            ORDER BY activity_hour, channel_id, user_id
+            """,
+            (guild_id, cutoff),
+        )
+        for row in message_rows:
+            writer.writerow(
+                {
+                    "section": "message_activity",
+                    "guild_id": guild_id,
+                    "channel_id": row[0],
+                    "channel_name": row[1],
+                    "user_id": row[2],
+                    "username": row[3],
+                    "display_name": row[4],
+                    "activity_date": row[5],
+                    "activity_hour": row[6],
+                    "message_count": row[7],
+                }
+            )
+
+        channel_rows = await self._fetchall(
+            """
+            SELECT channel_id, MAX(channel_name), SUM(message_count)
+            FROM stats_message_activity
+            WHERE guild_id = ? AND activity_hour >= ?
+            GROUP BY channel_id
+            ORDER BY SUM(message_count) DESC
+            """,
+            (guild_id, cutoff),
+        )
+        for channel_id, channel_name, count in channel_rows:
+            writer.writerow(
+                {
+                    "section": "channel_summary",
+                    "guild_id": guild_id,
+                    "channel_id": channel_id,
+                    "channel_name": channel_name,
+                    "metric": "message_count",
+                    "value": count,
+                }
+            )
+
+        member_rows = await self._fetchall(
+            """
+            SELECT user_id, MAX(username), MAX(display_name),
+                   SUM(message_count)
+            FROM stats_message_activity
+            WHERE guild_id = ? AND activity_hour >= ?
+            GROUP BY user_id
+            ORDER BY SUM(message_count) DESC
+            """,
+            (guild_id, cutoff),
+        )
+        for user_id, username, display_name, count in member_rows:
+            writer.writerow(
+                {
+                    "section": "member_summary",
+                    "guild_id": guild_id,
+                    "user_id": user_id,
+                    "username": username,
+                    "display_name": display_name,
+                    "metric": "message_count",
+                    "value": count,
+                }
+            )
+
+        for section, table, time_column in (
+            ("join", "stats_member_joins", "joined_at"),
+            ("leave", "stats_member_leaves", "left_at"),
+        ):
+            rows = await self._fetchall(
+                f"""
+                SELECT user_id, username, display_name, {time_column}
+                FROM {table}
+                WHERE guild_id = ? AND {time_column} >= ?
+                ORDER BY {time_column}
+                """,
+                (guild_id, cutoff),
+            )
+            for user_id, username, display_name, event_time in rows:
+                writer.writerow(
+                    {
+                        "section": section,
+                        "guild_id": guild_id,
+                        "user_id": user_id,
+                        "username": username,
+                        "display_name": display_name,
+                        "event_time": event_time,
+                    }
+                )
+
+        if include_vc and await self._table_exists("vc_sessions"):
+            rows = await self._fetchall(
+                """
+                SELECT user_id, username, display_name, channel_id,
+                       channel_name, duration_seconds, counted_seconds,
+                       reward_eligible
+                FROM vc_sessions
+                WHERE guild_id = ? AND left_at >= ?
+                ORDER BY left_at
+                """,
+                (guild_id, cutoff),
+            )
+            for row in rows:
+                writer.writerow(
+                    {
+                        "section": "vc_session",
+                        "guild_id": guild_id,
+                        "user_id": row[0],
+                        "username": row[1],
+                        "display_name": row[2],
+                        "channel_id": row[3],
+                        "channel_name": row[4],
+                        "duration_seconds": row[5],
+                        "duration_readable": format_duration(row[5]),
+                        "counted_seconds": row[6],
+                        "counted_readable": format_duration(row[6]),
+                        "reward_eligible": row[7],
+                    }
+                )
+
+        data = output.getvalue().encode("utf-8-sig")
+        if len(data) > MAX_ACTIVITY_EXPORT_BYTES:
+            return None
+        return discord.File(
+            io.BytesIO(data),
+            filename=f"stats_activity_{days}d.csv",
         )
 
     @staticmethod
