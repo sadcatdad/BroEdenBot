@@ -27,7 +27,7 @@ DISCORD_MESSAGE_LIMIT = 1_999
 MODAI_RUNTIME_VERSION = "structured-output-fallback-v2"
 RULE_REMINDER_HEADER = "## RULE REMINDER!"
 RULE_REMINDER_FOOTER = (
-    "### To learn more, please see <#1393119471891255456>."
+    "-# To learn more, please see <#1393119471891255456>."
 )
 MAX_RULECARD_MENTIONS = 20
 
