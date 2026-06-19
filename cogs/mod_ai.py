@@ -1,5 +1,6 @@
 import asyncio
 import json
+import logging
 import os
 import re
 from datetime import timezone
@@ -22,6 +23,9 @@ GEMINI_UNAVAILABLE_MESSAGE = (
 )
 MAX_SELECTED_CONTENT = 4_000
 MAX_CONTEXT_CONTENT = 500
+DISCORD_MESSAGE_LIMIT = 1_999
+
+logger = logging.getLogger(__name__)
 
 SEVERITY_COLORS = {
     "No issue": discord.Color.green(),
@@ -205,8 +209,33 @@ PATTERN_CHECK_SCHEMA = {
 }
 
 
+class GeminiConfigurationError(RuntimeError):
+    """Base error for safe Gemini configuration failures."""
+
+
+class MissingGeminiAPIKeyError(GeminiConfigurationError):
+    """Raised when GEMINI_API_KEY was not loaded."""
+
+
+class InvalidGeminiModelError(GeminiConfigurationError):
+    """Raised when Gemini rejects a configured model name."""
+
+    def __init__(self, code: Any = None, status: Any = None):
+        self.code = code
+        self.status = status
+        super().__init__("Gemini rejected the configured model.")
+
+
+class GeminiNoUsableResponseError(RuntimeError):
+    """Raised when Gemini returns a blocked, empty, or unreadable response."""
+
+
 class GeminiModelsUnavailableError(RuntimeError):
     """Raised when the primary and fallback Gemini models both fail."""
+
+    def __init__(self, last_error: Optional[Exception] = None):
+        self.last_error = last_error
+        super().__init__("The configured Gemini models were unavailable.")
 
 
 def _truncate(value: Any, limit: int, fallback: str = "Not provided") -> str:
@@ -263,6 +292,59 @@ def _guidance_embed(
         )
     )
     return embed
+
+
+def _safe_ephemeral_message(message: str) -> str:
+    return _truncate(message, DISCORD_MESSAGE_LIMIT, "Gemini request failed.")
+
+
+def _exception_chain(exc: Exception):
+    seen = set()
+    current = exc
+    while current is not None and id(current) not in seen:
+        seen.add(id(current))
+        yield current
+        if isinstance(current, GeminiModelsUnavailableError) and current.last_error:
+            current = current.last_error
+        else:
+            current = current.__cause__ or current.__context__
+
+
+def _gemini_user_error(
+    exc: Exception,
+    generic_message: str,
+) -> str:
+    chain = list(_exception_chain(exc))
+    if any(isinstance(item, MissingGeminiAPIKeyError) for item in chain):
+        return "GEMINI_API_KEY is missing from .env."
+    if any(isinstance(item, GeminiNoUsableResponseError) for item in chain):
+        return (
+            "Gemini returned no usable response. Try simplifying the message "
+            "or adding more context."
+        )
+
+    invalid_model = next(
+        (item for item in chain if isinstance(item, InvalidGeminiModelError)),
+        None,
+    )
+    if invalid_model is not None:
+        details = " ".join(
+            str(value)
+            for value in (invalid_model.code, invalid_model.status)
+            if value not in (None, "")
+        )
+        suffix = f" ({_truncate(details, 80)})" if details else ""
+        return _safe_ephemeral_message(
+            "Gemini model configuration error"
+            f"{suffix}. Check MODAI_MODEL and MODAI_FALLBACK_MODEL in .env."
+        )
+
+    if isinstance(exc, GeminiModelsUnavailableError) or any(
+        isinstance(item, errors.APIError) and item.code == 503
+        for item in chain
+    ):
+        return GEMINI_UNAVAILABLE_MESSAGE
+    return _safe_ephemeral_message(generic_message)
 
 
 def format_gemini_output_embed(
@@ -415,15 +497,15 @@ def format_draft_response_embed(guidance: Dict[str, Any]) -> discord.Embed:
     return _guidance_embed(
         "Draft Staff Response",
         [
-            ("Suggested public response", guidance.get("public_response"), 750),
-            ("Suggested private DM", guidance.get("private_dm"), 750),
-            ("Softer version", guidance.get("softer_version"), 650),
-            ("Firmer version", guidance.get("firmer_version"), 650),
-            ("Relevant Bro Eden area", guidance.get("relevant_area"), 550),
+            ("Suggested public response", guidance.get("public_response"), 280),
+            ("Suggested private DM", guidance.get("private_dm"), 280),
+            ("Softer version", guidance.get("softer_version"), 220),
+            ("Firmer version", guidance.get("firmer_version"), 220),
+            ("Relevant Bro Eden area", guidance.get("relevant_area"), 180),
             (
                 "Is more context needed?",
                 guidance.get("more_context_needed"),
-                550,
+                180,
             ),
         ],
         guidance.get("guidance_reminder"),
@@ -930,48 +1012,122 @@ the final decision. Do not quote sensitive notes unless strictly necessary.
         return isinstance(exc, errors.APIError) and exc.code == 503
 
     @staticmethod
+    def _is_invalid_model_error(exc: Exception) -> bool:
+        if not isinstance(exc, errors.APIError):
+            return False
+        status = str(getattr(exc, "status", "") or "").upper()
+        message = str(getattr(exc, "message", "") or "").casefold()
+        return (
+            exc.code == 404
+            or status == "NOT_FOUND"
+            or (
+                exc.code == 400
+                and "model" in message
+                and any(
+                    phrase in message
+                    for phrase in ("not found", "not supported", "invalid model")
+                )
+            )
+        )
+
+    @staticmethod
     def _log_gemini_error(stage: str, model: str, exc: Exception) -> None:
-        error_type = type(exc).__name__
-        code = getattr(exc, "code", None)
-        status = getattr(exc, "status", None)
-        print(
-            f"ModAI Gemini failure: stage={stage} model={model} "
-            f"error_type={error_type} code={code!r} status={status!r}"
+        logger.exception(
+            "ModAI Gemini failure: stage=%s model=%s "
+            "error_type=%s code=%r status=%r",
+            stage,
+            model,
+            type(exc).__name__,
+            getattr(exc, "code", None),
+            getattr(exc, "status", None),
         )
 
     @staticmethod
     def _log_internal_error(stage: str, exc: Exception) -> None:
-        print(
-            f"ModAI internal failure: stage={stage} "
-            f"error_type={type(exc).__name__}"
+        logger.exception(
+            "ModAI internal failure: stage=%s error_type=%s",
+            stage,
+            type(exc).__name__,
         )
+
+    async def _send_gemini_failure(
+        self,
+        interaction: discord.Interaction,
+        stage: str,
+        exc: Exception,
+        generic_message: str,
+    ) -> None:
+        self._log_gemini_error(stage, self.model, exc)
+        await interaction.followup.send(
+            _gemini_user_error(exc, generic_message),
+            ephemeral=True,
+        )
+
+    async def _generate_json_with_model(
+        self,
+        prompt: str,
+        model: str,
+        schema: Dict[str, Any],
+        response_name: str,
+        max_output_tokens: int,
+    ) -> Dict[str, Any]:
+        if self.client is None:
+            raise MissingGeminiAPIKeyError("GEMINI_API_KEY is missing.")
+
+        try:
+            response = await self.client.aio.models.generate_content(
+                model=model,
+                contents=prompt,
+                config=types.GenerateContentConfig(
+                    temperature=0.2,
+                    max_output_tokens=max_output_tokens,
+                    response_mime_type="application/json",
+                    response_json_schema=schema,
+                ),
+            )
+        except errors.APIError as exc:
+            if self._is_invalid_model_error(exc):
+                raise InvalidGeminiModelError(
+                    getattr(exc, "code", None),
+                    getattr(exc, "status", None),
+                ) from exc
+            raise
+
+        try:
+            response_text = response.text
+        except Exception as exc:
+            raise GeminiNoUsableResponseError(
+                f"Gemini returned a blocked or unreadable {response_name} response."
+            ) from exc
+        if not response_text or not response_text.strip():
+            raise GeminiNoUsableResponseError(
+                f"Gemini returned an empty {response_name} response."
+            )
+
+        try:
+            result = json.loads(response_text)
+        except (json.JSONDecodeError, TypeError) as exc:
+            raise GeminiNoUsableResponseError(
+                f"Gemini returned an unusable {response_name} response."
+            ) from exc
+        if not isinstance(result, dict):
+            raise GeminiNoUsableResponseError(
+                f"Gemini returned an unusable {response_name} response."
+            )
+        return result
 
     async def _generate_review_with_model(
         self,
         prompt: str,
         model: str,
     ) -> Dict[str, Any]:
-        if self.client is None:
-            raise RuntimeError("GEMINI_API_KEY is not configured.")
-
-        response = await self.client.aio.models.generate_content(
-            model=model,
-            contents=prompt,
-            config=types.GenerateContentConfig(
-                temperature=0.2,
-                max_output_tokens=1_000,
-                response_mime_type="application/json",
-                response_json_schema=REVIEW_SCHEMA,
-            ),
+        review = await self._generate_json_with_model(
+            prompt,
+            model,
+            REVIEW_SCHEMA,
+            "review",
+            1_000,
         )
-        if not response.text:
-            raise RuntimeError("Gemini returned an empty response.")
-
-        try:
-            review = json.loads(response.text)
-        except json.JSONDecodeError as exc:
-            raise RuntimeError("Gemini returned an invalid structured response.") from exc
-
         review["severity"] = _normalise_severity(review.get("severity"))
         categories = review.get("categories")
         if not isinstance(categories, list):
@@ -983,29 +1139,13 @@ the final decision. Do not quote sensitive notes unless strictly necessary.
         prompt: str,
         model: str,
     ) -> Dict[str, Any]:
-        if self.client is None:
-            raise RuntimeError("GEMINI_API_KEY is not configured.")
-
-        response = await self.client.aio.models.generate_content(
-            model=model,
-            contents=prompt,
-            config=types.GenerateContentConfig(
-                temperature=0.2,
-                max_output_tokens=1_200,
-                response_mime_type="application/json",
-                response_json_schema=INCIDENT_SCHEMA,
-            ),
+        guidance = await self._generate_json_with_model(
+            prompt,
+            model,
+            INCIDENT_SCHEMA,
+            "incident",
+            1_200,
         )
-        if not response.text:
-            raise RuntimeError("Gemini returned an empty incident response.")
-
-        try:
-            guidance = json.loads(response.text)
-        except json.JSONDecodeError as exc:
-            raise RuntimeError(
-                "Gemini returned an invalid structured incident response."
-            ) from exc
-
         guidance["severity"] = _normalise_severity(guidance.get("severity"))
         relevant_areas = guidance.get("relevant_areas")
         if not isinstance(relevant_areas, list):
@@ -1022,101 +1162,21 @@ the final decision. Do not quote sensitive notes unless strictly necessary.
         response_name: str,
         max_output_tokens: int = 1_200,
     ) -> Dict[str, Any]:
-        if self.client is None:
-            raise RuntimeError("GEMINI_API_KEY is not configured.")
-
-        response = await self.client.aio.models.generate_content(
-            model=model,
-            contents=prompt,
-            config=types.GenerateContentConfig(
-                temperature=0.2,
-                max_output_tokens=max_output_tokens,
-                response_mime_type="application/json",
-                response_json_schema=schema,
-            ),
+        return await self._generate_json_with_model(
+            prompt,
+            model,
+            schema,
+            response_name,
+            max_output_tokens,
         )
-        if not response.text:
-            raise RuntimeError(f"Gemini returned an empty {response_name} response.")
 
-        try:
-            result = json.loads(response.text)
-        except json.JSONDecodeError as exc:
-            raise RuntimeError(
-                f"Gemini returned an invalid structured {response_name} response."
-            ) from exc
-        if not isinstance(result, dict):
-            raise RuntimeError(
-                f"Gemini returned an invalid structured {response_name} response."
-            )
-        return result
-
-    async def _generate_review(self, prompt: str) -> Dict[str, Any]:
-        try:
-            return await self._generate_review_with_model(prompt, self.model)
-        except Exception as exc:
-            self._log_gemini_error("primary", self.model, exc)
-            if not self._is_unavailable_error(exc):
-                raise
-
-        await asyncio.sleep(GEMINI_RETRY_DELAY_SECONDS)
-
-        try:
-            return await self._generate_review_with_model(prompt, self.model)
-        except Exception as exc:
-            self._log_gemini_error("primary_retry", self.model, exc)
-
-        try:
-            return await self._generate_review_with_model(
-                prompt,
-                self.fallback_model,
-            )
-        except Exception as exc:
-            self._log_gemini_error("fallback", self.fallback_model, exc)
-            raise GeminiModelsUnavailableError from exc
-
-    async def _generate_incident(self, prompt: str) -> Dict[str, Any]:
-        try:
-            return await self._generate_incident_with_model(prompt, self.model)
-        except Exception as exc:
-            self._log_gemini_error("incident_primary", self.model, exc)
-            if not self._is_unavailable_error(exc):
-                raise
-
-        await asyncio.sleep(GEMINI_RETRY_DELAY_SECONDS)
-
-        try:
-            return await self._generate_incident_with_model(prompt, self.model)
-        except Exception as exc:
-            self._log_gemini_error("incident_primary_retry", self.model, exc)
-
-        try:
-            return await self._generate_incident_with_model(
-                prompt,
-                self.fallback_model,
-            )
-        except Exception as exc:
-            self._log_gemini_error(
-                "incident_fallback",
-                self.fallback_model,
-                exc,
-            )
-            raise GeminiModelsUnavailableError from exc
-
-    async def _generate_structured(
+    async def _run_with_model_fallback(
         self,
-        prompt: str,
-        schema: Dict[str, Any],
+        generator,
         response_name: str,
-        max_output_tokens: int = 1_200,
     ) -> Dict[str, Any]:
         try:
-            return await self._generate_structured_with_model(
-                prompt,
-                self.model,
-                schema,
-                response_name,
-                max_output_tokens,
-            )
+            return await generator(self.model)
         except Exception as exc:
             self._log_gemini_error(
                 f"{response_name}_primary",
@@ -1128,36 +1188,60 @@ the final decision. Do not quote sensitive notes unless strictly necessary.
 
         await asyncio.sleep(GEMINI_RETRY_DELAY_SECONDS)
 
+        retry_error = None
         try:
-            return await self._generate_structured_with_model(
-                prompt,
-                self.model,
-                schema,
-                response_name,
-                max_output_tokens,
-            )
-        except Exception as exc:
+            return await generator(self.model)
+        except Exception as retry_exc:
+            retry_error = retry_exc
             self._log_gemini_error(
                 f"{response_name}_primary_retry",
                 self.model,
-                exc,
+                retry_exc,
             )
 
+        fallback_model = str(getattr(self, "fallback_model", "") or "").strip()
+        if not fallback_model or fallback_model == self.model:
+            raise GeminiModelsUnavailableError(retry_error) from retry_error
+
         try:
-            return await self._generate_structured_with_model(
+            return await generator(fallback_model)
+        except Exception as fallback_exc:
+            self._log_gemini_error(
+                f"{response_name}_fallback",
+                fallback_model,
+                fallback_exc,
+            )
+            raise GeminiModelsUnavailableError(fallback_exc) from fallback_exc
+
+    async def _generate_review(self, prompt: str) -> Dict[str, Any]:
+        return await self._run_with_model_fallback(
+            lambda model: self._generate_review_with_model(prompt, model),
+            "review",
+        )
+
+    async def _generate_incident(self, prompt: str) -> Dict[str, Any]:
+        return await self._run_with_model_fallback(
+            lambda model: self._generate_incident_with_model(prompt, model),
+            "incident",
+        )
+
+    async def _generate_structured(
+        self,
+        prompt: str,
+        schema: Dict[str, Any],
+        response_name: str,
+        max_output_tokens: int = 1_200,
+    ) -> Dict[str, Any]:
+        return await self._run_with_model_fallback(
+            lambda model: self._generate_structured_with_model(
                 prompt,
-                self.fallback_model,
+                model,
                 schema,
                 response_name,
                 max_output_tokens,
-            )
-        except Exception as exc:
-            self._log_gemini_error(
-                f"{response_name}_fallback",
-                self.fallback_model,
-                exc,
-            )
-            raise GeminiModelsUnavailableError from exc
+            ),
+            response_name,
+        )
 
     async def _fetch_pattern_records(
         self,
@@ -1320,17 +1404,12 @@ the final decision. Do not quote sensitive notes unless strictly necessary.
         )
         try:
             review = await self._generate_review(prompt)
-        except GeminiModelsUnavailableError:
-            await interaction.followup.send(
-                GEMINI_UNAVAILABLE_MESSAGE,
-                ephemeral=True,
-            )
-            return
         except Exception as exc:
-            self._log_gemini_error("rulehelp", self.model, exc)
-            await interaction.followup.send(
+            await self._send_gemini_failure(
+                interaction,
+                "rulehelp",
+                exc,
                 "Gemini could not complete the rule guidance. Please try again later.",
-                ephemeral=True,
             )
             return
 
@@ -1371,18 +1450,13 @@ the final decision. Do not quote sensitive notes unless strictly necessary.
 
         try:
             guidance = await self._generate_incident(prompt)
-        except GeminiModelsUnavailableError:
-            await interaction.followup.send(
-                GEMINI_UNAVAILABLE_MESSAGE,
-                ephemeral=True,
-            )
-            return
         except Exception as exc:
-            self._log_gemini_error("incident", self.model, exc)
-            await interaction.followup.send(
+            await self._send_gemini_failure(
+                interaction,
+                "incident",
+                exc,
                 "Gemini could not complete the incident guidance. "
                 "Please try again later.",
-                ephemeral=True,
             )
             return
 
@@ -1426,18 +1500,13 @@ the final decision. Do not quote sensitive notes unless strictly necessary.
                 TICKET_DRAFT_SCHEMA,
                 "ticket_draft",
             )
-        except GeminiModelsUnavailableError:
-            await interaction.followup.send(
-                GEMINI_UNAVAILABLE_MESSAGE,
-                ephemeral=True,
-            )
-            return
         except Exception as exc:
-            self._log_gemini_error("ticketdraft", self.model, exc)
-            await interaction.followup.send(
+            await self._send_gemini_failure(
+                interaction,
+                "ticketdraft",
+                exc,
                 "Gemini could not complete the ticket draft. "
                 "Please try again later.",
-                ephemeral=True,
             )
             return
 
@@ -1480,17 +1549,12 @@ the final decision. Do not quote sensitive notes unless strictly necessary.
                 RULE_CARD_SCHEMA,
                 "rule_card",
             )
-        except GeminiModelsUnavailableError:
-            await interaction.followup.send(
-                GEMINI_UNAVAILABLE_MESSAGE,
-                ephemeral=True,
-            )
-            return
         except Exception as exc:
-            self._log_gemini_error("rulecard", self.model, exc)
-            await interaction.followup.send(
+            await self._send_gemini_failure(
+                interaction,
+                "rulecard",
+                exc,
                 "Gemini could not complete the rule card. Please try again later.",
-                ephemeral=True,
             )
             return
 
@@ -1548,18 +1612,13 @@ the final decision. Do not quote sensitive notes unless strictly necessary.
                 PATTERN_CHECK_SCHEMA,
                 "pattern_check",
             )
-        except GeminiModelsUnavailableError:
-            await interaction.followup.send(
-                GEMINI_UNAVAILABLE_MESSAGE,
-                ephemeral=True,
-            )
-            return
         except Exception as exc:
-            self._log_gemini_error("patterncheck", self.model, exc)
-            await interaction.followup.send(
+            await self._send_gemini_failure(
+                interaction,
+                "patterncheck",
+                exc,
                 "Gemini could not complete the structured pattern check. "
                 "Please try again later.",
-                ephemeral=True,
             )
             return
 
@@ -1582,17 +1641,12 @@ the final decision. Do not quote sensitive notes unless strictly necessary.
         await interaction.response.defer(ephemeral=True, thinking=True)
         try:
             review = await self._generate_review(self._build_text_prompt(text))
-        except GeminiModelsUnavailableError:
-            await interaction.followup.send(
-                GEMINI_UNAVAILABLE_MESSAGE,
-                ephemeral=True,
-            )
-            return
         except Exception as exc:
-            self._log_gemini_error("modai_check", self.model, exc)
-            await interaction.followup.send(
+            await self._send_gemini_failure(
+                interaction,
+                "modai_check",
+                exc,
                 "Gemini could not complete the review. Please try again later.",
-                ephemeral=True,
             )
             return
 
@@ -1616,17 +1670,12 @@ the final decision. Do not quote sensitive notes unless strictly necessary.
             review = await self._generate_review(
                 self._build_message_prompt(message, nearby)
             )
-        except GeminiModelsUnavailableError:
-            await interaction.followup.send(
-                GEMINI_UNAVAILABLE_MESSAGE,
-                ephemeral=True,
-            )
-            return
         except Exception as exc:
-            self._log_gemini_error("message_review", self.model, exc)
-            await interaction.followup.send(
+            await self._send_gemini_failure(
+                interaction,
+                "message_review",
+                exc,
                 "Gemini could not complete the review. Please try again later.",
-                ephemeral=True,
             )
             return
 
@@ -1658,17 +1707,12 @@ the final decision. Do not quote sensitive notes unless strictly necessary.
                 DRAFT_RESPONSE_SCHEMA,
                 "draft_staff_response",
             )
-        except GeminiModelsUnavailableError:
-            await interaction.followup.send(
-                GEMINI_UNAVAILABLE_MESSAGE,
-                ephemeral=True,
-            )
-            return
         except Exception as exc:
-            self._log_gemini_error("draft_staff_response", self.model, exc)
-            await interaction.followup.send(
+            await self._send_gemini_failure(
+                interaction,
+                "draft_staff_response",
+                exc,
                 "Gemini could not draft staff responses. Please try again later.",
-                ephemeral=True,
             )
             return
 
