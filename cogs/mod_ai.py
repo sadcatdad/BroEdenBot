@@ -25,6 +25,11 @@ MAX_SELECTED_CONTENT = 4_000
 MAX_CONTEXT_CONTENT = 500
 DISCORD_MESSAGE_LIMIT = 1_999
 MODAI_RUNTIME_VERSION = "structured-output-fallback-v2"
+RULE_REMINDER_HEADER = "## RULE REMINDER! <:goose_alert:675026602479976488>"
+RULE_REMINDER_FOOTER = (
+    "### To learn more, please see <#1393119471891255456>."
+)
+MAX_RULECARD_MENTIONS = 20
 
 logger = logging.getLogger(__name__)
 
@@ -659,19 +664,115 @@ def format_ticket_draft_embed(guidance: Dict[str, Any]) -> discord.Embed:
     )
 
 
-def format_rule_card_embed(guidance: Dict[str, Any], tone: str) -> discord.Embed:
-    fields = [
-        ("Rule reminder message", guidance.get("rule_reminder"), 1_000),
-        ("Relevant Bro Eden area", guidance.get("relevant_area"), 650),
-        ("Suggested channel or use case", guidance.get("suggested_use"), 500),
-    ]
-    if tone != "firm":
-        fields.append(("Optional firmer version", guidance.get("firmer_version"), 900))
-    return _guidance_embed(
-        f"ModAI Rule Card • {tone.title()}",
-        fields,
-        guidance.get("guidance_reminder"),
+def _clean_rule_reminder_body(value: Any) -> str:
+    body = str(value or "").strip()
+    body = body.replace(RULE_REMINDER_HEADER, "").strip()
+    body = body.replace(RULE_REMINDER_FOOTER, "").strip()
+    return _truncate(body, 3_700, "Please review the relevant Bro Eden rule.")
+
+
+def format_public_rule_card_embed(guidance: Dict[str, Any]) -> discord.Embed:
+    body = _clean_rule_reminder_body(guidance.get("rule_reminder"))
+    description = f"{RULE_REMINDER_HEADER}\n\n{body}\n\n{RULE_REMINDER_FOOTER}"
+    return discord.Embed(
+        description=_truncate(description, 4_096),
+        color=discord.Color.orange(),
     )
+
+
+def _canonical_user_mentions(raw_value: Optional[str]) -> str:
+    if not raw_value:
+        return ""
+    user_ids = []
+    seen = set()
+    for match in re.finditer(r"<@!?(\d{15,22})>", raw_value):
+        user_id = match.group(1)
+        if user_id in seen:
+            continue
+        seen.add(user_id)
+        user_ids.append(user_id)
+        if len(user_ids) >= MAX_RULECARD_MENTIONS:
+            break
+    return " ".join(f"<@{user_id}>" for user_id in user_ids)
+
+
+class RuleCardSendView(discord.ui.View):
+    def __init__(
+        self,
+        *,
+        creator_id: int,
+        channel: Any,
+        rule_embed: discord.Embed,
+        mention_content: str,
+    ):
+        super().__init__(timeout=900)
+        self.creator_id = creator_id
+        self.channel = channel
+        self.rule_embed = rule_embed
+        self.mention_content = mention_content
+        self.sent = False
+        self._send_lock = asyncio.Lock()
+
+    @discord.ui.button(
+        label="Send Rule Reminder",
+        style=discord.ButtonStyle.primary,
+    )
+    async def send_rule_reminder(
+        self,
+        interaction: discord.Interaction,
+        button: discord.ui.Button,
+    ) -> None:
+        is_admin = bool(
+            isinstance(interaction.user, discord.Member)
+            and interaction.user.guild_permissions.administrator
+        )
+        if interaction.user.id != self.creator_id and not is_admin:
+            await interaction.response.send_message(
+                "Only the staff member who generated this rule reminder or an "
+                "administrator can send it.",
+                ephemeral=True,
+            )
+            return
+
+        async with self._send_lock:
+            if self.sent:
+                await interaction.response.send_message(
+                    "Rule reminder sent.",
+                    ephemeral=True,
+                )
+                return
+
+            try:
+                await self.channel.send(
+                    content=self.mention_content or None,
+                    embed=self.rule_embed,
+                    allowed_mentions=discord.AllowedMentions(
+                        everyone=False,
+                        roles=False,
+                        users=True,
+                        replied_user=False,
+                    ),
+                )
+            except (discord.Forbidden, discord.HTTPException, AttributeError):
+                logger.exception(
+                    "Could not post rule reminder: channel_id=%r",
+                    getattr(self.channel, "id", None),
+                )
+                await interaction.response.send_message(
+                    "I could not post the rule reminder in this channel. "
+                    "Please check my Send Messages and Embed Links permissions.",
+                    ephemeral=True,
+                )
+                return
+
+            self.sent = True
+            button.disabled = True
+            self.stop()
+            await interaction.response.edit_message(
+                content="Rule reminder sent.",
+                embed=self.rule_embed,
+                view=self,
+            )
 
 
 def format_pattern_check_embed(
@@ -1075,8 +1176,10 @@ corporate. Avoid shaming language unless the requested tone is firm. Do not
 invent rules not present in the local context. Include the relevant rule or
 survival-guide area and a suggested channel or use case. If the requested tone
 is not firm, also provide a firmer alternative; otherwise set firmer_version
-to "Already using the firm version." Remind staff to review and adapt the
-message before posting.
+to "Already using the firm version." The rule_reminder field should contain
+only the member-facing reminder body. Do not add a title, the words "RULE
+REMINDER", internal staff notes, or AI-guidance disclaimers to that field.
+Remind staff to review and adapt the message before posting.
 """.strip()
 
     def _build_pattern_check_prompt(
@@ -1727,6 +1830,7 @@ the final decision. Do not quote sensitive notes unless strictly necessary.
     @app_commands.describe(
         topic="Rule topic or situation for the reminder",
         tone="Desired reminder tone (defaults to friendly)",
+        users="Optional user mentions to ping when the reminder is sent",
     )
     @app_commands.choices(
         tone=[
@@ -1742,8 +1846,18 @@ the final decision. Do not quote sensitive notes unless strictly necessary.
         interaction: discord.Interaction,
         topic: app_commands.Range[str, 1, 500],
         tone: Optional[app_commands.Choice[str]] = None,
+        users: Optional[str] = None,
     ) -> None:
         if await self._deny_if_unauthorised(interaction):
+            return
+
+        mention_content = _canonical_user_mentions(users)
+        if users and not mention_content:
+            await interaction.response.send_message(
+                "Please provide one or more valid Discord user mentions, such "
+                "as @user1 @user2.",
+                ephemeral=True,
+            )
             return
 
         selected_tone = tone.value if tone else "friendly"
@@ -1763,9 +1877,24 @@ the final decision. Do not quote sensitive notes unless strictly necessary.
             )
             return
 
+        rule_embed = format_public_rule_card_embed(guidance)
+        view = RuleCardSendView(
+            creator_id=interaction.user.id,
+            channel=interaction.channel,
+            rule_embed=rule_embed,
+            mention_content=mention_content,
+        )
+        preview_note = (
+            "Review this reminder before sending."
+            if not mention_content
+            else f"Review this reminder before sending. It will ping: {mention_content}"
+        )
         await interaction.followup.send(
-            embed=format_rule_card_embed(guidance, selected_tone),
+            content=preview_note,
+            embed=rule_embed,
+            view=view,
             ephemeral=True,
+            allowed_mentions=discord.AllowedMentions.none(),
         )
 
     @modai.command(
