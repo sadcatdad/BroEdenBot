@@ -24,6 +24,7 @@ GEMINI_UNAVAILABLE_MESSAGE = (
 MAX_SELECTED_CONTENT = 4_000
 MAX_CONTEXT_CONTENT = 500
 DISCORD_MESSAGE_LIMIT = 1_999
+MODAI_RUNTIME_VERSION = "structured-output-fallback-v2"
 
 logger = logging.getLogger(__name__)
 
@@ -397,6 +398,13 @@ def _exception_chain(exc: Exception):
             current = current.__cause__ or current.__context__
 
 
+def _has_malformed_json_error(exc: Exception) -> bool:
+    return any(
+        isinstance(item, GeminiMalformedJSONError)
+        for item in _exception_chain(exc)
+    )
+
+
 def _gemini_user_error(
     exc: Exception,
     generic_message: str,
@@ -601,6 +609,29 @@ def format_draft_response_embed(guidance: Dict[str, Any]) -> discord.Embed:
     )
 
 
+def format_plain_text_guidance_embed(
+    title: str,
+    guidance: str,
+    message: Optional[discord.Message] = None,
+) -> discord.Embed:
+    description = _truncate(guidance, 1_650, "No guidance was returned.")
+    embed = discord.Embed(
+        title=title,
+        description=description,
+        color=discord.Color.blurple(),
+    )
+    if message is not None:
+        embed.add_field(
+            name="Reviewed message",
+            value=f"[Jump to message]({message.jump_url}) • {message.author.mention}",
+            inline=False,
+        )
+    embed.set_footer(
+        text="Fallback format. This is guidance only; staff make the final decision."
+    )
+    return embed
+
+
 def format_ticket_draft_embed(guidance: Dict[str, Any]) -> discord.Embed:
     return _guidance_embed(
         "ModAI Support Ticket Draft",
@@ -711,6 +742,7 @@ class ModAI(commands.Cog):
         )
 
     async def cog_load(self) -> None:
+        logger.warning("ModAI loaded: runtime=%s", MODAI_RUNTIME_VERSION)
         await self.bot.db.execute(
             """
             CREATE TABLE IF NOT EXISTS modai_reviews (
@@ -1171,15 +1203,21 @@ the final decision. Do not quote sensitive notes unless strictly necessary.
             raise MissingGeminiAPIKeyError("GEMINI_API_KEY is missing.")
 
         try:
+            config_kwargs = {
+                "temperature": 0.2,
+                "max_output_tokens": max_output_tokens,
+                "response_mime_type": "application/json",
+                "response_schema": schema,
+            }
+            if "gemini-2.5" in model.casefold():
+                config_kwargs["thinking_config"] = types.ThinkingConfig(
+                    thinking_budget=0
+                )
+
             response = await self.client.aio.models.generate_content(
                 model=model,
                 contents=_json_only_instruction(prompt),
-                config=types.GenerateContentConfig(
-                    temperature=0.2,
-                    max_output_tokens=max_output_tokens,
-                    response_mime_type="application/json",
-                    response_schema=schema,
-                ),
+                config=types.GenerateContentConfig(**config_kwargs),
             )
         except errors.APIError as exc:
             if self._is_invalid_model_error(exc):
@@ -1217,6 +1255,58 @@ the final decision. Do not quote sensitive notes unless strictly necessary.
             )
             raise
 
+    async def _generate_plain_text_with_model(
+        self,
+        prompt: str,
+        model: str,
+        response_name: str,
+    ) -> str:
+        if self.client is None:
+            raise MissingGeminiAPIKeyError("GEMINI_API_KEY is missing.")
+
+        config_kwargs = {
+            "temperature": 0.2,
+            "max_output_tokens": 1_500,
+        }
+        if "gemini-2.5" in model.casefold():
+            config_kwargs["thinking_config"] = types.ThinkingConfig(
+                thinking_budget=0
+            )
+
+        fallback_prompt = (
+            f"{prompt}\n\n"
+            "The structured JSON response could not be parsed. Respond in concise "
+            "plain text instead. Use short labeled sections matching the requested "
+            "fields. Do not use JSON or code fences. Keep the full response under "
+            "1,700 characters. End by reminding staff that this is guidance only "
+            "and staff make the final decision."
+        )
+        try:
+            response = await self.client.aio.models.generate_content(
+                model=model,
+                contents=fallback_prompt,
+                config=types.GenerateContentConfig(**config_kwargs),
+            )
+        except errors.APIError as exc:
+            if self._is_invalid_model_error(exc):
+                raise InvalidGeminiModelError(
+                    getattr(exc, "code", None),
+                    getattr(exc, "status", None),
+                ) from exc
+            raise
+
+        try:
+            response_text = response.text
+        except Exception as exc:
+            raise GeminiNoUsableResponseError(
+                f"Gemini returned a blocked {response_name} fallback response."
+            ) from exc
+        if not response_text or not response_text.strip():
+            raise GeminiNoUsableResponseError(
+                f"Gemini returned an empty {response_name} fallback response."
+            )
+        return _truncate(response_text, 1_700)
+
     async def _generate_review_with_model(
         self,
         prompt: str,
@@ -1227,7 +1317,7 @@ the final decision. Do not quote sensitive notes unless strictly necessary.
             model,
             REVIEW_SCHEMA,
             "review",
-            2_048,
+            4_096,
         )
         review["severity"] = _normalise_severity(review.get("severity"))
         categories = review.get("categories")
@@ -1245,7 +1335,7 @@ the final decision. Do not quote sensitive notes unless strictly necessary.
             model,
             INCIDENT_SCHEMA,
             "incident",
-            2_048,
+            4_096,
         )
         guidance["severity"] = _normalise_severity(guidance.get("severity"))
         relevant_areas = guidance.get("relevant_areas")
@@ -1261,7 +1351,7 @@ the final decision. Do not quote sensitive notes unless strictly necessary.
         model: str,
         schema: Dict[str, Any],
         response_name: str,
-        max_output_tokens: int = 2_048,
+        max_output_tokens: int = 4_096,
     ) -> Dict[str, Any]:
         return await self._generate_json_with_model(
             prompt,
@@ -1314,6 +1404,20 @@ the final decision. Do not quote sensitive notes unless strictly necessary.
             )
             raise GeminiModelsUnavailableError(fallback_exc) from fallback_exc
 
+    async def _generate_plain_text_fallback(
+        self,
+        prompt: str,
+        response_name: str,
+    ) -> str:
+        return await self._run_with_model_fallback(
+            lambda model: self._generate_plain_text_with_model(
+                prompt,
+                model,
+                response_name,
+            ),
+            f"{response_name}_plain_text",
+        )
+
     async def _generate_review(self, prompt: str) -> Dict[str, Any]:
         return await self._run_with_model_fallback(
             lambda model: self._generate_review_with_model(prompt, model),
@@ -1331,7 +1435,7 @@ the final decision. Do not quote sensitive notes unless strictly necessary.
         prompt: str,
         schema: Dict[str, Any],
         response_name: str,
-        max_output_tokens: int = 2_048,
+        max_output_tokens: int = 4_096,
     ) -> Dict[str, Any]:
         return await self._run_with_model_fallback(
             lambda model: self._generate_structured_with_model(
@@ -1766,12 +1870,34 @@ the final decision. Do not quote sensitive notes unless strictly necessary.
 
         await interaction.response.defer(ephemeral=True, thinking=True)
         nearby = await self._fetch_nearby_context(message)
+        prompt = self._build_message_prompt(message, nearby)
 
         try:
-            review = await self._generate_review(
-                self._build_message_prompt(message, nearby)
-            )
+            review = await self._generate_review(prompt)
         except Exception as exc:
+            if _has_malformed_json_error(exc):
+                try:
+                    plain_guidance = await self._generate_plain_text_fallback(
+                        prompt,
+                        "message_review",
+                    )
+                except Exception as fallback_exc:
+                    await self._send_gemini_failure(
+                        interaction,
+                        "message_review_plain_text",
+                        fallback_exc,
+                        "Gemini could not complete the review. Please try again later.",
+                    )
+                    return
+                await interaction.followup.send(
+                    embed=format_plain_text_guidance_embed(
+                        "Gemini Moderation Review",
+                        plain_guidance,
+                        message,
+                    ),
+                    ephemeral=True,
+                )
+                return
             await self._send_gemini_failure(
                 interaction,
                 "message_review",
@@ -1809,6 +1935,29 @@ the final decision. Do not quote sensitive notes unless strictly necessary.
                 "draft_staff_response",
             )
         except Exception as exc:
+            if _has_malformed_json_error(exc):
+                try:
+                    plain_guidance = await self._generate_plain_text_fallback(
+                        prompt,
+                        "draft_staff_response",
+                    )
+                except Exception as fallback_exc:
+                    await self._send_gemini_failure(
+                        interaction,
+                        "draft_staff_response_plain_text",
+                        fallback_exc,
+                        "Gemini could not draft staff responses. "
+                        "Please try again later.",
+                    )
+                    return
+                await interaction.followup.send(
+                    embed=format_plain_text_guidance_embed(
+                        "Draft Staff Response",
+                        plain_guidance,
+                    ),
+                    ephemeral=True,
+                )
+                return
             await self._send_gemini_failure(
                 interaction,
                 "draft_staff_response",
