@@ -366,7 +366,14 @@ selection menu. This is an administrator-only bulk operation.
 ## Stats activity commands
 
 Activity reports use the same permissions as other stats creation and refresh
-commands. Every response is ephemeral.
+commands. Visual reports have an optional `channel` parameter:
+
+- Leave `channel` blank to receive the report ephemerally.
+- Select a text channel to post the report there for other staff to see. The
+  command runner receives an ephemeral confirmation.
+
+CSV exports remain ephemeral because they contain member-level activity
+metadata.
 
 Text activity is tracked from the time this feature is deployed. The bot stores
 hourly counts and basic member/channel metadata only. It does **not** store
@@ -376,7 +383,7 @@ ignored.
 Join and leave events are also tracked going forward, so reports covering
 periods before deployment may be incomplete.
 
-### `/stats activity overview [days]`
+### `/stats activity overview [days] [channel]`
 
 Shows a private community overview containing:
 
@@ -390,7 +397,7 @@ Shows a private community overview containing:
 
 `days` defaults to 7.
 
-### `/stats activity channels [days] [limit]`
+### `/stats activity channels [days] [limit] [channel]`
 
 Shows the top text channels by tracked message count, including unique posters
 and percentage of tracked messages.
@@ -398,7 +405,7 @@ and percentage of tracked messages.
 - `days` defaults to 7.
 - `limit` defaults to 10 and supports up to 25.
 
-### `/stats activity quiet [days] [limit]`
+### `/stats activity quiet [days] [limit] [channel]`
 
 Shows visible text channels with low tracked activity and their last tracked
 activity time. This is intended for neutral channel-planning decisions and
@@ -407,7 +414,7 @@ does not assess or shame individual members.
 - `days` defaults to 14.
 - `limit` defaults to 10 and supports up to 25.
 
-### `/stats activity members [days] [limit]`
+### `/stats activity members [days] [limit] [channel]`
 
 Shows members with the highest tracked message counts. Text and VC activity are
 not combined into a synthetic score.
@@ -415,7 +422,7 @@ not combined into a synthetic score.
 - `days` defaults to 7.
 - `limit` defaults to 10 and supports up to 25.
 
-### `/stats activity vc [days] [limit]`
+### `/stats activity vc [days] [limit] [channel]`
 
 Reads completed sessions from the `vc_sessions` table managed by
 `cogs/vc_stats.py`. It shows total tracked time, completed sessions, top voice

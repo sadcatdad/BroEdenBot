@@ -541,13 +541,17 @@ class Stats(commands.Cog):
         name="overview",
         description="Show a private community activity overview",
     )
-    @app_commands.describe(days="Number of days to include")
+    @app_commands.describe(
+        days="Number of days to include",
+        channel="Optional channel where the report should be posted",
+    )
     @app_commands.guild_only()
     @app_commands.check(has_stats_access)
     async def activity_overview(
         self,
         interaction: discord.Interaction,
         days: app_commands.Range[int, 1, 3650] = 7,
+        channel: Optional[discord.TextChannel] = None,
     ) -> None:
         await interaction.response.defer(ephemeral=True, thinking=True)
         data = await self._activity_overview_data(interaction.guild_id, days)
@@ -614,7 +618,7 @@ class Stats(commands.Cog):
                 "Older periods may be incomplete."
             )
         )
-        await interaction.followup.send(embed=embed, ephemeral=True)
+        await self._send_activity_report(interaction, embed, channel)
 
     @activity.command(
         name="channels",
@@ -623,6 +627,7 @@ class Stats(commands.Cog):
     @app_commands.describe(
         days="Number of days to include",
         limit="Number of channels to show",
+        channel="Optional channel where the report should be posted",
     )
     @app_commands.guild_only()
     @app_commands.check(has_stats_access)
@@ -631,6 +636,7 @@ class Stats(commands.Cog):
         interaction: discord.Interaction,
         days: app_commands.Range[int, 1, 3650] = 7,
         limit: app_commands.Range[int, 1, 25] = 10,
+        channel: Optional[discord.TextChannel] = None,
     ) -> None:
         await interaction.response.defer(ephemeral=True)
         cutoff = self._activity_cutoff(days)
@@ -674,7 +680,7 @@ class Stats(commands.Cog):
                 inline=False,
             )
         embed.set_footer(text="Use /stats activity export for complete data.")
-        await interaction.followup.send(embed=embed, ephemeral=True)
+        await self._send_activity_report(interaction, embed, channel)
 
     @activity.command(
         name="quiet",
@@ -683,6 +689,7 @@ class Stats(commands.Cog):
     @app_commands.describe(
         days="Number of days to include",
         limit="Number of channels to show",
+        channel="Optional channel where the report should be posted",
     )
     @app_commands.guild_only()
     @app_commands.check(has_stats_access)
@@ -691,6 +698,7 @@ class Stats(commands.Cog):
         interaction: discord.Interaction,
         days: app_commands.Range[int, 1, 3650] = 14,
         limit: app_commands.Range[int, 1, 25] = 10,
+        channel: Optional[discord.TextChannel] = None,
     ) -> None:
         await interaction.response.defer(ephemeral=True)
         cutoff = self._activity_cutoff(days)
@@ -712,17 +720,21 @@ class Stats(commands.Cog):
         tracking_started = await self._tracking_started_datetime()
         candidates = []
         me = interaction.guild.me
-        for channel in interaction.guild.text_channels:
-            if me and not channel.permissions_for(me).view_channel:
+        for text_channel in interaction.guild.text_channels:
+            if me and not text_channel.permissions_for(me).view_channel:
                 continue
-            data = tracked.get(channel.id)
-            if data is None and tracking_started and channel.created_at >= tracking_started:
+            data = tracked.get(text_channel.id)
+            if (
+                data is None
+                and tracking_started
+                and text_channel.created_at >= tracking_started
+            ):
                 continue
             candidates.append(
                 (
                     data["messages"] if data else 0,
                     data["last"] if data else None,
-                    channel,
+                    text_channel,
                 )
             )
         candidates.sort(key=lambda item: (item[0], item[1] or ""))
@@ -734,14 +746,14 @@ class Stats(commands.Cog):
                 "This does not evaluate individual members."
             ),
         )
-        for messages, last_activity, channel in candidates[:limit]:
+        for messages, last_activity, text_channel in candidates[:limit]:
             last_text = (
                 f"<t:{int(datetime.datetime.fromisoformat(last_activity).timestamp())}:R>"
                 if last_activity
                 else "No tracked activity yet"
             )
             embed.add_field(
-                name=channel.mention,
+                name=text_channel.mention,
                 value=f"**{messages:,}** messages • Last tracked: {last_text}",
                 inline=False,
             )
@@ -751,7 +763,7 @@ class Stats(commands.Cog):
                 value="No eligible visible text channels were found.",
                 inline=False,
             )
-        await interaction.followup.send(embed=embed, ephemeral=True)
+        await self._send_activity_report(interaction, embed, channel)
 
     @activity.command(
         name="members",
@@ -760,6 +772,7 @@ class Stats(commands.Cog):
     @app_commands.describe(
         days="Number of days to include",
         limit="Number of members to show",
+        channel="Optional channel where the report should be posted",
     )
     @app_commands.guild_only()
     @app_commands.check(has_stats_access)
@@ -768,6 +781,7 @@ class Stats(commands.Cog):
         interaction: discord.Interaction,
         days: app_commands.Range[int, 1, 3650] = 7,
         limit: app_commands.Range[int, 1, 25] = 10,
+        channel: Optional[discord.TextChannel] = None,
     ) -> None:
         await interaction.response.defer(ephemeral=True)
         rows = await self._fetchall(
@@ -802,7 +816,7 @@ class Stats(commands.Cog):
                 value=f"<@{user_id}> • **{total:,}** messages",
                 inline=False,
             )
-        await interaction.followup.send(embed=embed, ephemeral=True)
+        await self._send_activity_report(interaction, embed, channel)
 
     @activity.command(
         name="vc",
@@ -811,6 +825,7 @@ class Stats(commands.Cog):
     @app_commands.describe(
         days="Number of days to include",
         limit="Number of channels and members to show",
+        channel="Optional channel where the report should be posted",
     )
     @app_commands.guild_only()
     @app_commands.check(has_stats_access)
@@ -819,12 +834,14 @@ class Stats(commands.Cog):
         interaction: discord.Interaction,
         days: app_commands.Range[int, 1, 3650] = 7,
         limit: app_commands.Range[int, 1, 20] = 10,
+        channel: Optional[discord.TextChannel] = None,
     ) -> None:
         await interaction.response.defer(ephemeral=True)
         if not await self._table_exists("vc_sessions"):
-            await interaction.followup.send(
+            await self._send_activity_text(
+                interaction,
                 "VC activity tracking is not available yet.",
-                ephemeral=True,
+                channel,
             )
             return
         cutoff = self._activity_cutoff(days)
@@ -886,7 +903,7 @@ class Stats(commands.Cog):
                 )[:1024],
                 inline=False,
             )
-        await interaction.followup.send(embed=embed, ephemeral=True)
+        await self._send_activity_report(interaction, embed, channel)
 
     @activity.command(
         name="export",
@@ -2466,6 +2483,66 @@ class Stats(commands.Cog):
         return discord.File(
             io.BytesIO(data),
             filename=f"stats_activity_{days}d.csv",
+        )
+
+    async def _send_activity_report(
+        self,
+        interaction: discord.Interaction,
+        embed: discord.Embed,
+        channel: Optional[discord.TextChannel],
+    ) -> None:
+        if channel is None:
+            await interaction.followup.send(embed=embed, ephemeral=True)
+            return
+        if not self._valid_target_channel(interaction, channel):
+            await interaction.followup.send(
+                "The activity report must be posted in a text channel "
+                "in this server.",
+                ephemeral=True,
+            )
+            return
+        try:
+            await channel.send(embed=embed)
+        except (discord.Forbidden, discord.HTTPException):
+            await interaction.followup.send(
+                "I could not post the activity report in that channel. "
+                "Please check my channel permissions.",
+                ephemeral=True,
+            )
+            return
+        await interaction.followup.send(
+            f"Posted the activity report in {channel.mention}.",
+            ephemeral=True,
+        )
+
+    async def _send_activity_text(
+        self,
+        interaction: discord.Interaction,
+        text: str,
+        channel: Optional[discord.TextChannel],
+    ) -> None:
+        if channel is None:
+            await interaction.followup.send(text, ephemeral=True)
+            return
+        if not self._valid_target_channel(interaction, channel):
+            await interaction.followup.send(
+                "The activity report must be posted in a text channel "
+                "in this server.",
+                ephemeral=True,
+            )
+            return
+        try:
+            await channel.send(text)
+        except (discord.Forbidden, discord.HTTPException):
+            await interaction.followup.send(
+                "I could not post the activity report in that channel. "
+                "Please check my channel permissions.",
+                ephemeral=True,
+            )
+            return
+        await interaction.followup.send(
+            f"Posted the activity report in {channel.mention}.",
+            ephemeral=True,
         )
 
     @staticmethod
