@@ -362,6 +362,161 @@ class Stats(commands.Cog):
         await interaction.followup.send(message, ephemeral=True)
 
     @stats.command(
+        name="rolecompare",
+        description="Compare membership between two roles",
+    )
+    @app_commands.describe(
+        role_1="First role to compare",
+        role_2="Second role to compare",
+    )
+    @app_commands.guild_only()
+    @app_commands.check(has_stats_access)
+    async def rolecompare(
+        self,
+        interaction: discord.Interaction,
+        role_1: discord.Role,
+        role_2: discord.Role,
+    ) -> None:
+        role_1_members = {member.id: member for member in role_1.members}
+        role_2_members = {member.id: member for member in role_2.members}
+
+        both_ids = role_1_members.keys() & role_2_members.keys()
+        only_role_1_ids = role_1_members.keys() - role_2_members.keys()
+        only_role_2_ids = role_2_members.keys() - role_1_members.keys()
+
+        embed = discord.Embed(
+            title="Role membership comparison",
+            description=f"{role_1.mention} compared with {role_2.mention}",
+            color=discord.Color(COLOR),
+            timestamp=self._utcnow(),
+        )
+        embed.add_field(
+            name=role_1.name[:256],
+            value=f"{len(role_1_members):,} member(s)",
+            inline=True,
+        )
+        embed.add_field(
+            name=role_2.name[:256],
+            value=f"{len(role_2_members):,} member(s)",
+            inline=True,
+        )
+        embed.add_field(
+            name="Both roles",
+            value=f"{len(both_ids):,} member(s)",
+            inline=True,
+        )
+        embed.add_field(
+            name=f"Only {role_1.name}"[:256],
+            value=f"{len(only_role_1_ids):,} member(s)",
+            inline=True,
+        )
+        embed.add_field(
+            name=f"Only {role_2.name}"[:256],
+            value=f"{len(only_role_2_ids):,} member(s)",
+            inline=True,
+        )
+
+        self._add_comparison_sample(
+            embed,
+            "Sample with both roles",
+            (role_1_members[member_id] for member_id in both_ids),
+        )
+        self._add_comparison_sample(
+            embed,
+            f"Sample only in {role_1.name}",
+            (role_1_members[member_id] for member_id in only_role_1_ids),
+        )
+        self._add_comparison_sample(
+            embed,
+            f"Sample only in {role_2.name}",
+            (role_2_members[member_id] for member_id in only_role_2_ids),
+        )
+        embed.set_footer(text="Role audit")
+
+        await interaction.response.send_message(embed=embed, ephemeral=True)
+
+    @stats.command(
+        name="missingrole",
+        description="Find members who have one role but are missing another",
+    )
+    @app_commands.describe(
+        has_role="Role members must currently have",
+        missing_role="Role members must not currently have",
+    )
+    @app_commands.guild_only()
+    @app_commands.check(has_stats_access)
+    async def missingrole(
+        self,
+        interaction: discord.Interaction,
+        has_role: discord.Role,
+        missing_role: discord.Role,
+    ) -> None:
+        missing_role_member_ids = {member.id for member in missing_role.members}
+        members = sorted(
+            (
+                member
+                for member in has_role.members
+                if member.id not in missing_role_member_ids
+            ),
+            key=lambda member: self._member_username(member).casefold(),
+        )
+
+        embed = discord.Embed(
+            title="Missing role audit",
+            description=(
+                f"Members with {has_role.mention} who are missing "
+                f"{missing_role.mention}"
+            ),
+            color=discord.Color(COLOR),
+            timestamp=self._utcnow(),
+        )
+        embed.add_field(
+            name="Total missing",
+            value=f"{len(members):,}",
+            inline=False,
+        )
+        embed.set_footer(text="Sorted alphabetically by Discord username")
+
+        if not members:
+            embed.add_field(
+                name="Members",
+                value="No members match this audit.",
+                inline=False,
+            )
+            await interaction.response.send_message(embed=embed, ephemeral=True)
+            return
+
+        mention_lines = [
+            f"{member.mention} (`{self._member_username(member)}`)"
+            for member in members
+        ]
+        chunks = self._chunk_lines(mention_lines)
+        total_member_text = sum(len(chunk) for chunk in chunks)
+
+        if len(chunks) <= 20 and total_member_text <= 4_800:
+            for index, chunk in enumerate(chunks, start=1):
+                field_name = "Members" if index == 1 else f"Members ({index})"
+                embed.add_field(name=field_name, value=chunk, inline=False)
+            await interaction.response.send_message(embed=embed, ephemeral=True)
+            return
+
+        report = self._missing_role_report(has_role, missing_role, members)
+        file = discord.File(
+            io.BytesIO(report.encode("utf-8")),
+            filename="missing_role_audit.txt",
+        )
+        embed.add_field(
+            name="Member list",
+            value="The full result is attached as a TXT file.",
+            inline=False,
+        )
+        await interaction.response.send_message(
+            embed=embed,
+            file=file,
+            ephemeral=True,
+        )
+
+    @stats.command(
         name="reset",
         description="Delete all tracked stats pages in this server",
     )
@@ -807,6 +962,63 @@ class Stats(commands.Cog):
             or getattr(member, "global_name", None)
             or str(member.id)
         )
+
+    def _add_comparison_sample(
+        self,
+        embed: discord.Embed,
+        name: str,
+        members: Iterable[discord.Member],
+    ) -> None:
+        members = sorted(
+            members,
+            key=lambda member: self._member_username(member).casefold(),
+        )
+        if not members:
+            return
+        sample = "\n".join(
+            f"{member.mention} (`{self._member_username(member)}`)"
+            for member in members[:5]
+        )
+        if len(members) > 5:
+            sample += f"\n…and {len(members) - 5:,} more"
+        embed.add_field(name=name[:256], value=sample, inline=False)
+
+    @staticmethod
+    def _chunk_lines(lines: Iterable[str], limit: int = 1_000):
+        chunks = []
+        current = []
+        current_length = 0
+        for line in lines:
+            added_length = len(line) + (1 if current else 0)
+            if current and current_length + added_length > limit:
+                chunks.append("\n".join(current))
+                current = []
+                current_length = 0
+            current.append(line)
+            current_length += len(line) + (1 if len(current) > 1 else 0)
+        if current:
+            chunks.append("\n".join(current))
+        return chunks
+
+    def _missing_role_report(
+        self,
+        has_role: discord.Role,
+        missing_role: discord.Role,
+        members: Iterable[discord.Member],
+    ) -> str:
+        members = list(members)
+        lines = [
+            "Missing Role Audit",
+            f"Has role: {has_role.name} ({has_role.id})",
+            f"Missing role: {missing_role.name} ({missing_role.id})",
+            f"Total: {len(members)}",
+            "",
+        ]
+        lines.extend(
+            f"{self._member_username(member)} ({member.id})"
+            for member in members
+        )
+        return "\n".join(lines)
 
     @staticmethod
     def _get_channel(guild: discord.Guild, channel_id: int):
