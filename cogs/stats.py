@@ -1,4 +1,5 @@
 import asyncio
+import csv
 import datetime
 import io
 import os
@@ -10,6 +11,11 @@ from discord.ext import commands
 
 from config import COLOR
 from utils.compact_roster import CompactRosterItem, render_compact_roster_pngs
+from utils.stats_reports import (
+    render_missingrole_report,
+    render_report_error,
+    render_rolecompare_report,
+)
 
 
 PERMISSION_DENIED_MESSAGE = "You do not have permission to use stats commands."
@@ -132,6 +138,43 @@ class StatsDeleteView(discord.ui.View):
         self.add_item(StatsDeleteSelect(cog, options))
 
 
+class StatsExportView(discord.ui.View):
+    def __init__(self, cog):
+        super().__init__(timeout=None)
+        self.cog = cog
+
+    @discord.ui.button(
+        label="Export Members to CSV",
+        style=discord.ButtonStyle.secondary,
+        emoji="📄",
+        custom_id="stats:export_members_csv",
+    )
+    async def export_csv(
+        self,
+        interaction: discord.Interaction,
+        button: discord.ui.Button,
+    ) -> None:
+        if not await has_stats_access(interaction):
+            await interaction.response.send_message(
+                PERMISSION_DENIED_MESSAGE,
+                ephemeral=True,
+            )
+            return
+
+        await interaction.response.defer(ephemeral=True)
+        file = await self.cog._report_csv_file(
+            interaction.guild,
+            interaction.message.id,
+        )
+        if file is None:
+            await interaction.followup.send(
+                "This tracked stats report could not be found.",
+                ephemeral=True,
+            )
+            return
+        await interaction.followup.send(file=file, ephemeral=True)
+
+
 class Stats(commands.Cog):
     stats = app_commands.Group(
         name="stats",
@@ -141,6 +184,7 @@ class Stats(commands.Cog):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
         self._refresh_tasks: Dict[Tuple[int, int], asyncio.Task] = {}
+        self._export_view = StatsExportView(self)
 
     async def cog_load(self) -> None:
         await self.bot.db.execute(
@@ -156,6 +200,26 @@ class Stats(commands.Cog):
                 image_url TEXT,
                 image_data BLOB,
                 graphic_enabled INTEGER NOT NULL DEFAULT 1,
+                created_by INTEGER,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            )
+            """
+        )
+        await self.bot.db.execute(
+            """
+            CREATE TABLE IF NOT EXISTS tracked_stats_reports (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                guild_id INTEGER NOT NULL,
+                channel_id INTEGER NOT NULL,
+                message_id INTEGER NOT NULL,
+                report_type TEXT NOT NULL,
+                role_1_id INTEGER,
+                role_2_id INTEGER,
+                has_role_id INTEGER,
+                missing_role_id INTEGER,
+                title TEXT,
+                body TEXT,
                 created_by INTEGER,
                 created_at TEXT NOT NULL,
                 updated_at TEXT NOT NULL
@@ -181,6 +245,7 @@ class Stats(commands.Cog):
                 """
             )
         await self.bot.db.commit()
+        self.bot.add_view(self._export_view)
 
     async def cog_unload(self) -> None:
         for task in self._refresh_tasks.values():
@@ -343,6 +408,9 @@ class Stats(commands.Cog):
     async def refresh(self, interaction: discord.Interaction) -> None:
         await interaction.response.defer(ephemeral=True)
         rows = await self._tracked_rows(guild_id=interaction.guild_id)
+        report_rows = await self._tracked_report_rows(
+            guild_id=interaction.guild_id
+        )
 
         refreshed = 0
         failed = 0
@@ -351,11 +419,17 @@ class Stats(commands.Cog):
                 refreshed += 1
             else:
                 failed += 1
+        for row in report_rows:
+            if await self._refresh_report_row(row):
+                refreshed += 1
+            else:
+                failed += 1
 
-        if not rows:
-            message = "There are no tracked role embeds in this server."
+        total = len(rows) + len(report_rows)
+        if not total:
+            message = "There are no tracked stats pages in this server."
         else:
-            message = f"Refreshed {refreshed} tracked role embed(s)."
+            message = f"Refreshed {refreshed} tracked stats page(s)."
             if failed:
                 message += f" {failed} could not be refreshed."
 
@@ -363,11 +437,14 @@ class Stats(commands.Cog):
 
     @stats.command(
         name="rolecompare",
-        description="Compare membership between two roles",
+        description="Create a tracked visual comparison of two roles",
     )
     @app_commands.describe(
         role_1="First role to compare",
         role_2="Second role to compare",
+        title="Optional report title",
+        body="Optional report description",
+        channel="Channel where the report should be posted",
     )
     @app_commands.guild_only()
     @app_commands.check(has_stats_access)
@@ -376,72 +453,50 @@ class Stats(commands.Cog):
         interaction: discord.Interaction,
         role_1: discord.Role,
         role_2: discord.Role,
+        title: Optional[app_commands.Range[str, 1, 100]] = None,
+        body: Optional[app_commands.Range[str, 1, 500]] = None,
+        channel: Optional[discord.TextChannel] = None,
     ) -> None:
-        role_1_members = {member.id: member for member in role_1.members}
-        role_2_members = {member.id: member for member in role_2.members}
+        target_channel = channel or interaction.channel
+        if not self._valid_target_channel(interaction, target_channel):
+            await interaction.response.send_message(
+                "The stats report must be sent in a text channel in this server.",
+                ephemeral=True,
+            )
+            return
 
-        both_ids = role_1_members.keys() & role_2_members.keys()
-        only_role_1_ids = role_1_members.keys() - role_2_members.keys()
-        only_role_2_ids = role_2_members.keys() - role_1_members.keys()
-
-        embed = discord.Embed(
-            title="Role membership comparison",
-            description=f"{role_1.mention} compared with {role_2.mention}",
-            color=discord.Color(COLOR),
-            timestamp=self._utcnow(),
+        await interaction.response.defer(ephemeral=True)
+        report_title = title or f"{role_1.name} vs {role_2.name}"
+        created = await self._create_tracked_report(
+            interaction=interaction,
+            target_channel=target_channel,
+            report_type="rolecompare",
+            title=report_title,
+            body=body or "",
+            role_1=role_1,
+            role_2=role_2,
         )
-        embed.add_field(
-            name=role_1.name[:256],
-            value=f"{len(role_1_members):,} member(s)",
-            inline=True,
-        )
-        embed.add_field(
-            name=role_2.name[:256],
-            value=f"{len(role_2_members):,} member(s)",
-            inline=True,
-        )
-        embed.add_field(
-            name="Both roles",
-            value=f"{len(both_ids):,} member(s)",
-            inline=True,
-        )
-        embed.add_field(
-            name=f"Only {role_1.name}"[:256],
-            value=f"{len(only_role_1_ids):,} member(s)",
-            inline=True,
-        )
-        embed.add_field(
-            name=f"Only {role_2.name}"[:256],
-            value=f"{len(only_role_2_ids):,} member(s)",
-            inline=True,
-        )
-
-        self._add_comparison_sample(
-            embed,
-            "Sample with both roles",
-            (role_1_members[member_id] for member_id in both_ids),
-        )
-        self._add_comparison_sample(
-            embed,
-            f"Sample only in {role_1.name}",
-            (role_1_members[member_id] for member_id in only_role_1_ids),
-        )
-        self._add_comparison_sample(
-            embed,
-            f"Sample only in {role_2.name}",
-            (role_2_members[member_id] for member_id in only_role_2_ids),
-        )
-        embed.set_footer(text="Role audit")
-
-        await interaction.response.send_message(embed=embed, ephemeral=True)
+        if created:
+            await interaction.followup.send(
+                f"Created the tracked role comparison in {target_channel.mention}.",
+                ephemeral=True,
+            )
+        else:
+            await interaction.followup.send(
+                "I could not create the role comparison report.",
+                ephemeral=True,
+            )
 
     @stats.command(
         name="missingrole",
-        description="Find members who have one role but are missing another",
+        description="Create a tracked visual missing-role audit",
     )
     @app_commands.describe(
         has_role="Role members must currently have",
         missing_role="Role members must not currently have",
+        title="Optional report title",
+        body="Optional report description",
+        channel="Channel where the report should be posted",
     )
     @app_commands.guild_only()
     @app_commands.check(has_stats_access)
@@ -450,70 +505,457 @@ class Stats(commands.Cog):
         interaction: discord.Interaction,
         has_role: discord.Role,
         missing_role: discord.Role,
+        title: Optional[app_commands.Range[str, 1, 100]] = None,
+        body: Optional[app_commands.Range[str, 1, 500]] = None,
+        channel: Optional[discord.TextChannel] = None,
     ) -> None:
-        missing_role_member_ids = {member.id for member in missing_role.members}
-        members = sorted(
-            (
-                member
-                for member in has_role.members
-                if member.id not in missing_role_member_ids
-            ),
-            key=lambda member: self._member_username(member).casefold(),
-        )
-
-        embed = discord.Embed(
-            title="Missing role audit",
-            description=(
-                f"Members with {has_role.mention} who are missing "
-                f"{missing_role.mention}"
-            ),
-            color=discord.Color(COLOR),
-            timestamp=self._utcnow(),
-        )
-        embed.add_field(
-            name="Total missing",
-            value=f"{len(members):,}",
-            inline=False,
-        )
-        embed.set_footer(text="Sorted alphabetically by Discord username")
-
-        if not members:
-            embed.add_field(
-                name="Members",
-                value="No members match this audit.",
-                inline=False,
+        target_channel = channel or interaction.channel
+        if not self._valid_target_channel(interaction, target_channel):
+            await interaction.response.send_message(
+                "The stats report must be sent in a text channel in this server.",
+                ephemeral=True,
             )
-            await interaction.response.send_message(embed=embed, ephemeral=True)
             return
 
-        mention_lines = [
-            f"{member.mention} (`{self._member_username(member)}`)"
-            for member in members
-        ]
-        chunks = self._chunk_lines(mention_lines)
-        total_member_text = sum(len(chunk) for chunk in chunks)
+        await interaction.response.defer(ephemeral=True)
+        report_title = title or f"Missing {missing_role.name}"
+        created = await self._create_tracked_report(
+            interaction=interaction,
+            target_channel=target_channel,
+            report_type="missingrole",
+            title=report_title,
+            body=body or "",
+            has_role=has_role,
+            missing_role=missing_role,
+        )
+        if created:
+            await interaction.followup.send(
+                f"Created the tracked missing-role report in {target_channel.mention}.",
+                ephemeral=True,
+            )
+        else:
+            await interaction.followup.send(
+                "I could not create the missing-role report.",
+                ephemeral=True,
+            )
 
-        if len(chunks) <= 20 and total_member_text <= 4_800:
-            for index, chunk in enumerate(chunks, start=1):
-                field_name = "Members" if index == 1 else f"Members ({index})"
-                embed.add_field(name=field_name, value=chunk, inline=False)
-            await interaction.response.send_message(embed=embed, ephemeral=True)
-            return
-
-        report = self._missing_role_report(has_role, missing_role, members)
+    async def _create_tracked_report(
+        self,
+        *,
+        interaction: discord.Interaction,
+        target_channel,
+        report_type: str,
+        title: str,
+        body: str,
+        role_1: Optional[discord.Role] = None,
+        role_2: Optional[discord.Role] = None,
+        has_role: Optional[discord.Role] = None,
+        missing_role: Optional[discord.Role] = None,
+    ) -> bool:
+        now = self._utcnow()
+        png = await self._render_report_png(
+            report_type=report_type,
+            title=title,
+            body=body,
+            updated_at=now,
+            role_1=role_1,
+            role_2=role_2,
+            has_role=has_role,
+            missing_role=missing_role,
+        )
         file = discord.File(
-            io.BytesIO(report.encode("utf-8")),
-            filename="missing_role_audit.txt",
+            io.BytesIO(png),
+            filename=f"{report_type}_report.png",
         )
-        embed.add_field(
-            name="Member list",
-            value="The full result is attached as a TXT file.",
-            inline=False,
+        try:
+            message = await target_channel.send(
+                file=file,
+                view=StatsExportView(self),
+            )
+        except (discord.Forbidden, discord.HTTPException):
+            return False
+
+        timestamp = now.isoformat()
+        try:
+            await self.bot.db.execute(
+                """
+                INSERT INTO tracked_stats_reports (
+                    guild_id,
+                    channel_id,
+                    message_id,
+                    report_type,
+                    role_1_id,
+                    role_2_id,
+                    has_role_id,
+                    missing_role_id,
+                    title,
+                    body,
+                    created_by,
+                    created_at,
+                    updated_at
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    interaction.guild_id,
+                    target_channel.id,
+                    message.id,
+                    report_type,
+                    role_1.id if role_1 else None,
+                    role_2.id if role_2 else None,
+                    has_role.id if has_role else None,
+                    missing_role.id if missing_role else None,
+                    title,
+                    body,
+                    interaction.user.id,
+                    timestamp,
+                    timestamp,
+                ),
+            )
+            await self.bot.db.commit()
+        except Exception:
+            try:
+                await message.delete()
+            except (discord.Forbidden, discord.HTTPException):
+                pass
+            raise
+        return True
+
+    async def _render_report_png(
+        self,
+        *,
+        report_type: str,
+        title: str,
+        body: str,
+        updated_at: datetime.datetime,
+        role_1: Optional[discord.Role] = None,
+        role_2: Optional[discord.Role] = None,
+        has_role: Optional[discord.Role] = None,
+        missing_role: Optional[discord.Role] = None,
+    ) -> bytes:
+        if report_type == "rolecompare" and role_1 and role_2:
+            data = self._calculate_rolecompare(role_1, role_2)
+            return await asyncio.to_thread(
+                render_rolecompare_report,
+                title=title,
+                body=body,
+                role_1_name=role_1.name,
+                role_2_name=role_2.name,
+                counts=data["counts"],
+                updated_at=updated_at,
+                accent_color=role_1.color.value or COLOR,
+            )
+
+        if report_type == "missingrole" and has_role and missing_role:
+            data = self._calculate_missingrole(has_role, missing_role)
+            return await asyncio.to_thread(
+                render_missingrole_report,
+                title=title,
+                body=body,
+                has_role_name=has_role.name,
+                missing_role_name=missing_role.name,
+                has_role_total=data["has_role_total"],
+                missing_role_total=data["missing_role_total"],
+                missing_count=len(data["members"]),
+                missing_percent=data["missing_percent"],
+                updated_at=updated_at,
+                accent_color=has_role.color.value or COLOR,
+            )
+
+        return await asyncio.to_thread(
+            render_report_error,
+            title=title or "Stats report",
+            message="One or more configured roles no longer exist.",
+            updated_at=updated_at,
+            accent_color=COLOR,
         )
-        await interaction.response.send_message(
-            embed=embed,
-            file=file,
-            ephemeral=True,
+
+    @staticmethod
+    def _calculate_rolecompare(
+        role_1: discord.Role,
+        role_2: discord.Role,
+    ):
+        role_1_members = {member.id: member for member in role_1.members}
+        role_2_members = {member.id: member for member in role_2.members}
+        both_ids = role_1_members.keys() & role_2_members.keys()
+        role_1_only_ids = role_1_members.keys() - role_2_members.keys()
+        role_2_only_ids = role_2_members.keys() - role_1_members.keys()
+        return {
+            "counts": {
+                "role_1_total": len(role_1_members),
+                "role_2_total": len(role_2_members),
+                "both": len(both_ids),
+                "role_1_only": len(role_1_only_ids),
+                "role_2_only": len(role_2_only_ids),
+            },
+            "both": [role_1_members[user_id] for user_id in both_ids],
+            "role_1_only": [
+                role_1_members[user_id] for user_id in role_1_only_ids
+            ],
+            "role_2_only": [
+                role_2_members[user_id] for user_id in role_2_only_ids
+            ],
+        }
+
+    @staticmethod
+    def _calculate_missingrole(
+        has_role: discord.Role,
+        missing_role: discord.Role,
+    ):
+        missing_role_member_ids = {member.id for member in missing_role.members}
+        members = [
+            member
+            for member in has_role.members
+            if member.id not in missing_role_member_ids
+        ]
+        has_role_total = len(has_role.members)
+        return {
+            "has_role_total": has_role_total,
+            "missing_role_total": len(missing_role.members),
+            "members": members,
+            "missing_percent": (
+                len(members) / has_role_total * 100 if has_role_total else 0
+            ),
+        }
+
+    async def _tracked_report_rows(
+        self,
+        *,
+        guild_id: Optional[int] = None,
+        report_id: Optional[int] = None,
+    ):
+        clauses = []
+        parameters = []
+        if guild_id is not None:
+            clauses.append("guild_id = ?")
+            parameters.append(guild_id)
+        if report_id is not None:
+            clauses.append("id = ?")
+            parameters.append(report_id)
+
+        query = """
+            SELECT
+                id,
+                guild_id,
+                channel_id,
+                message_id,
+                report_type,
+                role_1_id,
+                role_2_id,
+                has_role_id,
+                missing_role_id,
+                title,
+                body
+            FROM tracked_stats_reports
+        """
+        if clauses:
+            query += " WHERE " + " AND ".join(clauses)
+        cursor = await self.bot.db.execute(query, parameters)
+        rows = await cursor.fetchall()
+        await cursor.close()
+        return rows
+
+    async def _refresh_report_row(self, row) -> bool:
+        (
+            record_id,
+            guild_id,
+            channel_id,
+            message_id,
+            report_type,
+            role_1_id,
+            role_2_id,
+            has_role_id,
+            missing_role_id,
+            title,
+            body,
+        ) = row
+        guild = self.bot.get_guild(guild_id)
+        if guild is None:
+            return False
+        channel = self._get_channel(guild, channel_id)
+        if channel is None or not hasattr(channel, "fetch_message"):
+            return False
+
+        role_1 = guild.get_role(role_1_id) if role_1_id else None
+        role_2 = guild.get_role(role_2_id) if role_2_id else None
+        has_role = guild.get_role(has_role_id) if has_role_id else None
+        missing_role = guild.get_role(missing_role_id) if missing_role_id else None
+        now = self._utcnow()
+        png = await self._render_report_png(
+            report_type=report_type,
+            title=title or "Stats report",
+            body=body or "",
+            updated_at=now,
+            role_1=role_1,
+            role_2=role_2,
+            has_role=has_role,
+            missing_role=missing_role,
+        )
+        asset = (f"{report_type}_report.png", png)
+        try:
+            message = await channel.fetch_message(message_id)
+        except discord.NotFound:
+            message = None
+        except (discord.Forbidden, discord.HTTPException):
+            return False
+
+        file = discord.File(io.BytesIO(png), filename=asset[0])
+        if message is not None:
+            try:
+                await message.edit(
+                    content=None,
+                    embeds=[],
+                    attachments=[file],
+                    view=StatsExportView(self),
+                )
+                await self.bot.db.execute(
+                    "UPDATE tracked_stats_reports SET updated_at = ? WHERE id = ?",
+                    (now.isoformat(), record_id),
+                )
+                await self.bot.db.commit()
+                return True
+            except (discord.NotFound, discord.Forbidden, discord.HTTPException):
+                pass
+
+        replacement = discord.File(io.BytesIO(png), filename=asset[0])
+        try:
+            new_message = await channel.send(
+                file=replacement,
+                view=StatsExportView(self),
+            )
+        except (discord.Forbidden, discord.HTTPException):
+            return False
+
+        if message is not None:
+            try:
+                await message.delete()
+            except (discord.NotFound, discord.Forbidden, discord.HTTPException):
+                try:
+                    await new_message.delete()
+                except (discord.NotFound, discord.Forbidden, discord.HTTPException):
+                    pass
+                return False
+
+        await self.bot.db.execute(
+            """
+            UPDATE tracked_stats_reports
+            SET message_id = ?, updated_at = ?
+            WHERE id = ?
+            """,
+            (new_message.id, now.isoformat(), record_id),
+        )
+        await self.bot.db.commit()
+        return True
+
+    async def _report_csv_file(
+        self,
+        guild: discord.Guild,
+        message_id: int,
+    ) -> Optional[discord.File]:
+        cursor = await self.bot.db.execute(
+            """
+            SELECT
+                report_type,
+                role_1_id,
+                role_2_id,
+                has_role_id,
+                missing_role_id
+            FROM tracked_stats_reports
+            WHERE guild_id = ? AND message_id = ?
+            """,
+            (guild.id, message_id),
+        )
+        row = await cursor.fetchone()
+        await cursor.close()
+        if not row:
+            return None
+
+        report_type, role_1_id, role_2_id, has_role_id, missing_role_id = row
+        generated_at = self._utcnow().isoformat()
+        output = io.StringIO(newline="")
+        writer = csv.writer(output)
+
+        if report_type == "rolecompare":
+            role_1 = guild.get_role(role_1_id)
+            role_2 = guild.get_role(role_2_id)
+            if role_1 is None or role_2 is None:
+                return None
+            data = self._calculate_rolecompare(role_1, role_2)
+            writer.writerow(
+                [
+                    "category",
+                    "user_id",
+                    "username",
+                    "display_name",
+                    "role_1_name",
+                    "role_2_name",
+                    "generated_at",
+                ]
+            )
+            for category in ("role_1_only", "role_2_only", "both"):
+                members = sorted(
+                    data[category],
+                    key=lambda member: self._member_username(member).casefold(),
+                )
+                for member in members:
+                    writer.writerow(
+                        [
+                            category,
+                            member.id,
+                            self._member_username(member),
+                            member.display_name,
+                            role_1.name,
+                            role_2.name,
+                            generated_at,
+                        ]
+                    )
+            filename = "rolecompare_members.csv"
+        elif report_type == "missingrole":
+            has_role = guild.get_role(has_role_id)
+            missing_role = guild.get_role(missing_role_id)
+            if has_role is None or missing_role is None:
+                return None
+            data = self._calculate_missingrole(has_role, missing_role)
+            writer.writerow(
+                [
+                    "user_id",
+                    "username",
+                    "display_name",
+                    "has_role_name",
+                    "missing_role_name",
+                    "generated_at",
+                ]
+            )
+            for member in sorted(
+                data["members"],
+                key=lambda member: self._member_username(member).casefold(),
+            ):
+                writer.writerow(
+                    [
+                        member.id,
+                        self._member_username(member),
+                        member.display_name,
+                        has_role.name,
+                        missing_role.name,
+                        generated_at,
+                    ]
+                )
+            filename = "missingrole_members.csv"
+        else:
+            return None
+
+        return discord.File(
+            io.BytesIO(output.getvalue().encode("utf-8-sig")),
+            filename=filename,
+        )
+
+    @staticmethod
+    def _valid_target_channel(interaction, channel) -> bool:
+        return bool(
+            channel
+            and hasattr(channel, "send")
+            and getattr(channel, "guild", None)
+            and channel.guild.id == interaction.guild_id
         )
 
     @stats.command(
@@ -553,9 +995,9 @@ class Stats(commands.Cog):
                 emoji="🗑️",
             )
         ]
-        for message_id, channel_id, role_id, title in rows[:24]:
+        for source, message_id, channel_id, role_id, title in rows[:24]:
             channel = self._get_channel(interaction.guild, channel_id)
-            role = interaction.guild.get_role(role_id)
+            role = interaction.guild.get_role(role_id) if role_id else None
             page_title = title or (
                 f"{role.name} Members" if role else f"Role {role_id} Members"
             )
@@ -564,7 +1006,7 @@ class Stats(commands.Cog):
             options.append(
                 discord.SelectOption(
                     label=option_label[:100],
-                    value=str(message_id),
+                    value=f"{source}:{message_id}",
                     description="Tracked role stats page",
                     emoji="📊",
                 )
@@ -579,16 +1021,35 @@ class Stats(commands.Cog):
     async def _delete_menu_rows(self, guild_id: int):
         cursor = await self.bot.db.execute(
             """
-            SELECT message_id, channel_id, role_id, title
-            FROM role_stat_embeds
-            WHERE guild_id = ?
+            SELECT source, message_id, channel_id, role_id, title, created_at
+            FROM (
+                SELECT
+                    'roster' AS source,
+                    message_id,
+                    channel_id,
+                    role_id,
+                    title,
+                    created_at
+                FROM role_stat_embeds
+                WHERE guild_id = ?
+                UNION ALL
+                SELECT
+                    'report' AS source,
+                    message_id,
+                    channel_id,
+                    COALESCE(role_1_id, has_role_id) AS role_id,
+                    title,
+                    created_at
+                FROM tracked_stats_reports
+                WHERE guild_id = ?
+            )
             ORDER BY created_at DESC
             """,
-            (guild_id,),
+            (guild_id, guild_id),
         )
         rows = await cursor.fetchall()
         await cursor.close()
-        return rows
+        return [row[:5] for row in rows]
 
     async def _delete_tracked_pages(
         self,
@@ -598,43 +1059,62 @@ class Stats(commands.Cog):
         if selection == "all":
             cursor = await self.bot.db.execute(
                 """
-                SELECT id, channel_id, message_id
+                SELECT 'roster', id, channel_id, message_id
                 FROM role_stat_embeds
                 WHERE guild_id = ?
+                UNION ALL
+                SELECT 'report', id, channel_id, message_id
+                FROM tracked_stats_reports
+                WHERE guild_id = ?
                 """,
-                (guild.id,),
+                (guild.id, guild.id),
             )
-        elif (
-            selection.isdigit()
-            and 0 < int(selection) <= 9_223_372_036_854_775_807
-        ):
+            rows = await cursor.fetchall()
+            await cursor.close()
+        elif ":" in selection:
+            source, raw_message_id = selection.split(":", 1)
+            if source not in {"roster", "report"} or not raw_message_id.isdigit():
+                return "That tracked stats selection is no longer valid."
+            table = (
+                "role_stat_embeds"
+                if source == "roster"
+                else "tracked_stats_reports"
+            )
             cursor = await self.bot.db.execute(
-                """
-                SELECT id, channel_id, message_id
-                FROM role_stat_embeds
+                f"""
+                SELECT ?, id, channel_id, message_id
+                FROM {table}
                 WHERE guild_id = ? AND message_id = ?
                 """,
-                (guild.id, int(selection)),
+                (source, guild.id, int(raw_message_id)),
             )
+            rows = await cursor.fetchall()
+            await cursor.close()
         else:
             return "That tracked stats selection is no longer valid."
 
-        rows = await cursor.fetchall()
-        await cursor.close()
         if not rows:
             return "No matching tracked stats pages were found."
 
-        record_ids = [row[0] for row in rows]
-        placeholders = ", ".join("?" for _ in record_ids)
-        await self.bot.db.execute(
-            f"DELETE FROM role_stat_embeds WHERE id IN ({placeholders})",
-            record_ids,
-        )
+        roster_ids = [row[1] for row in rows if row[0] == "roster"]
+        report_ids = [row[1] for row in rows if row[0] == "report"]
+        if roster_ids:
+            placeholders = ", ".join("?" for _ in roster_ids)
+            await self.bot.db.execute(
+                f"DELETE FROM role_stat_embeds WHERE id IN ({placeholders})",
+                roster_ids,
+            )
+        if report_ids:
+            placeholders = ", ".join("?" for _ in report_ids)
+            await self.bot.db.execute(
+                f"DELETE FROM tracked_stats_reports WHERE id IN ({placeholders})",
+                report_ids,
+            )
         await self.bot.db.commit()
 
         deleted_messages = 0
         failed_messages = 0
-        for _, channel_id, message_id in rows:
+        for _, _, channel_id, message_id in rows:
             channel = self._get_channel(guild, channel_id)
             if channel is None or not hasattr(channel, "fetch_message"):
                 failed_messages += 1
@@ -691,6 +1171,28 @@ class Stats(commands.Cog):
         )
         tracked_role_ids = [row[0] for row in await cursor.fetchall()]
         await cursor.close()
+        cursor = await self.bot.db.execute(
+            f"""
+            SELECT DISTINCT id
+            FROM tracked_stats_reports
+            WHERE guild_id = ?
+              AND (
+                    role_1_id IN ({placeholders})
+                 OR role_2_id IN ({placeholders})
+                 OR has_role_id IN ({placeholders})
+                 OR missing_role_id IN ({placeholders})
+              )
+            """,
+            (
+                guild_id,
+                *role_ids,
+                *role_ids,
+                *role_ids,
+                *role_ids,
+            ),
+        )
+        tracked_report_ids = [row[0] for row in await cursor.fetchall()]
+        await cursor.close()
 
         for role_id in tracked_role_ids:
             key = (guild_id, role_id)
@@ -700,6 +1202,14 @@ class Stats(commands.Cog):
             self._refresh_tasks[key] = asyncio.create_task(
                 self._debounced_role_refresh(guild_id, role_id)
             )
+        for report_id in tracked_report_ids:
+            key = (guild_id, -report_id)
+            existing_task = self._refresh_tasks.get(key)
+            if existing_task:
+                existing_task.cancel()
+            self._refresh_tasks[key] = asyncio.create_task(
+                self._debounced_report_refresh(guild_id, report_id)
+            )
 
     async def _debounced_role_refresh(self, guild_id: int, role_id: int) -> None:
         key = (guild_id, role_id)
@@ -708,6 +1218,24 @@ class Stats(commands.Cog):
             rows = await self._tracked_rows(guild_id=guild_id, role_id=role_id)
             for row in rows:
                 await self._refresh_row(row)
+        except asyncio.CancelledError:
+            raise
+        finally:
+            current_task = asyncio.current_task()
+            if self._refresh_tasks.get(key) is current_task:
+                self._refresh_tasks.pop(key, None)
+
+    async def _debounced_report_refresh(
+        self,
+        guild_id: int,
+        report_id: int,
+    ) -> None:
+        key = (guild_id, -report_id)
+        try:
+            await asyncio.sleep(DEBOUNCE_SECONDS)
+            rows = await self._tracked_report_rows(report_id=report_id)
+            for row in rows:
+                await self._refresh_report_row(row)
         except asyncio.CancelledError:
             raise
         finally:
@@ -962,63 +1490,6 @@ class Stats(commands.Cog):
             or getattr(member, "global_name", None)
             or str(member.id)
         )
-
-    def _add_comparison_sample(
-        self,
-        embed: discord.Embed,
-        name: str,
-        members: Iterable[discord.Member],
-    ) -> None:
-        members = sorted(
-            members,
-            key=lambda member: self._member_username(member).casefold(),
-        )
-        if not members:
-            return
-        sample = "\n".join(
-            f"{member.mention} (`{self._member_username(member)}`)"
-            for member in members[:5]
-        )
-        if len(members) > 5:
-            sample += f"\n…and {len(members) - 5:,} more"
-        embed.add_field(name=name[:256], value=sample, inline=False)
-
-    @staticmethod
-    def _chunk_lines(lines: Iterable[str], limit: int = 1_000):
-        chunks = []
-        current = []
-        current_length = 0
-        for line in lines:
-            added_length = len(line) + (1 if current else 0)
-            if current and current_length + added_length > limit:
-                chunks.append("\n".join(current))
-                current = []
-                current_length = 0
-            current.append(line)
-            current_length += len(line) + (1 if len(current) > 1 else 0)
-        if current:
-            chunks.append("\n".join(current))
-        return chunks
-
-    def _missing_role_report(
-        self,
-        has_role: discord.Role,
-        missing_role: discord.Role,
-        members: Iterable[discord.Member],
-    ) -> str:
-        members = list(members)
-        lines = [
-            "Missing Role Audit",
-            f"Has role: {has_role.name} ({has_role.id})",
-            f"Missing role: {missing_role.name} ({missing_role.id})",
-            f"Total: {len(members)}",
-            "",
-        ]
-        lines.extend(
-            f"{self._member_username(member)} ({member.id})"
-            for member in members
-        )
-        return "\n".join(lines)
 
     @staticmethod
     def _get_channel(guild: discord.Guild, channel_id: int):
