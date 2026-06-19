@@ -1,8 +1,8 @@
 # BroEdenBot
 
 BroEdenBot is a Discord community bot for Bro Eden. It provides moderation
-guidance, staff notes, live statistics, queues, polls, leaderboards, and bank
-tracking.
+guidance, staff notes, voice-channel activity tracking, live statistics,
+queues, polls, leaderboards, and bank tracking.
 
 The bot loads every Python cog in `cogs/` and synchronizes its application
 commands when it starts.
@@ -22,6 +22,8 @@ commands when it starts.
 | Staff-note commands | Administrators or roles listed in `STAFF_NOTES_ALLOWED_ROLE_IDS` |
 | `/staffnote delete` | Administrators only |
 | `/staffnote edit` | Administrators or the original note author |
+| VC stats and reward-preview commands | Administrators or roles listed in `VCSTATS_ALLOWED_ROLE_IDS` |
+| `/vcstats reset` | Administrators only |
 | Bank commands | Administrators or roles listed in `BANK_ALLOWED_ROLE_IDS` |
 | Stats creation and refresh commands | Administrators or roles listed in `STATS_ALLOWED_ROLE_IDS` |
 | `/stats delete` and `/stats reset` | Administrators only |
@@ -210,6 +212,93 @@ Shows a concise, non-AI summary of a member's active notes.
 - `user` — Member whose notes should be summarized.
 
 The summary includes the note count, date range, and five newest notes.
+
+## Voice-channel stats commands
+
+The VC stats module tracks non-bot members while BroEdenBot is online. Tracking
+begins when the module is deployed; Discord does not provide historical VC
+time from before that point. Joining, leaving, and switching voice channels
+creates session records in `data.db`.
+
+All `/vcstats` and `/vcrewards` responses are ephemeral. The module records all
+completed sessions but separately calculates reward-eligible time for future
+use. It does not currently grant XP, currency, roles, or other rewards.
+
+A session is reward-eligible when it lasts at least five minutes and the member
+was not in the server's configured AFK channel, alone for the entire session,
+or self-deafened for the entire session. A best-effort heartbeat updates active
+sessions once per minute. Time while the bot is offline is not counted.
+
+### `/vcstats user <user> [days]`
+
+Shows a member's total tracked time, reward-eligible time, session count, top
+voice channel, and average session length.
+
+- `user` — Member whose VC activity should be displayed.
+- `days` — Optional lookback period from 1 to 3,650 days. Defaults to 30.
+
+### `/vcstats leaderboard [days] [limit] [eligible_only]`
+
+Ranks members by tracked or reward-eligible VC time.
+
+- `days` — Optional lookback period. Defaults to 30.
+- `limit` — Optional number of members from 1 to 25. Defaults to 10.
+- `eligible_only` — When true, ranks by reward-eligible time instead of all
+  tracked time. Defaults to false.
+
+### `/vcstats current`
+
+Shows members currently tracked in voice channels, including their channel,
+current session duration, and available mute/deafen status.
+
+### `/vcstats channel [channel] [days]`
+
+Shows activity for one voice channel or the ten most-used voice channels.
+
+- `channel` — Optional voice channel. Leave blank to show the top channels.
+- `days` — Optional lookback period. Defaults to 30.
+
+### `/vcstats export [days] [user] [channel]`
+
+Exports completed VC sessions to an ephemeral CSV attachment.
+
+- `days` — Optional lookback period. Defaults to 30.
+- `user` — Optional member filter.
+- `channel` — Optional voice-channel filter.
+
+The CSV includes member and channel identifiers, timestamps, tracked and
+counted durations, eligibility, and best-effort mute/deafen/alone flags.
+
+### `/vcstats reset <confirm>`
+
+Clears completed and active VC sessions for the current server when `confirm`
+is true. This is administrator-only and does not clear future reward snapshot
+tables.
+
+### `/vcstats settings`
+
+Shows the current reward-preparation rules, including minimum session length
+and the AFK, alone, and self-deafened exclusions.
+
+## Voice reward-preview commands
+
+Reward previews use reward-eligible VC time but do not save or grant rewards.
+Daily caps are calculated by UTC day.
+
+### `/vcrewards preview [days] [minutes_per_point] [daily_cap_minutes]`
+
+Shows estimated future reward points for up to 25 members.
+
+- `days` — Optional lookback period. Defaults to 7.
+- `minutes_per_point` — Eligible minutes required for one point. Defaults to
+  60.
+- `daily_cap_minutes` — Maximum eligible minutes counted per member per UTC
+  day. Defaults to 180.
+
+### `/vcrewards export [days] [minutes_per_point] [daily_cap_minutes]`
+
+Exports the full reward preview to an ephemeral CSV attachment using the same
+calculation options as `/vcrewards preview`.
 
 ## Stats commands
 
@@ -430,6 +519,7 @@ Create a `.env` file in the project root. Do not commit it.
 | `MODAI_FALLBACK_MODEL` | Model tried after retryable primary-model failures. |
 | `MODAI_ALLOWED_ROLE_IDS` | Comma-separated Discord role IDs allowed to use ModAI. |
 | `STAFF_NOTES_ALLOWED_ROLE_IDS` | Comma-separated Discord role IDs allowed to use staff notes. |
+| `VCSTATS_ALLOWED_ROLE_IDS` | Comma-separated Discord role IDs allowed to use VC stats and reward previews. |
 | `BANK_ALLOWED_ROLE_IDS` | Comma-separated Discord role IDs allowed to use bank commands. |
 | `STATS_ALLOWED_ROLE_IDS` | Comma-separated Discord role IDs allowed to create and refresh stats pages. |
 
@@ -441,6 +531,10 @@ source .venv/bin/activate
 python -m pip install -r requirements.txt
 python main.py
 ```
+
+The bot enables voice-state and member intents in code. Enable **Server Members
+Intent** for the bot in the Discord Developer Portal so startup VC scans and
+member information work correctly.
 
 ## Deploy on the Raspberry Pi
 
