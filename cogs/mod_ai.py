@@ -230,6 +230,10 @@ class GeminiNoUsableResponseError(RuntimeError):
     """Raised when Gemini returns a blocked, empty, or unreadable response."""
 
 
+class GeminiMalformedJSONError(RuntimeError):
+    """Raised when Gemini returns text that cannot be parsed as JSON."""
+
+
 class GeminiModelsUnavailableError(RuntimeError):
     """Raised when the primary and fallback Gemini models both fail."""
 
@@ -298,6 +302,67 @@ def _safe_ephemeral_message(message: str) -> str:
     return _truncate(message, DISCORD_MESSAGE_LIMIT, "Gemini request failed.")
 
 
+def _json_only_instruction(prompt: str) -> str:
+    return (
+        f"{prompt}\n\n"
+        "OUTPUT FORMAT REQUIREMENTS:\n"
+        "- Return ONLY valid JSON.\n"
+        "- Use double quotes around all keys and string values.\n"
+        "- Do not include markdown.\n"
+        "- Do not wrap the response in ```json code fences.\n"
+        "- Do not include comments or trailing commas."
+    )
+
+
+def _strip_json_code_fences(response_text: str) -> str:
+    text = response_text.strip()
+    fenced = re.fullmatch(
+        r"```(?:json)?\s*(.*?)\s*```",
+        text,
+        flags=re.IGNORECASE | re.DOTALL,
+    )
+    if fenced:
+        return fenced.group(1).strip()
+    text = re.sub(r"^\s*```(?:json)?\s*", "", text, flags=re.IGNORECASE)
+    text = re.sub(r"\s*```\s*$", "", text)
+    return text.strip()
+
+
+def _parse_json_object(response_text: str) -> Dict[str, Any]:
+    cleaned = _strip_json_code_fences(response_text)
+    decoder = json.JSONDecoder()
+
+    try:
+        result = json.loads(cleaned)
+    except (json.JSONDecodeError, TypeError):
+        result = None
+    if isinstance(result, dict):
+        return result
+
+    for match in re.finditer(r"\{", cleaned):
+        try:
+            candidate, _ = decoder.raw_decode(cleaned[match.start():])
+        except json.JSONDecodeError:
+            continue
+        if isinstance(candidate, dict):
+            return candidate
+
+    raise GeminiMalformedJSONError("Gemini returned malformed JSON.")
+
+
+def _safe_response_preview(response_text: str, limit: int = 1_000) -> str:
+    preview = response_text[:limit]
+    api_key = os.getenv("GEMINI_API_KEY", "").strip()
+    if api_key:
+        preview = preview.replace(api_key, "[REDACTED_API_KEY]")
+    preview = re.sub(
+        r"\bAIza[A-Za-z0-9_-]{20,}\b",
+        "[REDACTED_API_KEY]",
+        preview,
+    )
+    return preview
+
+
 def _exception_chain(exc: Exception):
     seen = set()
     current = exc
@@ -317,6 +382,8 @@ def _gemini_user_error(
     chain = list(_exception_chain(exc))
     if any(isinstance(item, MissingGeminiAPIKeyError) for item in chain):
         return "GEMINI_API_KEY is missing from .env."
+    if any(isinstance(item, GeminiMalformedJSONError) for item in chain):
+        return "Gemini returned malformed JSON. Please try again."
     if any(isinstance(item, GeminiNoUsableResponseError) for item in chain):
         return (
             "Gemini returned no usable response. Try simplifying the message "
@@ -1077,7 +1144,7 @@ the final decision. Do not quote sensitive notes unless strictly necessary.
         try:
             response = await self.client.aio.models.generate_content(
                 model=model,
-                contents=prompt,
+                contents=_json_only_instruction(prompt),
                 config=types.GenerateContentConfig(
                     temperature=0.2,
                     max_output_tokens=max_output_tokens,
@@ -1105,16 +1172,16 @@ the final decision. Do not quote sensitive notes unless strictly necessary.
             )
 
         try:
-            result = json.loads(response_text)
-        except (json.JSONDecodeError, TypeError) as exc:
-            raise GeminiNoUsableResponseError(
-                f"Gemini returned an unusable {response_name} response."
-            ) from exc
-        if not isinstance(result, dict):
-            raise GeminiNoUsableResponseError(
-                f"Gemini returned an unusable {response_name} response."
+            return _parse_json_object(response_text)
+        except GeminiMalformedJSONError:
+            logger.error(
+                "Gemini malformed JSON: response_name=%s model=%s "
+                "response_preview=%r",
+                response_name,
+                model,
+                _safe_response_preview(response_text),
             )
-        return result
+            raise
 
     async def _generate_review_with_model(
         self,
