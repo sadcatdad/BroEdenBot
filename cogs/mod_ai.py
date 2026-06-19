@@ -363,6 +363,28 @@ def _safe_response_preview(response_text: str, limit: int = 1_000) -> str:
     return preview
 
 
+def _parsed_response_object(response: Any) -> Optional[Dict[str, Any]]:
+    parsed = getattr(response, "parsed", None)
+    if isinstance(parsed, dict):
+        return parsed
+    model_dump = getattr(parsed, "model_dump", None)
+    if callable(model_dump):
+        dumped = model_dump()
+        if isinstance(dumped, dict):
+            return dumped
+    return None
+
+
+def _response_finish_reason(response: Any) -> Optional[str]:
+    candidates = getattr(response, "candidates", None) or []
+    if not candidates:
+        return None
+    finish_reason = getattr(candidates[0], "finish_reason", None)
+    if finish_reason is None:
+        return None
+    return str(getattr(finish_reason, "name", finish_reason))
+
+
 def _exception_chain(exc: Exception):
     seen = set()
     current = exc
@@ -1079,6 +1101,13 @@ the final decision. Do not quote sensitive notes unless strictly necessary.
         return isinstance(exc, errors.APIError) and exc.code == 503
 
     @staticmethod
+    def _is_retryable_generation_error(exc: Exception) -> bool:
+        return ModAI._is_unavailable_error(exc) or isinstance(
+            exc,
+            GeminiMalformedJSONError,
+        )
+
+    @staticmethod
     def _is_invalid_model_error(exc: Exception) -> bool:
         if not isinstance(exc, errors.APIError):
             return False
@@ -1149,7 +1178,7 @@ the final decision. Do not quote sensitive notes unless strictly necessary.
                     temperature=0.2,
                     max_output_tokens=max_output_tokens,
                     response_mime_type="application/json",
-                    response_json_schema=schema,
+                    response_schema=schema,
                 ),
             )
         except errors.APIError as exc:
@@ -1159,6 +1188,10 @@ the final decision. Do not quote sensitive notes unless strictly necessary.
                     getattr(exc, "status", None),
                 ) from exc
             raise
+
+        parsed_result = _parsed_response_object(response)
+        if parsed_result is not None:
+            return parsed_result
 
         try:
             response_text = response.text
@@ -1176,9 +1209,10 @@ the final decision. Do not quote sensitive notes unless strictly necessary.
         except GeminiMalformedJSONError:
             logger.error(
                 "Gemini malformed JSON: response_name=%s model=%s "
-                "response_preview=%r",
+                "finish_reason=%r response_preview=%r",
                 response_name,
                 model,
+                _response_finish_reason(response),
                 _safe_response_preview(response_text),
             )
             raise
@@ -1193,7 +1227,7 @@ the final decision. Do not quote sensitive notes unless strictly necessary.
             model,
             REVIEW_SCHEMA,
             "review",
-            1_000,
+            2_048,
         )
         review["severity"] = _normalise_severity(review.get("severity"))
         categories = review.get("categories")
@@ -1211,7 +1245,7 @@ the final decision. Do not quote sensitive notes unless strictly necessary.
             model,
             INCIDENT_SCHEMA,
             "incident",
-            1_200,
+            2_048,
         )
         guidance["severity"] = _normalise_severity(guidance.get("severity"))
         relevant_areas = guidance.get("relevant_areas")
@@ -1227,7 +1261,7 @@ the final decision. Do not quote sensitive notes unless strictly necessary.
         model: str,
         schema: Dict[str, Any],
         response_name: str,
-        max_output_tokens: int = 1_200,
+        max_output_tokens: int = 2_048,
     ) -> Dict[str, Any]:
         return await self._generate_json_with_model(
             prompt,
@@ -1250,7 +1284,7 @@ the final decision. Do not quote sensitive notes unless strictly necessary.
                 self.model,
                 exc,
             )
-            if not self._is_unavailable_error(exc):
+            if not self._is_retryable_generation_error(exc):
                 raise
 
         await asyncio.sleep(GEMINI_RETRY_DELAY_SECONDS)
@@ -1297,7 +1331,7 @@ the final decision. Do not quote sensitive notes unless strictly necessary.
         prompt: str,
         schema: Dict[str, Any],
         response_name: str,
-        max_output_tokens: int = 1_200,
+        max_output_tokens: int = 2_048,
     ) -> Dict[str, Any]:
         return await self._run_with_model_fallback(
             lambda model: self._generate_structured_with_model(
