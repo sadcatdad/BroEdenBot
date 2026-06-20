@@ -32,12 +32,40 @@ def load_knowledge() -> Dict[str, str]:
     return knowledge
 
 
+def load_server_knowledge() -> Dict[str, str]:
+    """Return a copy of the public-safe server knowledge used by member tools."""
+    return dict(load_knowledge())
+
+
 def compact_knowledge_context(max_chars: int = 9_000) -> str:
     """Return compact local context suitable for a moderation prompt."""
     sections = [COMMUNITY_CONTEXT]
     for label, content in load_knowledge().items():
         if content:
             sections.append(f"## {label}\n{content}")
+    context = "\n\n".join(sections)
+    if len(context) <= max_chars:
+        return context
+    return context[: max_chars - 1].rstrip() + "…"
+
+
+def build_public_ask_context(query: str, max_chars: int = 12_000) -> str:
+    """Build member-safe context from only the public rules and survival guide."""
+    sections = []
+    matches = search_server_knowledge(query, max_results=6)
+    if matches:
+        excerpts = [
+            f"### {source} — {heading}\n{excerpt}"
+            for source, heading, excerpt in matches
+        ]
+        sections.append("## Most relevant public sections\n" + "\n\n".join(excerpts))
+
+    public_sources = [
+        f"## {label}\n{content}"
+        for label, content in load_server_knowledge().items()
+        if content
+    ]
+    sections.extend(public_sources)
     context = "\n\n".join(sections)
     if len(context) <= max_chars:
         return context
@@ -74,6 +102,15 @@ def search_knowledge(
         (source, heading, excerpt)
         for _, source, heading, excerpt in matches[:max_results]
     ]
+
+
+def search_server_knowledge(
+    query: str,
+    max_results: int = 5,
+    max_excerpt_chars: int = 700,
+) -> List[Tuple[str, str, str]]:
+    """Search only the public-safe server knowledge."""
+    return search_knowledge(query, max_results, max_excerpt_chars)
 
 
 def _query_terms(query: str) -> List[str]:
