@@ -1,8 +1,8 @@
 # BroEdenBot
 
-BroEdenBot is a Discord community bot for Bro Eden. It provides moderation
-guidance, staff notes, voice-channel activity tracking, live statistics,
-queues, polls, leaderboards, and bank tracking.
+BroEdenBot is a Discord community bot for Bro Eden. It provides member-facing
+server guidance, moderation guidance, staff notes, voice-channel activity
+tracking, live statistics, queues, polls, leaderboards, and bank tracking.
 
 The bot loads every Python cog in `cogs/` and synchronizes its application
 commands when it starts.
@@ -18,6 +18,7 @@ commands when it starts.
 
 | Feature | Who can use it |
 | --- | --- |
+| `/ask` | All server members |
 | ModAI commands and context menus | Administrators or roles listed in `MODAI_ALLOWED_ROLE_IDS` |
 | Staff-note commands | Administrators or roles listed in `STAFF_NOTES_ALLOWED_ROLE_IDS` |
 | `/staffnote delete` | Administrators only |
@@ -29,8 +30,70 @@ commands when it starts.
 | `/stats delete` and `/stats reset` | Administrators only |
 | Poll, queue, and leaderboard commands | No additional role check is currently implemented in their cogs |
 
-If a role-ID environment variable is empty, that feature is effectively
-administrator-only.
+For staff-restricted features, an empty role-ID environment variable makes the
+feature effectively administrator-only. This does not apply to `/ask`.
+
+## Member server-help command
+
+### `/ask <question>`
+
+Lets members ask general questions about Bro Eden rules, channels, levels,
+events, verification, NSFW access, server features, and support.
+
+- `question` — Required server-related question, up to 1,000 characters.
+- The command is available to regular server members and does not require a
+  staff role.
+- Successful responses are posted publicly in the channel where `/ask` was
+  used.
+- The public response is a compact green embed with the submitted question and
+  answer in one description:
+
+  ```text
+  **Question:**
+  [submitted question]
+  **Answer:**
+  [answer]
+  ```
+
+- Extra blank lines in Gemini's answer are collapsed to keep the embed compact.
+- The member's question is Markdown-escaped before display, and generated
+  mentions are not allowed to notify users or roles.
+- Cooldown, configuration, channel-restriction, out-of-scope, and staff-only
+  redirects are shown ephemerally.
+
+`/ask` uses Gemini with only the local public knowledge in:
+
+- `data/knowledge/survival_guide.md`
+- `data/knowledge/rules.md`
+
+It does not read `staff_notes.py`, staff-note records, ModAI prompts, moderation
+logs, private incident records, imported Discord history, message history,
+member activity stats, or other private data. It does not store member
+questions or Gemini responses.
+
+The prompt requires Gemini to stay grounded in the provided Survival Guide and
+Rules, avoid inventing policies or permissions, and keep replies concise. When
+the answer is uncertain, Gemini directs the member to submit a ticket in
+<#1300632962127368283>.
+
+Questions involving personal disputes, accusations, harassment, reports,
+appeals, staff complaints, moderation actions, rule-enforcement decisions,
+private information, attempts to bypass rules, or crisis/legal/medical matters
+are not sent to Gemini. The member is privately directed to the support-ticket
+channel instead. Clearly unrelated questions are also redirected rather than
+answered.
+
+The command has a per-user cooldown of 30 seconds by default. If Gemini returns
+an empty or blocked response, the public embed says it cannot answer safely. If
+Gemini fails, the public embed directs the member to the support-ticket
+channel. Missing `GEMINI_API_KEY` configuration is reported ephemerally.
+
+The Gemini request uses `ASK_MODEL` when configured, otherwise `MODAI_MODEL`,
+and then the built-in default. The fallback follows the same order using
+`ASK_FALLBACK_MODEL` and `MODAI_FALLBACK_MODEL`. A Gemini 503 response retries
+the primary model once before trying the fallback model. Provider failures are
+logged using only sanitized metadata such as stage, model, error type, code,
+and status.
 
 ## ModAI commands
 
@@ -609,7 +672,11 @@ Create a `.env` file in the project root. Do not commit it.
 | Variable | Purpose |
 | --- | --- |
 | `DISCORD_TOKEN` | Discord bot token. Required. |
-| `GEMINI_API_KEY` | Gemini API key used by ModAI. |
+| `GEMINI_API_KEY` | Gemini API key used by `/ask` and ModAI. |
+| `ASK_MODEL` | Optional primary Gemini model for `/ask`; falls back to `MODAI_MODEL`. |
+| `ASK_FALLBACK_MODEL` | Optional fallback Gemini model for `/ask`; falls back to `MODAI_FALLBACK_MODEL`. |
+| `ASK_ALLOWED_CHANNEL_IDS` | Optional comma- or space-separated channel IDs where `/ask` may be used. Blank allows all channels. |
+| `ASK_COOLDOWN_SECONDS` | Optional per-user `/ask` cooldown in seconds. Defaults to `30`. |
 | `MODAI_MODEL` | Primary Gemini model. |
 | `MODAI_FALLBACK_MODEL` | Model tried after retryable primary-model failures. |
 | `MODAI_ALLOWED_ROLE_IDS` | Comma-separated Discord role IDs allowed to use ModAI. |
@@ -621,19 +688,32 @@ Create a `.env` file in the project root. Do not commit it.
 ## Run locally
 
 ```bash
-cd /path/to/BroEdenBot
+cd ~/Documents/BroEdenBot
 source .venv/bin/activate
-python -m pip install -r requirements.txt
-python main.py
+.venv/bin/python -m pip install -r requirements.txt
+.venv/bin/python main.py
 ```
 
 The bot enables voice-state and member intents in code. Enable **Server Members
 Intent** for the bot in the Discord Developer Portal so startup VC scans and
 member information work correctly.
 
+To test `/ask` in Discord after startup:
+
+```text
+/ask question: how do I get NSFW access?
+/ask question: how do I open a ticket?
+/ask question: where do I ask for help?
+/ask question: can staff ban someone for this?
+/ask question: who reported me?
+```
+
 ## Deploy on the Raspberry Pi
 
+Commit and push the changes, then:
+
 ```bash
+ssh sadcatdad@raspberrypi.local
 cd ~/BroEdenBot
 ./deploy.sh
 ```
