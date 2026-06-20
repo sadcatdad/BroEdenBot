@@ -21,6 +21,11 @@ from utils.stats_reports import (
 PERMISSION_DENIED_MESSAGE = "You do not have permission to use stats commands."
 DEBOUNCE_SECONDS = 2.0
 MAX_ACTIVITY_EXPORT_BYTES = 24 * 1024 * 1024
+ACTIVITY_SOURCE_CHOICES = [
+    app_commands.Choice(name="All", value="all"),
+    app_commands.Choice(name="Live", value="live"),
+    app_commands.Choice(name="Imported", value="imported"),
+]
 
 
 def format_duration(seconds: int) -> str:
@@ -265,26 +270,12 @@ class Stats(commands.Cog):
                 activity_date TEXT NOT NULL,
                 activity_hour TEXT NOT NULL,
                 message_count INTEGER DEFAULT 0,
+                source TEXT DEFAULT 'live',
+                imported_at TEXT,
+                import_batch_id TEXT,
                 created_at TEXT NOT NULL,
                 updated_at TEXT NOT NULL
             )
-            """
-        )
-        await self.bot.db.execute(
-            """
-            CREATE UNIQUE INDEX IF NOT EXISTS idx_stats_message_activity_hour
-            ON stats_message_activity (
-                guild_id,
-                channel_id,
-                user_id,
-                activity_hour
-            )
-            """
-        )
-        await self.bot.db.execute(
-            """
-            CREATE INDEX IF NOT EXISTS idx_stats_message_activity_guild_date
-            ON stats_message_activity (guild_id, activity_date)
             """
         )
         await self.bot.db.execute(
@@ -346,6 +337,106 @@ class Stats(commands.Cog):
                 ADD COLUMN graphic_enabled INTEGER NOT NULL DEFAULT 1
                 """
             )
+        cursor = await self.bot.db.execute(
+            "PRAGMA table_info(stats_message_activity)"
+        )
+        activity_columns = {row[1] for row in await cursor.fetchall()}
+        await cursor.close()
+        for column_name, definition in (
+            ("source", "TEXT DEFAULT 'live'"),
+            ("imported_at", "TEXT"),
+            ("import_batch_id", "TEXT"),
+        ):
+            if column_name not in activity_columns:
+                await self.bot.db.execute(
+                    f"""
+                    ALTER TABLE stats_message_activity
+                    ADD COLUMN {column_name} {definition}
+                    """
+                )
+        await self.bot.db.execute(
+            """
+            UPDATE stats_message_activity
+            SET source = COALESCE(NULLIF(source, ''), 'live'),
+                import_batch_id = CASE
+                    WHEN COALESCE(NULLIF(source, ''), 'live') = 'live'
+                    THEN COALESCE(import_batch_id, 'live')
+                    ELSE import_batch_id
+                END
+            """
+        )
+        await self.bot.db.execute(
+            "DROP INDEX IF EXISTS idx_stats_message_activity_hour"
+        )
+        await self.bot.db.execute(
+            """
+            CREATE UNIQUE INDEX IF NOT EXISTS idx_stats_message_activity_bucket
+            ON stats_message_activity (
+                guild_id, channel_id, user_id, activity_hour, source,
+                import_batch_id
+            )
+            """
+        )
+        for index_name, columns_sql in (
+            ("idx_stats_message_activity_guild_date", "guild_id, activity_date"),
+            (
+                "idx_stats_message_activity_channel_date",
+                "guild_id, channel_id, activity_date",
+            ),
+            (
+                "idx_stats_message_activity_user_date",
+                "guild_id, user_id, activity_date",
+            ),
+            (
+                "idx_stats_message_activity_source_date",
+                "guild_id, source, activity_date",
+            ),
+        ):
+            await self.bot.db.execute(
+                f"""
+                CREATE INDEX IF NOT EXISTS {index_name}
+                ON stats_message_activity ({columns_sql})
+                """
+            )
+        await self.bot.db.execute(
+            """
+            CREATE TABLE IF NOT EXISTS stats_activity_imports (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                guild_id INTEGER NOT NULL,
+                import_batch_id TEXT NOT NULL,
+                filename TEXT,
+                channel_id INTEGER,
+                channel_name TEXT,
+                imported_by INTEGER,
+                imported_at TEXT NOT NULL,
+                messages_seen INTEGER DEFAULT 0,
+                messages_imported INTEGER DEFAULT 0,
+                messages_skipped INTEGER DEFAULT 0,
+                duplicates_skipped INTEGER DEFAULT 0,
+                earliest_message_at TEXT,
+                latest_message_at TEXT,
+                status TEXT DEFAULT 'completed',
+                notes TEXT
+            )
+            """
+        )
+        await self.bot.db.execute(
+            """
+            CREATE INDEX IF NOT EXISTS idx_stats_activity_imports_guild_date
+            ON stats_activity_imports (guild_id, imported_at)
+            """
+        )
+        await self.bot.db.execute(
+            """
+            CREATE TABLE IF NOT EXISTS stats_activity_imported_messages (
+                guild_id INTEGER NOT NULL,
+                message_id TEXT NOT NULL,
+                import_batch_id TEXT,
+                imported_at TEXT NOT NULL,
+                PRIMARY KEY (guild_id, message_id)
+            )
+            """
+        )
         await self.bot.db.commit()
         self.bot.add_view(self._export_view)
 
@@ -543,20 +634,29 @@ class Stats(commands.Cog):
     )
     @app_commands.describe(
         days="Number of days to include",
+        source="Include all, live, or imported message activity",
         channel="Optional channel where the report should be posted",
     )
+    @app_commands.choices(source=ACTIVITY_SOURCE_CHOICES)
     @app_commands.guild_only()
     @app_commands.check(has_stats_access)
     async def activity_overview(
         self,
         interaction: discord.Interaction,
         days: app_commands.Range[int, 1, 3650] = 7,
+        source: Optional[app_commands.Choice[str]] = None,
         channel: Optional[discord.TextChannel] = None,
     ) -> None:
         await interaction.response.defer(ephemeral=True, thinking=True)
-        data = await self._activity_overview_data(interaction.guild_id, days)
+        source_value = self._activity_source_value(source)
+        data = await self._activity_overview_data(
+            interaction.guild_id, days, source_value
+        )
         embed = discord.Embed(
-            title=f"Community activity overview — last {days} days",
+            title=(
+                f"Community activity overview — last {days} days "
+                f"({source_value})"
+            ),
             color=discord.Color(COLOR),
             timestamp=self._utcnow(),
         )
@@ -627,8 +727,10 @@ class Stats(commands.Cog):
     @app_commands.describe(
         days="Number of days to include",
         limit="Number of channels to show",
+        source="Include all, live, or imported message activity",
         channel="Optional channel where the report should be posted",
     )
+    @app_commands.choices(source=ACTIVITY_SOURCE_CHOICES)
     @app_commands.guild_only()
     @app_commands.check(has_stats_access)
     async def activity_channels(
@@ -636,33 +738,36 @@ class Stats(commands.Cog):
         interaction: discord.Interaction,
         days: app_commands.Range[int, 1, 3650] = 7,
         limit: app_commands.Range[int, 1, 25] = 10,
+        source: Optional[app_commands.Choice[str]] = None,
         channel: Optional[discord.TextChannel] = None,
     ) -> None:
         await interaction.response.defer(ephemeral=True)
         cutoff = self._activity_cutoff(days)
+        source_value = self._activity_source_value(source)
+        source_sql, source_parameters = self._activity_source_filter(source_value)
         rows = await self._fetchall(
-            """
+            f"""
             SELECT channel_id, MAX(channel_name), SUM(message_count),
                    COUNT(DISTINCT user_id)
             FROM stats_message_activity
-            WHERE guild_id = ? AND activity_hour >= ?
+            WHERE guild_id = ? AND activity_hour >= ? {source_sql}
             GROUP BY channel_id
             ORDER BY SUM(message_count) DESC
             LIMIT ?
             """,
-            (interaction.guild_id, cutoff, limit),
+            (interaction.guild_id, cutoff, *source_parameters, limit),
         )
         total_row = await self._fetchone(
-            """
+            f"""
             SELECT COALESCE(SUM(message_count), 0)
             FROM stats_message_activity
-            WHERE guild_id = ? AND activity_hour >= ?
+            WHERE guild_id = ? AND activity_hour >= ? {source_sql}
             """,
-            (interaction.guild_id, cutoff),
+            (interaction.guild_id, cutoff, *source_parameters),
         )
         total = total_row[0] if total_row else 0
         embed = discord.Embed(
-            title=f"Top text channels — last {days} days",
+            title=f"Top text channels — last {days} days ({source_value})",
             color=discord.Color(COLOR),
         )
         if not rows:
@@ -689,8 +794,10 @@ class Stats(commands.Cog):
     @app_commands.describe(
         days="Number of days to include",
         limit="Number of channels to show",
+        source="Include all, live, or imported message activity",
         channel="Optional channel where the report should be posted",
     )
+    @app_commands.choices(source=ACTIVITY_SOURCE_CHOICES)
     @app_commands.guild_only()
     @app_commands.check(has_stats_access)
     async def activity_quiet(
@@ -698,21 +805,24 @@ class Stats(commands.Cog):
         interaction: discord.Interaction,
         days: app_commands.Range[int, 1, 3650] = 14,
         limit: app_commands.Range[int, 1, 25] = 10,
+        source: Optional[app_commands.Choice[str]] = None,
         channel: Optional[discord.TextChannel] = None,
     ) -> None:
         await interaction.response.defer(ephemeral=True)
         cutoff = self._activity_cutoff(days)
+        source_value = self._activity_source_value(source)
+        source_sql, source_parameters = self._activity_source_filter(source_value)
         rows = await self._fetchall(
-            """
+            f"""
             SELECT channel_id, SUM(
                        CASE WHEN activity_hour >= ? THEN message_count ELSE 0 END
                    ) AS period_messages,
                    MAX(activity_hour)
             FROM stats_message_activity
-            WHERE guild_id = ?
+            WHERE guild_id = ? {source_sql}
             GROUP BY channel_id
             """,
-            (cutoff, interaction.guild_id),
+            (cutoff, interaction.guild_id, *source_parameters),
         )
         tracked = {
             row[0]: {"messages": row[1] or 0, "last": row[2]} for row in rows
@@ -739,7 +849,10 @@ class Stats(commands.Cog):
             )
         candidates.sort(key=lambda item: (item[0], item[1] or ""))
         embed = discord.Embed(
-            title=f"Low-activity text channels — last {days} days",
+            title=(
+                f"Low-activity text channels — last {days} days "
+                f"({source_value})"
+            ),
             color=discord.Color(COLOR),
             description=(
                 "Neutral activity signal for channel planning. "
@@ -748,7 +861,9 @@ class Stats(commands.Cog):
         )
         for messages, last_activity, text_channel in candidates[:limit]:
             last_text = (
-                f"<t:{int(datetime.datetime.fromisoformat(last_activity).timestamp())}:R>"
+                "<t:"
+                f"{int(datetime.datetime.fromisoformat(last_activity).timestamp())}"
+                ":R>"
                 if last_activity
                 else "No tracked activity yet"
             )
@@ -772,8 +887,10 @@ class Stats(commands.Cog):
     @app_commands.describe(
         days="Number of days to include",
         limit="Number of members to show",
+        source="Include all, live, or imported message activity",
         channel="Optional channel where the report should be posted",
     )
+    @app_commands.choices(source=ACTIVITY_SOURCE_CHOICES)
     @app_commands.guild_only()
     @app_commands.check(has_stats_access)
     async def activity_members(
@@ -781,25 +898,35 @@ class Stats(commands.Cog):
         interaction: discord.Interaction,
         days: app_commands.Range[int, 1, 3650] = 7,
         limit: app_commands.Range[int, 1, 25] = 10,
+        source: Optional[app_commands.Choice[str]] = None,
         channel: Optional[discord.TextChannel] = None,
     ) -> None:
         await interaction.response.defer(ephemeral=True)
+        source_value = self._activity_source_value(source)
+        source_sql, source_parameters = self._activity_source_filter(source_value)
         rows = await self._fetchall(
-            """
+            f"""
             SELECT user_id, MAX(username), MAX(display_name),
                    SUM(message_count) AS total
             FROM stats_message_activity
-            WHERE guild_id = ? AND activity_hour >= ?
+            WHERE guild_id = ? AND activity_hour >= ? {source_sql}
             GROUP BY user_id
             ORDER BY total DESC
             LIMIT ?
             """,
-            (interaction.guild_id, self._activity_cutoff(days), limit),
+            (
+                interaction.guild_id,
+                self._activity_cutoff(days),
+                *source_parameters,
+                limit,
+            ),
         )
         embed = discord.Embed(
-            title=f"Top text participants — last {days} days",
+            title=f"Top text participants — last {days} days ({source_value})",
             color=discord.Color(COLOR),
-            description="Message counts only; no activity score or inactivity judgment.",
+            description=(
+                "Message counts only; no activity score or inactivity judgment."
+            ),
         )
         if not rows:
             embed.add_field(
@@ -912,7 +1039,9 @@ class Stats(commands.Cog):
     @app_commands.describe(
         days="Number of days to include",
         include_vc="Include VC sessions when available",
+        source="Include all, live, or imported message activity",
     )
+    @app_commands.choices(source=ACTIVITY_SOURCE_CHOICES)
     @app_commands.guild_only()
     @app_commands.check(has_stats_access)
     async def activity_export(
@@ -920,12 +1049,15 @@ class Stats(commands.Cog):
         interaction: discord.Interaction,
         days: app_commands.Range[int, 1, 3650] = 7,
         include_vc: bool = True,
+        source: Optional[app_commands.Choice[str]] = None,
     ) -> None:
         await interaction.response.defer(ephemeral=True, thinking=True)
+        source_value = self._activity_source_value(source)
         file = await self._activity_export_file(
             interaction.guild_id,
             days,
             include_vc,
+            source_value,
         )
         if file is None:
             await interaction.followup.send(
@@ -935,10 +1067,79 @@ class Stats(commands.Cog):
             )
             return
         await interaction.followup.send(
-            f"Exported activity metadata for the last **{days}** days.",
+            f"Exported **{source_value}** activity metadata for the last "
+            f"**{days}** days.",
             file=file,
             ephemeral=True,
         )
+
+    @activity.command(
+        name="importinfo",
+        description="Show recent historical activity import batches",
+    )
+    @app_commands.describe(limit="Number of recent import files to show")
+    @app_commands.guild_only()
+    @app_commands.check(has_stats_access)
+    async def activity_importinfo(
+        self,
+        interaction: discord.Interaction,
+        limit: app_commands.Range[int, 1, 25] = 10,
+    ) -> None:
+        await interaction.response.defer(ephemeral=True)
+        rows = await self._fetchall(
+            """
+            SELECT import_batch_id, filename, channel_id, channel_name,
+                   messages_seen, messages_imported, duplicates_skipped,
+                   messages_skipped, earliest_message_at, latest_message_at,
+                   imported_at, status
+            FROM stats_activity_imports
+            WHERE guild_id = ?
+            ORDER BY imported_at DESC, id DESC
+            LIMIT ?
+            """,
+            (interaction.guild_id, limit),
+        )
+        embed = discord.Embed(
+            title="Recent historical activity imports",
+            color=discord.Color(COLOR),
+            timestamp=self._utcnow(),
+        )
+        if not rows:
+            embed.description = "No historical activity imports have been recorded."
+        for row in rows:
+            (
+                batch_id,
+                filename,
+                channel_id,
+                channel_name,
+                seen,
+                imported,
+                duplicates,
+                skipped,
+                earliest,
+                latest,
+                imported_at,
+                status,
+            ) = row
+            short_batch = (batch_id or "unknown")[:8]
+            display_filename = os.path.basename(filename or "Unknown file")
+            date_range = (
+                f"{(earliest or 'n/a')[:10]} to {(latest or 'n/a')[:10]}"
+            )
+            embed.add_field(
+                name=f"{display_filename[:80]} • {status or 'unknown'}",
+                value=(
+                    f"Batch `{short_batch}` • "
+                    f"{safe_channel_display(channel_id or 0, channel_name)} "
+                    f"(`{channel_id or 0}`)\n"
+                    f"Seen **{seen or 0:,}** • Imported **{imported or 0:,}** • "
+                    f"Duplicates **{duplicates or 0:,}** • "
+                    f"Skipped **{skipped or 0:,}**\n"
+                    f"Messages: {date_range}\nImported: {imported_at or 'n/a'}"
+                )[:1024],
+                inline=False,
+            )
+        await interaction.followup.send(embed=embed, ephemeral=True)
 
     @stats.command(
         name="rolecompare",
@@ -1672,11 +1873,16 @@ class Stats(commands.Cog):
                 activity_date,
                 activity_hour,
                 message_count,
+                source,
+                import_batch_id,
                 created_at,
                 updated_at
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?)
-            ON CONFLICT(guild_id, channel_id, user_id, activity_hour)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, 'live', 'live', ?, ?)
+            ON CONFLICT(
+                guild_id, channel_id, user_id, activity_hour, source,
+                import_batch_id
+            )
             DO UPDATE SET
                 channel_name = excluded.channel_name,
                 display_name = excluded.display_name,
@@ -2122,6 +2328,18 @@ class Stats(commands.Cog):
             self._utcnow() - datetime.timedelta(days=days)
         ).replace(minute=0, second=0, microsecond=0).isoformat()
 
+    @staticmethod
+    def _activity_source_value(
+        source: Optional[app_commands.Choice[str]],
+    ) -> str:
+        return source.value if source else "all"
+
+    @staticmethod
+    def _activity_source_filter(source: str) -> Tuple[str, Tuple[str, ...]]:
+        if source in {"live", "imported"}:
+            return "AND source = ?", (source,)
+        return "", ()
+
     async def _tracking_started_datetime(self):
         row = await self._fetchone(
             """
@@ -2140,26 +2358,32 @@ class Stats(commands.Cog):
         except (TypeError, ValueError):
             return None
 
-    async def _activity_overview_data(self, guild_id: int, days: int):
+    async def _activity_overview_data(
+        self,
+        guild_id: int,
+        days: int,
+        source: str = "all",
+    ):
         cutoff = self._activity_cutoff(days)
+        source_sql, source_parameters = self._activity_source_filter(source)
         message_summary = await self._fetchone(
-            """
+            f"""
             SELECT COALESCE(SUM(message_count), 0), COUNT(DISTINCT user_id)
             FROM stats_message_activity
-            WHERE guild_id = ? AND activity_hour >= ?
+            WHERE guild_id = ? AND activity_hour >= ? {source_sql}
             """,
-            (guild_id, cutoff),
+            (guild_id, cutoff, *source_parameters),
         )
         total_messages, text_active_count = message_summary or (0, 0)
         text_users = {
             row[0]
             for row in await self._fetchall(
-                """
+                f"""
                 SELECT DISTINCT user_id
                 FROM stats_message_activity
-                WHERE guild_id = ? AND activity_hour >= ?
+                WHERE guild_id = ? AND activity_hour >= ? {source_sql}
                 """,
-                (guild_id, cutoff),
+                (guild_id, cutoff, *source_parameters),
             )
         }
         joins = await self._fetchone(
@@ -2179,24 +2403,24 @@ class Stats(commands.Cog):
             (guild_id, cutoff),
         )
         top_text = await self._fetchone(
-            """
+            f"""
             SELECT channel_id, MAX(channel_name), SUM(message_count)
             FROM stats_message_activity
-            WHERE guild_id = ? AND activity_hour >= ?
+            WHERE guild_id = ? AND activity_hour >= ? {source_sql}
             GROUP BY channel_id
             ORDER BY SUM(message_count) DESC
             LIMIT 1
             """,
-            (guild_id, cutoff),
+            (guild_id, cutoff, *source_parameters),
         )
         daily_rows = await self._fetchall(
-            """
+            f"""
             SELECT activity_date, SUM(message_count)
             FROM stats_message_activity
-            WHERE guild_id = ? AND activity_hour >= ?
+            WHERE guild_id = ? AND activity_hour >= ? {source_sql}
             GROUP BY activity_date
             """,
-            (guild_id, cutoff),
+            (guild_id, cutoff, *source_parameters),
         )
         daily = {}
         today = self._utcnow().date()
@@ -2251,7 +2475,8 @@ class Stats(commands.Cog):
                 """,
                 (guild_id, cutoff),
             )
-            text_users.update(row[0] for row in vc_users)
+            if source != "imported":
+                text_users.update(row[0] for row in vc_users)
 
         average = total_messages / days if days else 0
         concentration = (
@@ -2307,8 +2532,10 @@ class Stats(commands.Cog):
         guild_id: int,
         days: int,
         include_vc: bool,
+        source: str = "all",
     ) -> Optional[discord.File]:
         cutoff = self._activity_cutoff(days)
+        source_sql, source_parameters = self._activity_source_filter(source)
         output = io.StringIO(newline="")
         headers = [
             "section",
@@ -2321,6 +2548,8 @@ class Stats(commands.Cog):
             "activity_date",
             "activity_hour",
             "message_count",
+            "source",
+            "import_batch_id",
             "event_time",
             "duration_seconds",
             "duration_readable",
@@ -2333,7 +2562,7 @@ class Stats(commands.Cog):
         writer = csv.DictWriter(output, fieldnames=headers)
         writer.writeheader()
 
-        overview = await self._activity_overview_data(guild_id, days)
+        overview = await self._activity_overview_data(guild_id, days, source)
         for metric in (
             "total_messages",
             "active_members",
@@ -2351,14 +2580,15 @@ class Stats(commands.Cog):
             )
 
         message_rows = await self._fetchall(
-            """
+            f"""
             SELECT channel_id, channel_name, user_id, username, display_name,
-                   activity_date, activity_hour, message_count
+                   activity_date, activity_hour, message_count, source,
+                   import_batch_id
             FROM stats_message_activity
-            WHERE guild_id = ? AND activity_hour >= ?
+            WHERE guild_id = ? AND activity_hour >= ? {source_sql}
             ORDER BY activity_hour, channel_id, user_id
             """,
-            (guild_id, cutoff),
+            (guild_id, cutoff, *source_parameters),
         )
         for row in message_rows:
             writer.writerow(
@@ -2373,18 +2603,20 @@ class Stats(commands.Cog):
                     "activity_date": row[5],
                     "activity_hour": row[6],
                     "message_count": row[7],
+                    "source": row[8],
+                    "import_batch_id": row[9],
                 }
             )
 
         channel_rows = await self._fetchall(
-            """
+            f"""
             SELECT channel_id, MAX(channel_name), SUM(message_count)
             FROM stats_message_activity
-            WHERE guild_id = ? AND activity_hour >= ?
+            WHERE guild_id = ? AND activity_hour >= ? {source_sql}
             GROUP BY channel_id
             ORDER BY SUM(message_count) DESC
             """,
-            (guild_id, cutoff),
+            (guild_id, cutoff, *source_parameters),
         )
         for channel_id, channel_name, count in channel_rows:
             writer.writerow(
@@ -2399,15 +2631,15 @@ class Stats(commands.Cog):
             )
 
         member_rows = await self._fetchall(
-            """
+            f"""
             SELECT user_id, MAX(username), MAX(display_name),
                    SUM(message_count)
             FROM stats_message_activity
-            WHERE guild_id = ? AND activity_hour >= ?
+            WHERE guild_id = ? AND activity_hour >= ? {source_sql}
             GROUP BY user_id
             ORDER BY SUM(message_count) DESC
             """,
-            (guild_id, cutoff),
+            (guild_id, cutoff, *source_parameters),
         )
         for user_id, username, display_name, count in member_rows:
             writer.writerow(
@@ -2482,7 +2714,7 @@ class Stats(commands.Cog):
             return None
         return discord.File(
             io.BytesIO(data),
-            filename=f"stats_activity_{days}d.csv",
+            filename=f"stats_activity_{source}_{days}d.csv",
         )
 
     async def _send_activity_report(
