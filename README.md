@@ -609,6 +609,30 @@ The activity feature creates these tables in `data.db`:
 `stats_message_activity` uses one row per guild, text channel, member, and UTC
 hour, incrementing `message_count` as messages arrive.
 
+### Historical Discord activity imports
+
+Export Discord channels with DiscordChatExporter CLI as JSON, then save the
+exports locally in `imports/discord_history/`. Exported JSON and CSV files may
+contain private server history and can be very large, so they must not be
+committed to Git.
+
+Run a dry run first:
+
+```bash
+source .venv/bin/activate
+python scripts/import_discord_history.py --folder imports/discord_history --guild-id SERVER_ID --dry-run
+```
+
+Then run the real import:
+
+```bash
+python scripts/import_discord_history.py --folder imports/discord_history --guild-id SERVER_ID
+```
+
+Re-running the importer is safe because previously imported message IDs are
+deduplicated. The importer stores activity metadata only, never message
+content.
+
 ## Bank commands
 
 Bank commands use the separate `brobank.db` SQLite database.

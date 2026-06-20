@@ -6,3 +6,12 @@
 __pycache__/
 *.pyc
 .DS_Store
+
+# Local import/export data can be large or contain private server history.
+/imports/*
+!/imports/README.md
+/exports/
+/data/imports/
+/data/exports/
+*.csv
+*.zip
