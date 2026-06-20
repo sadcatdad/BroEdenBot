@@ -534,9 +534,22 @@ ignored.
 Join and leave events are also tracked going forward, so reports covering
 periods before deployment may be incomplete.
 
-### `/stats activity overview [days] [channel]`
+Activity reports support these preset `period` choices:
 
-Shows a private community overview containing:
+- `7 days`
+- `30 days`
+- `90 days`
+- `365 days`
+- `all time`
+
+`all time` removes the date cutoff and includes every available row matching
+the selected `source` (`all`, `live`, or `imported`). The older custom `days`
+input remains supported. If both `period` and `days` are supplied, `period`
+takes priority.
+
+### `/stats activity overview [period] [days] [source] [channel]`
+
+Shows a community overview containing:
 
 - Total tracked messages
 - Unique active members
@@ -546,34 +559,36 @@ Shows a private community overview containing:
 - Tracked VC time and top VC channel, when available
 - A deterministic volume/concentration summary
 
-`days` defaults to 7.
+If neither `period` nor `days` is supplied, the report defaults to 7 days. The
+overview displays the actual available data range. All-time reports are labeled
+`Period: All time`.
 
-### `/stats activity channels [days] [limit] [channel]`
+### `/stats activity channels [period] [days] [limit] [source] [channel]`
 
 Shows the top text channels by tracked message count, including unique posters
 and percentage of tracked messages.
 
-- `days` defaults to 7.
+- If neither `period` nor `days` is supplied, the report defaults to 7 days.
 - `limit` defaults to 10 and supports up to 25.
 
-### `/stats activity quiet [days] [limit] [channel]`
+### `/stats activity quiet [period] [days] [limit] [source] [channel]`
 
 Shows visible text channels with low tracked activity and their last tracked
 activity time. This is intended for neutral channel-planning decisions and
 does not assess or shame individual members.
 
-- `days` defaults to 14.
+- If neither `period` nor `days` is supplied, the report defaults to 14 days.
 - `limit` defaults to 10 and supports up to 25.
 
-### `/stats activity members [days] [limit] [channel]`
+### `/stats activity members [period] [days] [limit] [source] [channel]`
 
 Shows members with the highest tracked message counts. Text and VC activity are
 not combined into a synthetic score.
 
-- `days` defaults to 7.
+- If neither `period` nor `days` is supplied, the report defaults to 7 days.
 - `limit` defaults to 10 and supports up to 25.
 
-### `/stats activity vc [days] [limit] [channel]`
+### `/stats activity vc [period] [days] [limit] [channel]`
 
 Reads completed sessions from the `vc_sessions` table managed by
 `cogs/vc_stats.py`. It shows total tracked time, completed sessions, top voice
@@ -582,7 +597,10 @@ channels, and top voice participants.
 If the VC tracking table is unavailable, the command reports:
 `VC activity tracking is not available yet.`
 
-### `/stats activity export [days] [include_vc]`
+The VC report also supports the preset periods, including all available tracked
+VC history with `period:all time`.
+
+### `/stats activity export [period] [days] [include_vc] [source]`
 
 Exports a private CSV with a `section` column. Sections can include:
 
@@ -594,8 +612,10 @@ Exports a private CSV with a `section` column. Sections can include:
 - Leaves
 - VC sessions, when requested and available
 
-`days` defaults to 7 and `include_vc` defaults to true. Large exports should
-use a shorter date range if they exceed Discord's upload limit.
+If neither `period` nor `days` is supplied, the export defaults to 7 days.
+`include_vc` defaults to true. All-time exports use `all_time` in the filename.
+Large exports may exceed Discord's upload limit; if that happens, choose a
+shorter period.
 
 ### Activity database tables
 
