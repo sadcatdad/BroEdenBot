@@ -25,6 +25,7 @@ commands when it starts.
 | `/staffnote edit` | Administrators or the original note author |
 | VC stats and reward-preview commands | Administrators or roles listed in `VCSTATS_ALLOWED_ROLE_IDS` |
 | `/vcstats reset` | Administrators only |
+| `/vcrewards pulse` and `/vcrewards markpaid` | Administrators only |
 | Bank commands | Administrators or roles listed in `BANK_ALLOWED_ROLE_IDS` |
 | Stats creation and refresh commands | Administrators or roles listed in `STATS_ALLOWED_ROLE_IDS` |
 | `/stats delete` and `/stats reset` | Administrators only |
@@ -285,7 +286,7 @@ creates session records in `data.db`.
 
 All `/vcstats` and `/vcrewards` responses are ephemeral. The module records all
 completed sessions but separately calculates reward-eligible time for future
-use. It does not currently grant XP, currency, roles, or other rewards.
+use. It does not call MEE6, run MEE6 commands, or grant MEE6 XP directly.
 
 A session is reward-eligible when it lasts at least five minutes and the member
 was not in the server's configured AFK channel, alone for the entire session,
@@ -336,32 +337,119 @@ counted durations, eligibility, and best-effort mute/deafen/alone flags.
 
 Clears completed and active VC sessions for the current server when `confirm`
 is true. This is administrator-only and does not clear future reward snapshot
-tables.
+tables or VC XP pulse/accounting tables.
 
 ### `/vcstats settings`
 
 Shows the current reward-preparation rules, including minimum session length
 and the AFK, alone, and self-deafened exclusions.
 
-## Voice reward-preview commands
+## VC XP role-pulse commands
 
-Reward previews use reward-eligible VC time but do not save or grant rewards.
-Daily caps are calculated by UTC day.
+The optional VC XP bridge converts cumulative reward-eligible VC time into
+temporary Discord role pulses. A separately configured MEE6 automation can
+watch for that role being added and decide whether to award MEE6 XP.
+BroEdenBot never connects to MEE6 or impersonates a user.
 
-### `/vcrewards preview [days] [minutes_per_point] [daily_cap_minutes]`
+Automatic pulses are disabled by default. When enabled and configured, the bot
+checks every five minutes for unpaid pulses and processes at most one pulse per
+member during each check. A pulse adds the configured trigger role, waits for
+the configured delay, removes the role, and records the result in `data.db`.
 
-Shows estimated future reward points for up to 25 members.
+If role removal fails after a successful add, the pulse is counted as paid to
+prevent an accidental duplicate MEE6 trigger. Staff should then remove the
+stuck role manually and inspect the bot logs.
 
-- `days` — Optional lookback period. Defaults to 7.
-- `minutes_per_point` — Eligible minutes required for one point. Defaults to
-  60.
-- `daily_cap_minutes` — Maximum eligible minutes counted per member per UTC
-  day. Defaults to 180.
+### `/vcrewards settings`
 
-### `/vcrewards export [days] [minutes_per_point] [daily_cap_minutes]`
+Shows whether automatic pulses are enabled, the configured trigger role,
+eligible minutes per pulse, removal delay, daily cap, weekly cap, and current
+configuration status.
 
-Exports the full reward preview to an ephemeral CSV attachment using the same
-calculation options as `/vcrewards preview`.
+### `/vcrewards preview [days]`
+
+Shows eligible VC time in the selected lookback period and cumulative pulse
+accounting for up to 25 members.
+
+- `days` — Optional lookback period for displayed eligible time. Defaults to 7.
+
+The earned, paid, and unpaid pulse counts are cumulative because pulse
+boundaries are calculated from all completed eligible VC sessions.
+
+### `/vcrewards unpaid`
+
+Shows members whose cumulative earned pulse count is greater than their paid
+pulse count.
+
+### `/vcrewards pulse <user> [pulses]`
+
+Administrator-only test command that runs one or more real trigger-role pulses.
+Automatic VC XP must be enabled and the trigger role must be configured.
+
+- `user` — Member who should receive the trigger role.
+- `pulses` — Optional number of sequential pulses from 1 to 10. Defaults to 1.
+
+Each pulse respects `VCXP_ROLE_REMOVE_DELAY_SECONDS` and is recorded in the
+pulse log. Manual test pulses bypass the automatic daily and weekly caps.
+
+### `/vcrewards markpaid <user> <pulses>`
+
+Administrator-only accounting command that increases a member's paid pulse
+count without adding the trigger role. Use this when staff granted the
+equivalent XP manually.
+
+- `user` — Member whose pulse accounting should be updated.
+- `pulses` — Number of pulses to mark paid, from 1 to 100.
+
+### `/vcrewards export [days]`
+
+Exports eligible time and cumulative earned, paid, and unpaid pulse counts to
+an ephemeral CSV attachment.
+
+## Configuring the VC XP trigger role
+
+1. In Discord, create a role such as `VCxp`.
+2. Keep the role free of permissions unless your server specifically needs
+   them.
+3. Place BroEdenBot's highest role above `VCxp` in the server role list.
+4. Ensure BroEdenBot has the **Manage Roles** permission.
+5. Enable Developer Mode in Discord, right-click `VCxp`, and choose
+   **Copy Role ID**.
+6. Put that ID in `VCXP_TRIGGER_ROLE_ID`.
+7. Leave `VCXP_ENABLED=false` until staff have verified the settings and test
+   workflow.
+
+MEE6 automation is configured separately. A typical automation watches for a
+member receiving `VCxp` and awards a small amount of XP.
+
+### Testing the VC XP bridge
+
+Start with automatic role changes disabled:
+
+```env
+VCXP_ENABLED=false
+VCXP_TRIGGER_ROLE_ID=
+VCXP_MINUTES_PER_PULSE=30
+VCXP_ROLE_REMOVE_DELAY_SECONDS=30
+VCXP_DAILY_PULSE_CAP=4
+VCXP_WEEKLY_PULSE_CAP=20
+```
+
+Restart the bot and run `/vcrewards settings`, `/vcrewards preview`, and
+`/vcrewards unpaid`. These read-only commands should work, while
+`/vcrewards pulse` should refuse to add a role.
+
+After creating the `VCxp` role and copying its ID, set:
+
+```env
+VCXP_TRIGGER_ROLE_ID=YOUR_COPIED_ROLE_ID
+VCXP_ENABLED=true
+```
+
+Restart the bot, then run `/vcrewards pulse user:@me pulses:1`. Verify that
+`VCxp` appears on the member, remains for
+`VCXP_ROLE_REMOVE_DELAY_SECONDS`, and is removed. Run `/vcrewards preview`
+again to confirm the paid pulse count increased.
 
 ## Stats commands
 
@@ -682,6 +770,12 @@ Create a `.env` file in the project root. Do not commit it.
 | `MODAI_ALLOWED_ROLE_IDS` | Comma-separated Discord role IDs allowed to use ModAI. |
 | `STAFF_NOTES_ALLOWED_ROLE_IDS` | Comma-separated Discord role IDs allowed to use staff notes. |
 | `VCSTATS_ALLOWED_ROLE_IDS` | Comma-separated Discord role IDs allowed to use VC stats and reward previews. |
+| `VCXP_TRIGGER_ROLE_ID` | Discord role ID temporarily added for each VC XP pulse. |
+| `VCXP_MINUTES_PER_PULSE` | Eligible VC minutes required per pulse. Defaults to `30`. |
+| `VCXP_ROLE_REMOVE_DELAY_SECONDS` | Seconds before the trigger role is removed. Defaults to `30`. |
+| `VCXP_DAILY_PULSE_CAP` | Maximum automatic pulses per member per UTC day. Defaults to `4`. |
+| `VCXP_WEEKLY_PULSE_CAP` | Maximum automatic pulses per member in a rolling seven-day period. Defaults to `20`. |
+| `VCXP_ENABLED` | Enables automatic and manual role pulses when `true`. Defaults to `false`. |
 | `BANK_ALLOWED_ROLE_IDS` | Comma-separated Discord role IDs allowed to use bank commands. |
 | `STATS_ALLOWED_ROLE_IDS` | Comma-separated Discord role IDs allowed to create and refresh stats pages. |
 
