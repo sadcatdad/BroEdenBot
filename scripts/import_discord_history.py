@@ -6,6 +6,8 @@ from __future__ import annotations
 import argparse
 import csv
 import datetime as dt
+import os
+import shutil
 import sqlite3
 import sys
 import uuid
@@ -24,6 +26,13 @@ SUPPORTED_SUFFIXES = {".json", ".csv"}
 DATABASE_BATCH_SIZE = 5_000
 PROGRESS_INTERVAL = 10_000
 UTF8_BOM = b"\xef\xbb\xbf"
+DEFAULT_ARCHIVE_FOLDER = Path("imports/discord_history/archive")
+SKIPPED_IMPORT_FOLDER_NAMES = {
+    "archive",
+    "archived",
+    "broken_exports",
+    "repaired_from_pi",
+}
 
 
 @dataclass
@@ -70,6 +79,22 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--channel-name")
     parser.add_argument("--dry-run", action="store_true")
     parser.add_argument("--source", default="imported")
+    parser.add_argument(
+        "--archive-completed",
+        action="store_true",
+        help="Move clean completed files into the archive folder",
+    )
+    parser.add_argument(
+        "--archive-folder",
+        type=Path,
+        default=DEFAULT_ARCHIVE_FOLDER,
+        help=f"Archive destination (default: {DEFAULT_ARCHIVE_FOLDER})",
+    )
+    parser.add_argument(
+        "--archive-duplicates",
+        action="store_true",
+        help="Also archive clean files containing only duplicate messages",
+    )
     return parser.parse_args()
 
 
@@ -204,11 +229,85 @@ def ensure_schema(connection: sqlite3.Connection) -> None:
 def input_files(args: argparse.Namespace) -> list[Path]:
     if args.file:
         return [args.file]
-    return sorted(
-        path
-        for path in args.folder.rglob("*")
-        if path.is_file() and path.suffix.lower() in SUPPORTED_SUFFIXES
+
+    archive_folder = args.archive_folder.resolve()
+    files: list[Path] = []
+    for root, directory_names, filenames in os.walk(args.folder):
+        root_path = Path(root)
+        if (
+            root_path.name.casefold() in SKIPPED_IMPORT_FOLDER_NAMES
+            or root_path.resolve() == archive_folder
+        ):
+            directory_names[:] = []
+            continue
+        directory_names[:] = [
+            name
+            for name in directory_names
+            if (
+                name.casefold() not in SKIPPED_IMPORT_FOLDER_NAMES
+                and (root_path / name).resolve() != archive_folder
+            )
+        ]
+        files.extend(
+            root_path / filename
+            for filename in filenames
+            if Path(filename).suffix.lower() in SUPPORTED_SUFFIXES
+        )
+    return sorted(files)
+
+
+def should_archive(result: FileResult, args: argparse.Namespace) -> bool:
+    if not args.archive_completed or result.status != "completed":
+        return False
+    if result.messages_imported > 0:
+        return True
+    return bool(
+        args.archive_duplicates
+        and result.duplicates_skipped > 0
     )
+
+
+def archive_destination(path: Path, archive_folder: Path) -> Path:
+    destination = archive_folder / path.name
+    if not destination.exists():
+        return destination
+
+    timestamp = utcnow().strftime("%Y%m%d_%H%M%S")
+    candidate = archive_folder / f"{path.stem}_{timestamp}{path.suffix}"
+    sequence = 2
+    while candidate.exists():
+        candidate = archive_folder / (
+            f"{path.stem}_{timestamp}_{sequence}{path.suffix}"
+        )
+        sequence += 1
+    return candidate
+
+
+def archive_completed_file(
+    path: Path,
+    result: FileResult,
+    args: argparse.Namespace,
+) -> bool:
+    if not should_archive(result, args):
+        return True
+
+    destination = archive_destination(path, args.archive_folder)
+    if args.dry_run:
+        print(f"Would archive completed file: {path} -> {destination}")
+        return True
+
+    try:
+        args.archive_folder.mkdir(parents=True, exist_ok=True)
+        shutil.move(str(path), str(destination))
+    except OSError as exc:
+        print(
+            f"Could not archive completed file {path}: "
+            f"{type(exc).__name__}: {exc}",
+            file=sys.stderr,
+        )
+        return False
+    print(f"Archived completed file: {path} -> {destination}")
+    return True
 
 
 def infer_channel_name(path: Path) -> str:
@@ -809,6 +908,7 @@ def main() -> int:
     batch_id = str(uuid.uuid4())
     results: list[FileResult] = []
     channel_totals: Counter[tuple[int, str]] = Counter()
+    archive_failed = False
 
     print(f"Import batch: {batch_id}")
     print(f"Database: {args.database}")
@@ -847,6 +947,8 @@ def main() -> int:
         results.append(result)
         channel_totals.update(result.channel_totals)
         print_file_result(result)
+        if not archive_completed_file(path, result, args):
+            archive_failed = True
     connection.close()
 
     successful = [result for result in results if result.status == "completed"]
@@ -880,7 +982,12 @@ def main() -> int:
         print(f"    {channel_name or 'Unknown'} ({channel_id}): {count:,}")
     if not channel_totals:
         print("    None")
-    return 1 if any(result.status == "failed" for result in results) else 0
+    return (
+        1
+        if archive_failed
+        or any(result.status == "failed" for result in results)
+        else 0
+    )
 
 
 if __name__ == "__main__":

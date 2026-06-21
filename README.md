@@ -658,6 +658,11 @@ every 10,000 messages. If a later batch fails, the audit record accurately
 reports the batches that were already committed. CSV exports remain supported,
 including channel metadata supplied on individual rows.
 
+Historical imports: see
+[docs/historical-imports.md](docs/historical-imports.md) for the complete
+DiscordChatExporter workflow, Pi transfer commands, archive handling, aliases,
+and troubleshooting.
+
 ## Bank commands
 
 Bank commands use the separate `brobank.db` SQLite database.

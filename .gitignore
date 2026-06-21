@@ -10,10 +10,14 @@ __pycache__/
 # Local import/export data can be large or contain private server history.
 /imports/*
 !/imports/README.md
+/imports/discord_history/
+/imports/discord_history/archive/
+/imports/broken_exports/
 /exports/
 /data/imports/
 /data/exports/
 **/imports/**/*.json
 **/exports/**/*.json
+*.json
 *.csv
 *.zip
