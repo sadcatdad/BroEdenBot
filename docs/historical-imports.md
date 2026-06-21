@@ -56,6 +56,10 @@ It does not store message content, attachments, embeds, stickers, or reactions.
    python scripts/import_discord_history.py --folder imports/discord_history --guild-id 1278253523619807233
    ```
 
+   The importer uses SQLite WAL mode, a 60-second busy timeout, and bounded
+   retries for temporary database locks. For large imports, stop `broedenbot`
+   first so the bot and importer are not competing for database writes.
+
 6. Verify the imported activity in Discord:
 
    ```text

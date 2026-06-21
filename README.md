@@ -781,7 +781,9 @@ content. JSON exports are streamed one message at a time, activity buckets and
 dedupe records are committed every 5,000 messages, and progress is printed
 every 10,000 messages. If a later batch fails, the audit record accurately
 reports the batches that were already committed. CSV exports remain supported,
-including channel metadata supplied on individual rows.
+including channel metadata supplied on individual rows. SQLite uses WAL mode,
+a 60-second busy timeout, and bounded retries for temporary lock contention.
+Stop `broedenbot` during especially large imports if lock warnings persist.
 
 Archiving remains opt-in with `--archive-completed`; failed or incomplete files
 stay available for repair or re-export.

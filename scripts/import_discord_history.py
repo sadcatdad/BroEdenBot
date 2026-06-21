@@ -10,6 +10,7 @@ import os
 import shutil
 import sqlite3
 import sys
+import time
 import uuid
 from collections import Counter, defaultdict
 from contextlib import contextmanager
@@ -25,6 +26,10 @@ DEFAULT_DATABASE = Path("data.db")
 SUPPORTED_SUFFIXES = {".json", ".csv"}
 DATABASE_BATCH_SIZE = 5_000
 PROGRESS_INTERVAL = 10_000
+SQLITE_TIMEOUT_SECONDS = 60
+SQLITE_BUSY_TIMEOUT_MS = 60_000
+SQLITE_LOCK_RETRIES = 5
+SQLITE_LOCK_BACKOFF_SECONDS = 0.5
 UTF8_BOM = b"\xef\xbb\xbf"
 DEFAULT_ARCHIVE_FOLDER = Path("imports/discord_history/archive")
 SKIPPED_IMPORT_FOLDER_NAMES = {
@@ -102,8 +107,74 @@ def utcnow() -> dt.datetime:
     return dt.datetime.now(UTC)
 
 
+def is_database_locked(exc: BaseException) -> bool:
+    return (
+        isinstance(exc, sqlite3.OperationalError)
+        and "locked" in str(exc).lower()
+    )
+
+
+def with_sqlite_lock_retry(operation, description: str):
+    for attempt in range(1, SQLITE_LOCK_RETRIES + 1):
+        try:
+            return operation()
+        except sqlite3.OperationalError as exc:
+            if not is_database_locked(exc):
+                raise
+            if attempt >= SQLITE_LOCK_RETRIES:
+                print(
+                    f"SQLite database remained locked while {description} "
+                    f"after {SQLITE_LOCK_RETRIES} attempts. Stop broedenbot "
+                    "during large imports, then try again.",
+                    file=sys.stderr,
+                )
+                raise
+            delay = SQLITE_LOCK_BACKOFF_SECONDS * attempt
+            print(
+                f"SQLite database is locked while {description}; retrying "
+                f"in {delay:.1f}s ({attempt}/{SQLITE_LOCK_RETRIES}). "
+                "For large imports, stop broedenbot to avoid write contention.",
+                file=sys.stderr,
+            )
+            time.sleep(delay)
+
+
+def execute_write(
+    connection: sqlite3.Connection,
+    sql: str,
+    parameters=(),
+    *,
+    description: str,
+):
+    return with_sqlite_lock_retry(
+        lambda: connection.execute(sql, parameters),
+        description,
+    )
+
+
+def executemany_write(
+    connection: sqlite3.Connection,
+    sql: str,
+    parameters,
+    *,
+    description: str,
+):
+    return with_sqlite_lock_retry(
+        lambda: connection.executemany(sql, parameters),
+        description,
+    )
+
+
+def commit_with_retry(
+    connection: sqlite3.Connection,
+    description: str = "committing imported activity",
+) -> None:
+    with_sqlite_lock_retry(connection.commit, description)
+
+
 def ensure_schema(connection: sqlite3.Connection) -> None:
-    connection.execute(
+    execute_write(
+        connection,
         """
         CREATE TABLE IF NOT EXISTS stats_message_activity (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -122,7 +193,8 @@ def ensure_schema(connection: sqlite3.Connection) -> None:
             created_at TEXT NOT NULL,
             updated_at TEXT NOT NULL
         )
-        """
+        """,
+        description="creating the activity table",
     )
     columns = {
         row[1]
@@ -136,11 +208,14 @@ def ensure_schema(connection: sqlite3.Connection) -> None:
         ("import_batch_id", "TEXT"),
     ):
         if name not in columns:
-            connection.execute(
-                f"ALTER TABLE stats_message_activity ADD COLUMN {name} {definition}"
+            execute_write(
+                connection,
+                f"ALTER TABLE stats_message_activity ADD COLUMN {name} {definition}",
+                description=f"adding the {name} activity column",
             )
 
-    connection.execute(
+    execute_write(
+        connection,
         """
         UPDATE stats_message_activity
         SET source = COALESCE(NULLIF(source, ''), 'live'),
@@ -149,42 +224,58 @@ def ensure_schema(connection: sqlite3.Connection) -> None:
                 THEN COALESCE(import_batch_id, 'live')
                 ELSE import_batch_id
             END
-        """
+        """,
+        description="normalizing existing activity rows",
     )
-    connection.execute("DROP INDEX IF EXISTS idx_stats_message_activity_hour")
-    connection.execute(
+    execute_write(
+        connection,
+        "DROP INDEX IF EXISTS idx_stats_message_activity_hour",
+        description="updating the activity indexes",
+    )
+    execute_write(
+        connection,
         """
         CREATE UNIQUE INDEX IF NOT EXISTS idx_stats_message_activity_bucket
         ON stats_message_activity (
             guild_id, channel_id, user_id, activity_hour, source, import_batch_id
         )
-        """
+        """,
+        description="creating the activity dedupe index",
     )
-    connection.execute(
+    execute_write(
+        connection,
         """
         CREATE INDEX IF NOT EXISTS idx_stats_message_activity_guild_date
         ON stats_message_activity (guild_id, activity_date)
-        """
+        """,
+        description="creating the guild activity index",
     )
-    connection.execute(
+    execute_write(
+        connection,
         """
         CREATE INDEX IF NOT EXISTS idx_stats_message_activity_channel_date
         ON stats_message_activity (guild_id, channel_id, activity_date)
-        """
+        """,
+        description="creating the channel activity index",
     )
-    connection.execute(
+    execute_write(
+        connection,
         """
         CREATE INDEX IF NOT EXISTS idx_stats_message_activity_user_date
         ON stats_message_activity (guild_id, user_id, activity_date)
-        """
+        """,
+        description="creating the member activity index",
     )
-    connection.execute(
+    execute_write(
+        connection,
         """
         CREATE INDEX IF NOT EXISTS idx_stats_message_activity_source_date
         ON stats_message_activity (guild_id, source, activity_date)
-        """
+        """,
+        description="creating the source activity index",
     )
-    connection.execute(
+    execute_write(
+        connection,
         """
         CREATE TABLE IF NOT EXISTS stats_activity_imports (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -204,15 +295,19 @@ def ensure_schema(connection: sqlite3.Connection) -> None:
             status TEXT DEFAULT 'completed',
             notes TEXT
         )
-        """
+        """,
+        description="creating the activity import log",
     )
-    connection.execute(
+    execute_write(
+        connection,
         """
         CREATE INDEX IF NOT EXISTS idx_stats_activity_imports_guild_date
         ON stats_activity_imports (guild_id, imported_at)
-        """
+        """,
+        description="creating the import log index",
     )
-    connection.execute(
+    execute_write(
+        connection,
         """
         CREATE TABLE IF NOT EXISTS stats_activity_imported_messages (
             guild_id INTEGER NOT NULL,
@@ -221,9 +316,10 @@ def ensure_schema(connection: sqlite3.Connection) -> None:
             imported_at TEXT NOT NULL,
             PRIMARY KEY (guild_id, message_id)
         )
-        """
+        """,
+        description="creating the imported-message dedupe table",
     )
-    connection.commit()
+    commit_with_retry(connection, "committing schema updates")
 
 
 def input_files(args: argparse.Namespace) -> list[Path]:
@@ -604,7 +700,8 @@ def record_import(
     imported_at: str,
     result: FileResult,
 ) -> None:
-    connection.execute(
+    execute_write(
+        connection,
         """
         INSERT INTO stats_activity_imports (
             guild_id, import_batch_id, filename, channel_id, channel_name,
@@ -630,6 +727,7 @@ def record_import(
             result.status,
             result.notes,
         ),
+        description="recording the import result",
     )
 
 
@@ -642,7 +740,27 @@ def flush_activity_buckets(
 ) -> None:
     if buckets:
         now = utcnow().isoformat()
-        connection.executemany(
+        rows = [
+            (
+                args.guild_id,
+                channel_id,
+                values["channel_name"],
+                user_id,
+                values["display_name"],
+                values["username"],
+                hour[:10],
+                hour,
+                values["count"],
+                args.source,
+                imported_at,
+                batch_id,
+                now,
+                now,
+            )
+            for (channel_id, user_id, hour), values in buckets.items()
+        ]
+        executemany_write(
+            connection,
             """
             INSERT INTO stats_message_activity (
                 guild_id, channel_id, channel_name, user_id, display_name,
@@ -661,28 +779,11 @@ def flush_activity_buckets(
                 message_count = message_count + excluded.message_count,
                 updated_at = excluded.updated_at
             """,
-            [
-                (
-                    args.guild_id,
-                    channel_id,
-                    values["channel_name"],
-                    user_id,
-                    values["display_name"],
-                    values["username"],
-                    hour[:10],
-                    hour,
-                    values["count"],
-                    args.source,
-                    imported_at,
-                    batch_id,
-                    now,
-                    now,
-                )
-                for (channel_id, user_id, hour), values in buckets.items()
-            ],
+            rows,
+            description="writing imported activity buckets",
         )
         buckets.clear()
-    connection.commit()
+    commit_with_retry(connection)
 
 
 def prepare_dry_run_dedupe(connection: sqlite3.Connection) -> None:
@@ -784,7 +885,8 @@ def process_file(
                         dedupe_table_exists,
                     )
                 else:
-                    cursor = connection.execute(
+                    cursor = execute_write(
+                        connection,
                         """
                         INSERT OR IGNORE INTO stats_activity_imported_messages (
                             guild_id, message_id, import_batch_id, imported_at
@@ -792,6 +894,7 @@ def process_file(
                         VALUES (?, ?, ?, ?)
                         """,
                         (args.guild_id, message_id, batch_id, imported_at),
+                        description="writing imported-message dedupe markers",
                     )
                     duplicate = cursor.rowcount == 0
 
@@ -844,7 +947,7 @@ def process_file(
         )
         update_result_channel(result)
         record_import(connection, args.guild_id, batch_id, imported_at, result)
-        connection.commit()
+        commit_with_retry(connection, "committing the import result")
         return result
     except Exception as exc:
         pending_totals = pending_channel_totals(buckets)
@@ -880,6 +983,40 @@ def print_file_result(result: FileResult) -> None:
         print(f"  Notes: {result.notes}")
 
 
+def open_database(args: argparse.Namespace) -> sqlite3.Connection:
+    if args.dry_run and args.database.exists():
+        database_uri = f"file:{args.database.resolve()}?mode=ro"
+        connection = sqlite3.connect(
+            database_uri,
+            uri=True,
+            timeout=SQLITE_TIMEOUT_SECONDS,
+        )
+    elif args.dry_run:
+        connection = sqlite3.connect(
+            ":memory:",
+            timeout=SQLITE_TIMEOUT_SECONDS,
+        )
+    else:
+        connection = sqlite3.connect(
+            args.database,
+            timeout=SQLITE_TIMEOUT_SECONDS,
+        )
+
+    connection.execute("PRAGMA foreign_keys = ON")
+    connection.execute(f"PRAGMA busy_timeout = {SQLITE_BUSY_TIMEOUT_MS}")
+    if not args.dry_run:
+        journal_mode = with_sqlite_lock_retry(
+            lambda: connection.execute("PRAGMA journal_mode=WAL").fetchone(),
+            "enabling SQLite WAL mode",
+        )
+        if journal_mode and str(journal_mode[0]).lower() != "wal":
+            print(
+                f"Warning: SQLite journal mode is {journal_mode[0]!r}, not WAL.",
+                file=sys.stderr,
+            )
+    return connection
+
+
 def main() -> int:
     args = parse_args()
     if args.guild_id <= 0:
@@ -894,15 +1031,7 @@ def main() -> int:
         print("No JSON or CSV export files were found.", file=sys.stderr)
         return 1
 
-    if args.dry_run and args.database.exists():
-        database_uri = f"file:{args.database.resolve()}?mode=ro"
-        connection = sqlite3.connect(database_uri, uri=True)
-    elif args.dry_run:
-        connection = sqlite3.connect(":memory:")
-    else:
-        connection = sqlite3.connect(args.database)
-    connection.execute("PRAGMA foreign_keys = ON")
-    connection.execute("PRAGMA busy_timeout = 30000")
+    connection = open_database(args)
     if not args.dry_run:
         ensure_schema(connection)
     batch_id = str(uuid.uuid4())
@@ -926,7 +1055,7 @@ def main() -> int:
                     utcnow().isoformat(),
                     result,
                 )
-                connection.commit()
+                commit_with_retry(connection, "committing the failed import log")
         except Exception as exc:
             result = FileResult(
                 filename=str(path),
@@ -943,7 +1072,7 @@ def main() -> int:
                     utcnow().isoformat(),
                     result,
                 )
-                connection.commit()
+                commit_with_retry(connection, "committing the failed import log")
         results.append(result)
         channel_totals.update(result.channel_totals)
         print_file_result(result)
