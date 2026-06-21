@@ -7,6 +7,9 @@ tracking, live statistics, queues, polls, leaderboards, and bank tracking.
 The bot loads every Python cog in `cogs/` and synchronizes its application
 commands when it starts.
 
+For a module-by-module architecture and reliability map, see
+[docs/codebase-map.md](docs/codebase-map.md).
+
 ## Command notation
 
 - `<input>` means the input is required.
@@ -33,7 +36,10 @@ commands when it starts.
 | Bank commands | Administrators or roles listed in `BANK_ALLOWED_ROLE_IDS` |
 | Stats creation and refresh commands | Administrators or roles listed in `STATS_ALLOWED_ROLE_IDS` |
 | `/stats delete` and `/stats reset` | Administrators only |
-| Poll, queue, and leaderboard commands | No additional role check is currently implemented in their cogs |
+| `/poll`, `/queue dashboard`, and member queue actions | All server members |
+| Queue lock/unlock/move/remove/pull controls | Administrators or members with **Manage Channels** |
+| `/leaderboards` | All server members |
+| Leaderboard create/delete/add/remove commands | Administrators or members with **Manage Server** |
 
 For staff-restricted features, an empty role-ID environment variable makes the
 feature effectively administrator-only. This does not apply to `/ask`.
@@ -773,6 +779,7 @@ Records a public contribution and refreshes the configured public bank summary.
 - `user` — Member credited with the contribution.
 - `amount` — Positive contribution amount.
 - `note` — Short, public-safe description of the contribution.
+  Maximum 300 characters.
 
 ### `/bank expense <amount> <note>`
 
@@ -780,6 +787,7 @@ Records an expense and refreshes the configured public bank summary.
 
 - `amount` — Positive amount spent.
 - `note` — Description of what the funds supported.
+  Maximum 300 characters.
 
 ### `/bank balance`
 
@@ -799,20 +807,22 @@ saves that channel/message as the configured summary location.
 Sets the current text channel as the public bank channel and publishes a fresh
 summary there.
 
-### `/bank clear`
+### `/bank clear <confirm>`
 
-Deletes all bank transaction test data and clears the configured summary
-message ID. This is destructive and cannot be undone through the bot.
+Administrator-only. Deletes all bank transactions and refreshes the configured
+public summary to show the empty ledger when `confirm` is true. This is
+destructive and cannot be undone through the bot.
 
 ## Leaderboard commands
 
-Leaderboard commands currently have no extra role check in their cog.
+Viewing leaderboards is public. Creating, deleting, and changing scores
+requires **Manage Server** or administrator permission.
 
 ### `/leaderboard create <name>`
 
-Creates a named leaderboard. If the name already exists, it is kept/replaced.
+Creates a named leaderboard. Existing leaderboards are preserved.
 
-- `name` — Name used to identify the leaderboard.
+- `name` — Name used to identify the leaderboard, up to 50 characters.
 
 ### `/leaderboard delete <name>`
 
@@ -854,14 +864,16 @@ downloaded, the leaderboard still renders with a placeholder.
 Creates an interactive poll in the current channel.
 
 - `question` — Poll title/question.
-- `options` — Comma-separated choices, with a maximum of 26. Example:
-  `Friday, Saturday, Sunday`.
+- `options` — Two to 25 unique comma-separated choices, each up to 80
+  characters. Example: `Friday, Saturday, Sunday`.
 - `time` — Poll duration. Supported units include seconds, minutes, hours,
-  days, weeks, months, and years. Examples: `30m`, `1h`, or `2d`.
+  days, weeks, months, and years, up to one year. Examples: `30m`, `1h`, or
+  `2d`.
 
-Members vote using buttons. Running the command privately confirms creation;
-the poll itself is public. When time expires, the active poll is replaced with
-the final results.
+Members vote using compact lettered buttons and may change their vote before
+the poll closes. Running the command privately confirms creation; the poll
+itself is public. When time expires, the original message becomes a visual
+results board instead of being deleted and reposted.
 
 ## Queue slash commands
 
@@ -869,33 +881,36 @@ Queue state is separate for each channel.
 
 ### `/queue dashboard`
 
-Posts a public queue dashboard in the current channel. The dashboard includes
-buttons to join, leave, delay one position, and pull the next member.
+Posts a public queue dashboard in the current voice or stage channel's text
+chat. The dashboard includes buttons to join, leave, delay one position, and
+pull the next member.
 
-Joining through the dashboard requires the member to be connected to the queue
-voice channel represented by the current channel.
+Joining requires the member to be connected to that same voice or stage
+channel.
 
 ### `/queue lock`
 
-Locks the current channel's queue so new members cannot join.
+Locks the current channel's queue so new members cannot join. Requires
+**Manage Channels**.
 
 ### `/queue unlock`
 
-Unlocks the current channel's queue.
+Unlocks the current channel's queue. Requires **Manage Channels**.
 
 ### `/queue move <user> <position>`
 
 Moves an existing queue member to a numbered position.
 
 - `user` — User already in the current channel's queue.
-- `position` — Desired one-based position. Negative values are converted to
-  positive values.
+- `position` — Desired one-based position. Values beyond the queue length are
+  safely clamped to the final position.
 
 ### `/queue remove <user>`
 
 Removes a user from the current channel's queue.
 
 - `user` — User to remove.
+- Requires **Manage Channels**.
 
 ## Legacy queue commands
 
@@ -907,7 +922,7 @@ These message commands use the bot prefix `!`.
 | `!qj` | Joins the queue. The caller must be in the matching queue voice channel, and the queue must be unlocked. |
 | `!ql` | Leaves the current channel's queue. |
 | `!qd` | Moves the caller one place later in the queue. |
-| `!qn` | Pulls the first member from the queue and announces who is next. |
+| `!qn` | Pulls the first member from the queue and announces who is next. Requires **Manage Channels**. |
 
 ## Environment variables
 
@@ -936,10 +951,10 @@ Create a `.env` file in the project root. Do not commit it.
 | `BANK_ALLOWED_ROLE_IDS` | Comma-separated Discord role IDs allowed to use bank commands. |
 | `STATS_ALLOWED_ROLE_IDS` | Comma-separated Discord role IDs allowed to create and refresh stats pages. |
 
-Copy `.env.example` to `.env` as a starting point, then replace blank values
-with the deployment's secrets and Discord IDs.
-
 ## Run locally
+
+Python 3.11 or newer is recommended. Python 3.9 is end-of-life and current
+Google libraries emit compatibility warnings on it.
 
 ```bash
 cd ~/Documents/BroEdenBot

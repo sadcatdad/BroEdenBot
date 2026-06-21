@@ -1,5 +1,6 @@
 import os
 import re
+import logging
 from typing import Any, List
 
 import discord
@@ -10,6 +11,7 @@ from discord.ext import commands
 MAX_NOTE_LENGTH = 2_000
 MAX_VIEW_NOTES = 50
 NOTES_PER_EMBED = 5
+logger = logging.getLogger(__name__)
 
 
 def _truncate(value: Any, limit: int, fallback: str = "Not provided") -> str:
@@ -102,9 +104,10 @@ class StaffNotes(commands.Cog):
 
     @staticmethod
     def _log_database_error(operation: str, exc: Exception) -> None:
-        print(
-            f"Staff notes database failure: operation={operation} "
-            f"error_type={type(exc).__name__}"
+        logger.error(
+            "Staff notes database failure: operation=%s error_type=%s",
+            operation,
+            type(exc).__name__,
         )
 
     @staffnote.command(name="add", description="Add a private staff note")

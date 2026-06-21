@@ -8,6 +8,7 @@ from discord import app_commands
 from discord.ext import commands
 
 from config import COLOR
+from utils.ui import branded_embed
 
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
@@ -137,10 +138,11 @@ class Admin(commands.Cog):
         git_hash = await self._git_hash()
         last_import = await self._last_import(guild.id)
 
-        embed = discord.Embed(
-            title="BroEdenBot health",
+        embed = branded_embed(
+            "🩺 BroEdenBot Health",
             color=discord.Color(COLOR),
-            timestamp=discord.utils.utcnow(),
+            timestamp=True,
+            footer="Private administrator diagnostics",
         )
         embed.add_field(
             name="Bot process",

@@ -8,6 +8,13 @@ from discord import app_commands
 from discord.ext import commands
 
 from config import COLOR
+from utils.ui import (
+    branded_embed,
+    error_embed,
+    success_embed,
+    truncate,
+    warning_embed,
+)
 
 
 DATABASE_PATH = "brobank.db"
@@ -90,7 +97,7 @@ class Bank(commands.Cog):
         interaction: discord.Interaction,
         user: discord.Member,
         amount: float,
-        note: str,
+        note: app_commands.Range[str, 1, 300],
     ):
         amount = self.valid_amount(amount)
         if amount is None:
@@ -111,7 +118,11 @@ class Bank(commands.Cog):
         )
 
         await interaction.followup.send(
-            f"Added {self.money(amount)} from {user.mention}.", ephemeral=True
+            embed=success_embed(
+                "Contribution recorded",
+                f"Added **{self.money(amount)}** from {user.mention}.",
+            ),
+            ephemeral=True,
         )
         await self.refresh_configured_embed()
 
@@ -119,7 +130,10 @@ class Bank(commands.Cog):
     @app_commands.describe(amount="Expense amount", note="What the funds supported")
     @app_commands.check(has_bank_access)
     async def expense(
-        self, interaction: discord.Interaction, amount: float, note: str
+        self,
+        interaction: discord.Interaction,
+        amount: float,
+        note: app_commands.Range[str, 1, 300],
     ):
         amount = self.valid_amount(amount)
         if amount is None:
@@ -136,7 +150,11 @@ class Bank(commands.Cog):
             created_by=interaction.user.id,
         )
         await interaction.followup.send(
-            f"Recorded an expense of {self.money(amount)}.", ephemeral=True
+            embed=success_embed(
+                "Expense recorded",
+                f"Recorded **{self.money(amount)}** in spending.",
+            ),
+            ephemeral=True,
         )
         await self.refresh_configured_embed()
 
@@ -144,12 +162,29 @@ class Bank(commands.Cog):
     @app_commands.check(has_bank_access)
     async def balance(self, interaction: discord.Interaction):
         totals = await self.get_totals()
+        embed = branded_embed(
+            "🏦 Bro Eden Bank Balance",
+            f"## {self.money(totals['balance'])}\n"
+            "Available community balance",
+            timestamp=True,
+        )
+        embed.add_field(
+            name="Contributions",
+            value=self.money(totals["contributions"]),
+            inline=True,
+        )
+        embed.add_field(
+            name="Expenses",
+            value=self.money(totals["expenses"]),
+            inline=True,
+        )
+        embed.add_field(
+            name="Contributors",
+            value=f"{totals['contributors']:,}",
+            inline=True,
+        )
         await interaction.response.send_message(
-            (
-                f"**Available balance:** {self.money(totals['balance'])}\n"
-                f"Contributions: {self.money(totals['contributions'])}\n"
-                f"Expenses: {self.money(totals['expenses'])}"
-            ),
+            embed=embed,
             ephemeral=True,
         )
 
@@ -171,10 +206,11 @@ class Bank(commands.Cog):
         else:
             description = "No public contributions have been recorded yet."
 
-        embed = discord.Embed(
-            title="Bro Eden Bank Leaderboard",
+        embed = branded_embed(
+            "🏆 Bro Eden Bank Leaderboard",
             description=description,
             color=COLOR,
+            footer="Bro Eden Bank • Public contributions",
         )
         await interaction.response.send_message(embed=embed)
 
@@ -219,21 +255,48 @@ class Bank(commands.Cog):
             ephemeral=True,
         )
 
-    @bank.command(name="clear", description="Clear all BroBank test data")
+    @bank.command(name="clear", description="Permanently clear all BroBank data")
+    @app_commands.describe(confirm="Must be true to permanently clear bank data")
+    @app_commands.default_permissions(administrator=True)
     @app_commands.check(has_bank_access)
-    async def clear(self, interaction: discord.Interaction):
+    async def clear(
+        self,
+        interaction: discord.Interaction,
+        confirm: bool,
+    ):
+        permissions = getattr(interaction.user, "guild_permissions", None)
+        if not permissions or not permissions.administrator:
+            await interaction.response.send_message(
+                embed=error_embed(
+                    "Administrator required",
+                    "Only administrators can permanently clear bank data.",
+                ),
+                ephemeral=True,
+            )
+            return
+        if not confirm:
+            await interaction.response.send_message(
+                embed=warning_embed(
+                    "Clear cancelled",
+                    "No data was changed. Run the command again with "
+                    "`confirm: True` only if you intend to erase everything.",
+                ),
+                ephemeral=True,
+            )
+            return
         await interaction.response.defer(ephemeral=True)
         await self.db.execute("DELETE FROM bank_transactions")
         await self.db.execute(
             "DELETE FROM sqlite_sequence WHERE name = 'bank_transactions'"
         )
-        await self.db.execute(
-            "DELETE FROM bank_settings WHERE key = 'bank_message_id'"
-        )
         await self.db.commit()
+        await self.refresh_configured_embed()
         await interaction.followup.send(
-            "BroBank test data has been cleared. Run /bank refresh to create "
-            "a fresh public embed.",
+            embed=success_embed(
+                "Bank data cleared",
+                "All bank transactions were removed and the configured public "
+                "summary was refreshed.",
+            ),
             ephemeral=True,
         )
 
@@ -295,6 +358,7 @@ class Bank(commands.Cog):
             """
         )
         contributions, expenses, balance = await cursor.fetchone()
+        await cursor.close()
 
         cursor = await self.db.execute(
             """
@@ -312,6 +376,7 @@ class Bank(commands.Cog):
             """
         )
         contributor_count = (await cursor.fetchone())[0]
+        await cursor.close()
         return {
             "contributions": contributions,
             "expenses": expenses,
@@ -337,7 +402,9 @@ class Bank(commands.Cog):
             """,
             (limit,),
         )
-        return await cursor.fetchall()
+        rows = await cursor.fetchall()
+        await cursor.close()
+        return rows
 
     async def get_recent_activity(self, limit=5):
         cursor = await self.db.execute(
@@ -365,7 +432,9 @@ class Bank(commands.Cog):
             """,
             (limit,),
         )
-        return await cursor.fetchall()
+        rows = await cursor.fetchall()
+        await cursor.close()
+        return rows
 
     async def build_public_embed(self):
         totals = await self.get_totals()
@@ -409,9 +478,10 @@ class Bank(commands.Cog):
         embed.add_field(name="Top Contributors", value=leaderboard, inline=False)
 
         if activity:
-            recent = "\n".join(
+            recent_lines = [
                 self.format_activity(*transaction) for transaction in activity
-            )
+            ]
+            recent = truncate("\n".join(recent_lines), 1_024)
         else:
             recent = "No activity recorded yet."
         embed.add_field(name="Recent Activity", value=recent, inline=False)
@@ -437,7 +507,11 @@ class Bank(commands.Cog):
         if not channel_id:
             return
 
-        channel = self.bot.get_channel(int(channel_id))
+        try:
+            parsed_channel_id = int(channel_id)
+        except (TypeError, ValueError):
+            return
+        channel = self.bot.get_channel(parsed_channel_id)
         if not isinstance(channel, discord.TextChannel):
             return
 
@@ -452,6 +526,7 @@ class Bank(commands.Cog):
             "SELECT value FROM bank_settings WHERE key = ?", (key,)
         )
         row = await cursor.fetchone()
+        await cursor.close()
         return row[0] if row else None
 
     async def set_setting(self, key: str, value: str):
@@ -479,7 +554,7 @@ class Bank(commands.Cog):
     def public_donor_name(user_id, display_name):
         if user_id:
             return f"<@{user_id}>"
-        return discord.utils.escape_markdown(display_name)
+        return discord.utils.escape_markdown(display_name or "Anonymous")
 
     def format_activity(
         self,
@@ -492,7 +567,9 @@ class Bank(commands.Cog):
         created_at,
     ):
         timestamp = int(datetime.datetime.fromisoformat(created_at).timestamp())
-        safe_note = discord.utils.escape_markdown(note or "No note")
+        safe_note = discord.utils.escape_markdown(
+            truncate(note, 120, "No note")
+        )
 
         if transaction_type == "contribution":
             donor = self.public_donor_name(discord_user_id, display_name)

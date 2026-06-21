@@ -6,6 +6,7 @@ from discord import app_commands
 from discord.ext import commands
 
 from utils.knowledge import search_server_knowledge
+from utils.ui import INFO_COLOR, branded_embed
 
 
 SUPPORT_MESSAGE = (
@@ -66,10 +67,11 @@ class Guide(commands.Cog):
             )
             return
 
-        embed = discord.Embed(
-            title="Guide search results",
+        embed = branded_embed(
+            "🔎 Guide Search Results",
             description=f"Best public matches for **{discord.utils.escape_markdown(query)}**",
-            color=discord.Color.green(),
+            color=INFO_COLOR,
+            footer="Public guide and rules • Deterministic keyword search",
         )
         for source, heading, excerpt in results:
             label = SOURCE_LABELS.get(source, source)
@@ -78,7 +80,6 @@ class Guide(commands.Cog):
                 value=excerpt[:1024] or "Matching section found.",
                 inline=False,
             )
-        embed.set_footer(text="Deterministic keyword search of public guidance only.")
         await interaction.response.send_message(
             embed=embed,
             ephemeral=True,

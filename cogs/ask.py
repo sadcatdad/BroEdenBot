@@ -12,6 +12,7 @@ from google import genai
 from google.genai import errors, types
 
 from utils.knowledge import build_public_ask_context, search_server_knowledge
+from utils.ui import SUCCESS_COLOR, branded_embed
 
 
 DEFAULT_MODEL = "gemini-2.5-flash"
@@ -134,9 +135,11 @@ def _format_public_response(question: str, answer: str) -> discord.Embed:
     answer = compact_answer
     if len(answer) > available_answer_length:
         answer = answer[: available_answer_length - 1].rstrip() + "…"
-    return discord.Embed(
+    return branded_embed(
+        "✨ Bro Eden Guide Answer",
         description=prefix + answer,
-        color=discord.Color.green(),
+        color=SUCCESS_COLOR,
+        footer="Private answer • Based only on the public guide and rules",
     )
 
 
@@ -179,7 +182,11 @@ class AskResponseView(discord.ui.View):
         )
         return False
 
-    @discord.ui.button(label="Open Ticket", style=discord.ButtonStyle.primary)
+    @discord.ui.button(
+        label="Open Ticket",
+        emoji="🎫",
+        style=discord.ButtonStyle.primary,
+    )
     async def open_ticket(
         self,
         interaction: discord.Interaction,
@@ -191,7 +198,11 @@ class AskResponseView(discord.ui.View):
             allowed_mentions=discord.AllowedMentions.none(),
         )
 
-    @discord.ui.button(label="Search Guide", style=discord.ButtonStyle.secondary)
+    @discord.ui.button(
+        label="Search Guide",
+        emoji="🔎",
+        style=discord.ButtonStyle.secondary,
+    )
     async def search_guide(
         self,
         interaction: discord.Interaction,
@@ -202,7 +213,11 @@ class AskResponseView(discord.ui.View):
             suggestion += f"\nSuggested query: `{self.keywords}`"
         await interaction.response.send_message(suggestion, ephemeral=True)
 
-    @discord.ui.button(label="This Helped", style=discord.ButtonStyle.success)
+    @discord.ui.button(
+        label="This Helped",
+        emoji="✅",
+        style=discord.ButtonStyle.success,
+    )
     async def helped(
         self,
         interaction: discord.Interaction,
@@ -210,7 +225,11 @@ class AskResponseView(discord.ui.View):
     ) -> None:
         await interaction.response.send_message("Glad it helped!", ephemeral=True)
 
-    @discord.ui.button(label="Still Confused", style=discord.ButtonStyle.danger)
+    @discord.ui.button(
+        label="Still Confused",
+        emoji="🧭",
+        style=discord.ButtonStyle.danger,
+    )
     async def still_confused(
         self,
         interaction: discord.Interaction,
