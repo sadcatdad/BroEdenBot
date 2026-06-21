@@ -23,7 +23,8 @@ maintenance.
 
 ## Staff and analytics tools
 
-- `cogs/admin.py` — Private health and deployment diagnostics.
+- `cogs/bot_admin.py` — Owner-only private status, logs, restart, and deploy
+  controls. Historical imports remain terminal-only.
 - `cogs/mod_ai.py` — Private Gemini-assisted moderation guidance.
 - `cogs/staff_notes.py` — Manual private staff records.
 - `cogs/stats.py` — Live/imported activity reports and roster graphics.

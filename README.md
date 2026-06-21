@@ -23,7 +23,7 @@ For a module-by-module architecture and reliability map, see
 | --- | --- |
 | `/ask` | All server members |
 | `/guide search` | All server members |
-| `/admin health` | Administrators only |
+| `/bot help`, `/bot status`, `/bot logs`, `/bot restart`, `/bot deploy` | Users listed in `BOT_OWNER_USER_IDS`; administrators only when `BOT_OWNER_ALLOW_ADMINS=true` |
 | ModAI commands and context menus | Administrators or roles listed in `MODAI_ALLOWED_ROLE_IDS` |
 | Staff-note commands | Administrators or roles listed in `STAFF_NOTES_ALLOWED_ROLE_IDS` |
 | `/staffnote delete` | Administrators only |
@@ -42,12 +42,17 @@ For a module-by-module architecture and reliability map, see
 | Leaderboard create/delete/add/remove commands | Administrators or members with **Manage Server** |
 
 For staff-restricted features, an empty role-ID environment variable makes the
-feature effectively administrator-only. This does not apply to `/ask`.
+feature effectively administrator-only. This does not apply to `/ask` or the
+`/bot` group. Bot management is owner-only by default.
 
-## Admin and analytics commands
+## Bot management and analytics commands
 
-- `/admin health` — Private bot, database, configuration, import, VCXP-role,
-  and Git health report. Secret values are never displayed.
+- `/bot help` — Private command guide and terminal-import reminders.
+- `/bot status` — Private bot, database, configuration, import-folder,
+  systemd, VCXP-role, and Git health report.
+- `/bot logs [lines]` — Private, redacted recent `broedenbot` systemd logs.
+- `/bot restart` — Confirmation-gated systemd restart.
+- `/bot deploy` — Confirmation-gated detached deployment.
 - `/stats activity trends [period] [source] [channel]` — Compares a fixed
   period with the immediately preceding period.
 - `/stats activity categories [period] [source] [limit] [channel]` — Groups
@@ -59,6 +64,44 @@ feature effectively administrator-only. This does not apply to `/ask`.
 - `/ask <question>` — Answers from public guidance with private follow-up
   buttons.
 - `/vcrewards audit` — Runs a private, read-only VCXP safety audit.
+
+### `/bot` management group
+
+All `/bot` responses are ephemeral. By default, only Discord user IDs listed
+in `BOT_OWNER_USER_IDS` can use these commands. Server administrators are not
+automatically trusted; set `BOT_OWNER_ALLOW_ADMINS=true` only if that broader
+access is intentional.
+
+```dotenv
+BOT_OWNER_USER_IDS=YOUR_DISCORD_USER_ID
+BOT_OWNER_ALLOW_ADMINS=false
+```
+
+- `/bot help` lists the available management commands.
+- `/bot status` reports runtime, systemd, Git, loaded cogs, SQLite files,
+  historical import metadata, active/archive import-folder counts,
+  configured-or-missing environment status, and VCXP role safety. It never
+  displays environment values or secrets.
+- `/bot logs [lines]` reads 50 recent service lines by default and accepts up
+  to 200. Obvious credentials and traceback details are removed. Longer output
+  is attached as a private text file.
+- `/bot restart` requires a requester-only confirmation and launches a
+  detached systemd restart.
+- `/bot deploy` requires a requester-only confirmation and launches
+  `./deploy.sh` as a detached systemd job from the Pi project directory.
+
+Restart and deployment confirmations expire after 60 seconds. The Pi service
+account must have narrowly scoped passwordless permission for the documented
+`systemd-run` commands.
+
+Historical imports intentionally remain terminal-only because they can be
+long-running and require export files to be transferred first:
+
+```text
+bedsync        # Mac: transfer exports to the Pi
+bedimportdry   # Pi: preview imports
+bedimport      # Pi: run imports
+```
 
 ## Member server-help command
 
@@ -958,6 +1001,8 @@ Create a `.env` file in the project root. Do not commit it.
 | Variable | Purpose |
 | --- | --- |
 | `DISCORD_TOKEN` | Discord bot token. Required. |
+| `BOT_OWNER_USER_IDS` | Comma-separated Discord user IDs allowed to use `/bot` commands. |
+| `BOT_OWNER_ALLOW_ADMINS` | Allows server administrators to use `/bot` when `true`. Defaults to `false`. |
 | `GEMINI_API_KEY` | Gemini API key used by `/ask` and ModAI. |
 | `ASK_MODEL` | Optional primary Gemini model for `/ask`; falls back to `MODAI_MODEL`. |
 | `ASK_FALLBACK_MODEL` | Optional fallback Gemini model for `/ask`; falls back to `MODAI_FALLBACK_MODEL`. |
@@ -1020,3 +1065,7 @@ cd ~/BroEdenBot
 The deployment script should restart the bot. If it does not, restart the bot
 service or process manually so updated cogs and slash-command definitions are
 loaded and synchronized.
+
+After the owner IDs and Pi permissions are configured, `/bot deploy` provides
+the confirmation-gated Discord shortcut. Historical imports are never launched
+from Discord; continue using `bedimportdry` and `bedimport` in the terminal.
