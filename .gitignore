@@ -13,5 +13,7 @@ __pycache__/
 /exports/
 /data/imports/
 /data/exports/
+**/imports/**/*.json
+**/exports/**/*.json
 *.csv
 *.zip

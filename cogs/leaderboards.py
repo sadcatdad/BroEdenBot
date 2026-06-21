@@ -2,9 +2,10 @@
 
 import asyncio
 import io
+import math
 from discord.ext import commands
 import discord
-from PIL import Image, ImageDraw, ImageFont
+from PIL import Image, ImageDraw, ImageFont, UnidentifiedImageError
 import requests
 from io import BytesIO
 
@@ -21,6 +22,16 @@ class Leaderboards(commands.Cog):
         await self.bot.db.commit()
     
     leaderboard = discord.app_commands.Group(name="leaderboard", description="Leaderboard commands")
+
+    @staticmethod
+    def parse_points(value: str):
+        try:
+            points = round(abs(float(value)), 2)
+        except (TypeError, ValueError):
+            return None
+        if not math.isfinite(points) or points <= 0:
+            return None
+        return points
 
     @leaderboard.command(name="create", description="Create a leaderboard")
     async def create_leaderboard(self, interaction: discord.Interaction, name: str):
@@ -63,9 +74,8 @@ class Leaderboards(commands.Cog):
     async def add_points(self, interaction: discord.Interaction, leaderboard: str, user: discord.User, points: str):
         await interaction.response.defer()
         embed = discord.Embed(color=COLOR)
-        try:
-            points = round(abs(float(points)), 2)
-        except:
+        points = self.parse_points(points)
+        if points is None:
             embed.description = "Invalid points value. Please provide a valid number."
             await interaction.followup.send(embed=embed)
             return
@@ -78,7 +88,15 @@ class Leaderboards(commands.Cog):
         cur = await self.bot.db.execute("SELECT name FROM leaderboards WHERE name = ?", (leaderboard,))
         res = await cur.fetchone()
         if res:
-            await self.bot.db.execute("INSERT INTO points (id, leaderboard, points) VALUES (?, ?, ?) ON CONFLICT (id, leaderboard) DO UPDATE SET points = points = ?", (user.id, leaderboard, points, points,))
+            await self.bot.db.execute(
+                """
+                INSERT INTO points (id, leaderboard, points)
+                VALUES (?, ?, ?)
+                ON CONFLICT (id, leaderboard)
+                DO UPDATE SET points = points + excluded.points
+                """,
+                (user.id, leaderboard, points),
+            )
             await self.bot.db.commit()
             embed.description = f"Added {points:,} points to {user.mention} in leaderboard `{leaderboard}`."
         else:
@@ -88,20 +106,18 @@ class Leaderboards(commands.Cog):
     @leaderboard.command(name="remove", description="Remove points from a user in a leaderboard")
     async def remove_points(self, interaction: discord.Interaction, leaderboard: str, user: discord.User, points: str):
         await interaction.response.defer(ephemeral=True)
-        try:
-            points = round(abs(float(points)), 2)
-        except:
+        embed = discord.Embed(color=COLOR)
+        points = self.parse_points(points)
+        if points is None:
             embed.description = "Invalid points value. Please provide a valid number."
             await interaction.followup.send(embed=embed)
             return
         
         if user.bot:
-            embed = discord.Embed(color=COLOR)
             embed.description = "You cannot remove points from a bot."
             await interaction.followup.send(embed=embed)
             return
-        
-        embed = discord.Embed(color=COLOR)
+
         cur = await self.bot.db.execute("SELECT name FROM leaderboards WHERE name = ?", (leaderboard,))
         res = await cur.fetchone()
         if res:
@@ -123,9 +139,10 @@ class Leaderboards(commands.Cog):
         return [discord.app_commands.Choice(name=item[0], value=item[0]) for item in res]
     
     async def get_leaderboard_banner(self, leaderboard: str, page: int):
-        cur = await self.bot.db.execute(f"SELECT COUNT(*) FROM points WHERE leaderboard = ?", (leaderboard,))
+        cur = await self.bot.db.execute("SELECT COUNT(*) FROM points WHERE leaderboard = ?", (leaderboard,))
         res = await cur.fetchone()
-        total_pages = -(-res[0] // 10)
+        total_pages = max(1, -(-res[0] // 10))
+        page = min(max(0, page), total_pages - 1)
 
         cur = await self.bot.db.execute("SELECT id, points FROM points WHERE leaderboard = ? ORDER BY points DESC LIMIT ?, 10", (leaderboard, 10*page,))
         res = await cur.fetchall()
@@ -153,7 +170,8 @@ class Leaderboards(commands.Cog):
         spacing = 10
         header_height = 80
         bar_width = 6
-        height = header_height + (row_height + spacing) * min(len(data), 10)
+        content_rows = max(1, min(len(data), 10))
+        height = header_height + (row_height + spacing) * content_rows
 
         background_color = "#1E1E1E"
         img = Image.new("RGB", (width, height), background_color)
@@ -166,6 +184,20 @@ class Leaderboards(commands.Cog):
         draw.rectangle([0, 0, width, header_height], fill="#131416")
         _, _, w, _ = draw.textbbox((0, 0), title, font=font_title)
         draw.text(((width - w) / 2, 25), title, font=font_title, fill="white")
+
+        if not data:
+            empty_text = "No points yet."
+            _, _, empty_width, _ = draw.textbbox(
+                (0, 0),
+                empty_text,
+                font=font_name,
+            )
+            draw.text(
+                ((width - empty_width) / 2, header_height + 30),
+                empty_text,
+                font=font_name,
+                fill="#B9BBBE",
+            )
 
         i=10*page
         for index, item in enumerate(data):
@@ -180,10 +212,31 @@ class Leaderboards(commands.Cog):
                 draw.rectangle([0, y, bar_width, y + row_height], fill=rank_color)
                 draw.text((bar_width + 10, y + 25), f"#{i+1}", font=font_name, fill=rank_color)
 
-                response = requests.get(user.display_avatar.url)
-                avatar = Image.open(BytesIO(response.content)).convert("RGBA")
-                avatar = avatar.resize((40, 40), Image.LANCZOS)
-                img.paste(avatar, (bar_width + 60, y + (row_height - 40)//2), avatar)
+                avatar_position = (
+                    bar_width + 60,
+                    y + (row_height - 40) // 2,
+                )
+                try:
+                    with requests.get(
+                        user.display_avatar.url,
+                        timeout=10,
+                    ) as response:
+                        response.raise_for_status()
+                        avatar = Image.open(
+                            BytesIO(response.content)
+                        ).convert("RGBA")
+                    avatar = avatar.resize((40, 40), Image.LANCZOS)
+                    img.paste(avatar, avatar_position, avatar)
+                except (
+                    requests.RequestException,
+                    UnidentifiedImageError,
+                    OSError,
+                ):
+                    left, top = avatar_position
+                    draw.ellipse(
+                        [left, top, left + 40, top + 40],
+                        fill="#5865F2",
+                    )
                 
                 draw.text((bar_width + 110, y + 25), f"{user.display_name}", font=font_name, fill=rank_color)
                 points = f"{round(points, 2):,}"

@@ -44,9 +44,9 @@ events, verification, NSFW access, server features, and support.
 - `question` — Required server-related question, up to 1,000 characters.
 - The command is available to regular server members and does not require a
   staff role.
-- Successful responses are posted publicly in the channel where `/ask` was
-  used.
-- The public response is a compact green embed with the submitted question and
+- Successful responses are ephemeral by default and visible only to the member
+  who used `/ask`.
+- The private response is a compact green embed with the submitted question and
   answer in one description:
 
   ```text
@@ -60,7 +60,7 @@ events, verification, NSFW access, server features, and support.
 - The member's question is Markdown-escaped before display, and generated
   mentions are not allowed to notify users or roles.
 - Cooldown, configuration, channel-restriction, out-of-scope, and staff-only
-  redirects are shown ephemerally.
+  redirects are also shown ephemerally.
 
 `/ask` uses Gemini with only the local public knowledge in:
 
@@ -85,8 +85,8 @@ channel instead. Clearly unrelated questions are also redirected rather than
 answered.
 
 The command has a per-user cooldown of 30 seconds by default. If Gemini returns
-an empty or blocked response, the public embed says it cannot answer safely. If
-Gemini fails, the public embed directs the member to the support-ticket
+an empty or blocked response, the private embed says it cannot answer safely. If
+Gemini fails, the private embed directs the member to the support-ticket
 channel. Missing `GEMINI_API_KEY` configuration is reported ephemerally.
 
 The Gemini request uses `ASK_MODEL` when configured, otherwise `MODAI_MODEL`,
@@ -634,7 +634,8 @@ hour, incrementing `message_count` as messages arrive.
 Export Discord channels with DiscordChatExporter CLI as JSON, then save the
 exports locally in `imports/discord_history/`. Exported JSON and CSV files may
 contain private server history and can be very large, so they must not be
-committed to Git.
+committed to Git. Previously tracked exports should be removed from Git's index
+with `git rm --cached` while keeping the local files ignored.
 
 Run a dry run first:
 
@@ -651,7 +652,11 @@ python scripts/import_discord_history.py --folder imports/discord_history --guil
 
 Re-running the importer is safe because previously imported message IDs are
 deduplicated. The importer stores activity metadata only, never message
-content.
+content. JSON exports are streamed one message at a time, activity buckets and
+dedupe records are committed every 5,000 messages, and progress is printed
+every 10,000 messages. If a later batch fails, the audit record accurately
+reports the batches that were already committed. CSV exports remain supported,
+including channel metadata supplied on individual rows.
 
 ## Bank commands
 
@@ -713,7 +718,8 @@ Deletes a leaderboard and all point records attached to it.
 
 ### `/leaderboard add <leaderboard> <user> <points>`
 
-Records points for a user on a leaderboard.
+Adds points to a user's existing total on a leaderboard, or creates the user's
+point record when none exists.
 
 - `leaderboard` — Existing leaderboard name, with autocomplete.
 - `user` — Non-bot Discord user receiving points.
@@ -732,6 +738,8 @@ Subtracts points from a user without allowing the total to fall below zero.
 ### `/leaderboards <name>`
 
 Displays a leaderboard as a paginated graphic, ten members per page.
+Empty leaderboards display a friendly empty state. If an avatar cannot be
+downloaded, the leaderboard still renders with a placeholder.
 
 - `name` — Existing leaderboard name, with autocomplete.
 
@@ -823,6 +831,9 @@ Create a `.env` file in the project root. Do not commit it.
 | `BANK_ALLOWED_ROLE_IDS` | Comma-separated Discord role IDs allowed to use bank commands. |
 | `STATS_ALLOWED_ROLE_IDS` | Comma-separated Discord role IDs allowed to create and refresh stats pages. |
 
+Copy `.env.example` to `.env` as a starting point, then replace blank values
+with the deployment's secrets and Discord IDs.
+
 ## Run locally
 
 ```bash
@@ -845,6 +856,10 @@ To test `/ask` in Discord after startup:
 /ask question: can staff ban someone for this?
 /ask question: who reported me?
 ```
+
+Successful answers, redirects, and errors should be visible only to the member
+who invoked the command. Generated user, role, and everyone mentions must not
+notify anyone.
 
 ## Deploy on the Raspberry Pi
 

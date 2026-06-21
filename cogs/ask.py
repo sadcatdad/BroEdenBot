@@ -333,11 +333,13 @@ MEMBER QUESTION:
             )
             return
 
-        await interaction.response.defer(thinking=True)
+        # TODO: A future opt-in "Post Publicly" button could publish a safe copy.
+        await interaction.response.defer(thinking=True, ephemeral=True)
         context = build_public_ask_context(question)
         if not context:
             await interaction.followup.send(
                 embed=_format_public_response(question, GEMINI_FAILURE_MESSAGE),
+                ephemeral=True,
                 allowed_mentions=discord.AllowedMentions.none(),
             )
             return
@@ -349,18 +351,21 @@ MEMBER QUESTION:
         except GeminiNoUsableResponseError:
             await interaction.followup.send(
                 embed=_format_public_response(question, UNSAFE_RESPONSE_MESSAGE),
+                ephemeral=True,
                 allowed_mentions=discord.AllowedMentions.none(),
             )
             return
         except Exception:
             await interaction.followup.send(
                 embed=_format_public_response(question, GEMINI_FAILURE_MESSAGE),
+                ephemeral=True,
                 allowed_mentions=discord.AllowedMentions.none(),
             )
             return
 
         await interaction.followup.send(
             embed=_format_public_response(question, answer),
+            ephemeral=True,
             allowed_mentions=discord.AllowedMentions.none(),
         )
 

@@ -6,19 +6,24 @@ from __future__ import annotations
 import argparse
 import csv
 import datetime as dt
-import json
 import sqlite3
 import sys
 import uuid
 from collections import Counter, defaultdict
-from dataclasses import dataclass
+from contextlib import contextmanager
+from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Iterator, Optional
+from typing import Any, BinaryIO, Iterator, Optional
+
+import ijson
 
 
 UTC = dt.timezone.utc
 DEFAULT_DATABASE = Path("data.db")
 SUPPORTED_SUFFIXES = {".json", ".csv"}
+DATABASE_BATCH_SIZE = 5_000
+PROGRESS_INTERVAL = 10_000
+UTF8_BOM = b"\xef\xbb\xbf"
 
 
 @dataclass
@@ -34,6 +39,16 @@ class FileResult:
     latest: Optional[dt.datetime] = None
     status: str = "completed"
     notes: Optional[str] = None
+    channel_totals: Counter[tuple[int, str]] = field(
+        default_factory=Counter,
+        repr=False,
+    )
+
+
+class FileProcessingError(RuntimeError):
+    def __init__(self, result: FileResult):
+        super().__init__(result.notes or "Import failed")
+        self.result = result
 
 
 def parse_args() -> argparse.Namespace:
@@ -286,17 +301,76 @@ def is_system_message(message: dict[str, Any]) -> bool:
     return any(marker in normalized_type for marker in system_types)
 
 
+@contextmanager
+def open_json_stream(path: Path) -> Iterator[BinaryIO]:
+    handle = path.open("rb")
+    try:
+        if handle.read(len(UTF8_BOM)) != UTF8_BOM:
+            handle.seek(0)
+        yield handle
+    finally:
+        handle.close()
+
+
+def json_root_type(path: Path) -> str:
+    with open_json_stream(path) as handle:
+        try:
+            _, event, _ = next(ijson.parse(handle))
+        except StopIteration as exc:
+            raise ValueError("JSON export is empty") from exc
+    if event == "start_map":
+        return "object"
+    if event == "start_array":
+        return "array"
+    raise ValueError("JSON export must contain an object or array")
+
+
+def json_metadata(
+    path: Path,
+    root_type: str,
+) -> tuple[dict[str, Any], bool]:
+    if root_type != "object":
+        return {}, False
+
+    metadata: dict[str, Any] = {}
+    channel: dict[str, Any] = {}
+    has_messages_array = False
+    scalar_events = {"string", "number", "integer", "double"}
+    with open_json_stream(path) as handle:
+        for prefix, event, value in ijson.parse(handle):
+            if prefix == "messages" and event == "start_array":
+                has_messages_array = True
+                break
+            if event not in scalar_events:
+                continue
+            if prefix in {"channel.id", "channel.name"}:
+                channel[prefix.rsplit(".", 1)[-1]] = value
+            elif prefix in {
+                "channelId",
+                "channelName",
+                "channel_id",
+                "channel_name",
+            }:
+                metadata[prefix] = value
+    if channel:
+        metadata["channel"] = channel
+    return metadata, has_messages_array
+
+
 def json_messages(path: Path) -> tuple[Iterator[dict[str, Any]], dict[str, Any]]:
-    with path.open("r", encoding="utf-8-sig") as handle:
-        data = json.load(handle)
-    metadata: dict[str, Any] = data if isinstance(data, dict) else {}
-    raw_messages = data.get("messages") if isinstance(data, dict) else data
-    if not isinstance(raw_messages, list):
+    root_type = json_root_type(path)
+    metadata, has_messages_array = json_metadata(path, root_type)
+    if root_type == "object" and not has_messages_array:
         raise ValueError("JSON export does not contain a messages array")
-    return (
-        (item for item in raw_messages if isinstance(item, dict)),
-        metadata,
-    )
+    item_prefix = "messages.item" if root_type == "object" else "item"
+
+    def items() -> Iterator[dict[str, Any]]:
+        with open_json_stream(path) as handle:
+            for item in ijson.items(handle, item_prefix):
+                if isinstance(item, dict):
+                    yield item
+
+    return items(), metadata
 
 
 def csv_messages(path: Path) -> tuple[Iterator[dict[str, Any]], dict[str, Any]]:
@@ -395,6 +469,35 @@ def update_range(result: FileResult, timestamp: dt.datetime) -> None:
         result.latest = timestamp
 
 
+def update_result_channel(result: FileResult) -> None:
+    if not result.channel_totals:
+        return
+    (channel_id, channel_name), _ = result.channel_totals.most_common(1)[0]
+    result.channel_id = channel_id
+    result.channel_name = channel_name
+
+
+def pending_channel_totals(
+    buckets: dict[tuple[int, int, str], dict[str, Any]],
+) -> Counter[tuple[int, str]]:
+    totals: Counter[tuple[int, str]] = Counter()
+    for (channel_id, _, _), values in buckets.items():
+        totals[(channel_id, values["channel_name"])] += values["count"]
+    return totals
+
+
+def safe_error_note(exc: Exception) -> str:
+    if isinstance(exc, ijson.common.JSONError):
+        return "Invalid or incomplete JSON export."
+    if isinstance(exc, ValueError):
+        return str(exc)
+    if isinstance(exc, OSError):
+        return f"{type(exc).__name__}: {exc}"
+    if isinstance(exc, sqlite3.Error):
+        return f"{type(exc).__name__}: {exc}"
+    return f"{type(exc).__name__} while processing the export."
+
+
 def record_import(
     connection: sqlite3.Connection,
     guild_id: int,
@@ -431,99 +534,14 @@ def record_import(
     )
 
 
-def process_file(
+def flush_activity_buckets(
     connection: sqlite3.Connection,
-    path: Path,
+    buckets: dict[tuple[int, int, str], dict[str, Any]],
     args: argparse.Namespace,
     batch_id: str,
-) -> FileResult:
-    result = FileResult(filename=str(path))
-    messages, metadata = file_messages(path)
-    result.channel_id, result.channel_name = channel_metadata(
-        metadata,
-        path,
-        args.channel_id,
-        args.channel_name,
-    )
-    imported_at = utcnow().isoformat()
-    buckets: dict[tuple[int, int, str], dict[str, Any]] = defaultdict(
-        lambda: {"count": 0, "channel_name": "", "username": "", "display_name": ""}
-    )
-    dry_run_ids: set[str] = set()
-    dedupe_table_exists = bool(
-        connection.execute(
-            """
-            SELECT 1 FROM sqlite_master
-            WHERE type = 'table' AND name = 'stats_activity_imported_messages'
-            """
-        ).fetchone()
-    )
-
-    connection.execute("BEGIN")
-    try:
-        for message in messages:
-            result.messages_seen += 1
-            parsed = message_fields(
-                message, result.channel_id, result.channel_name
-            )
-            if parsed is None:
-                result.messages_skipped += 1
-                continue
-            (
-                message_id,
-                timestamp,
-                user_id,
-                username,
-                display_name,
-                channel_id,
-                channel_name,
-            ) = parsed
-            update_range(result, timestamp)
-
-            if args.dry_run:
-                duplicate = message_id in dry_run_ids
-                if not duplicate and dedupe_table_exists:
-                    duplicate = bool(
-                        connection.execute(
-                            """
-                            SELECT 1 FROM stats_activity_imported_messages
-                            WHERE guild_id = ? AND message_id = ?
-                            """,
-                            (args.guild_id, message_id),
-                        ).fetchone()
-                    )
-                dry_run_ids.add(message_id)
-                if duplicate:
-                    result.duplicates_skipped += 1
-                    continue
-            else:
-                cursor = connection.execute(
-                    """
-                    INSERT OR IGNORE INTO stats_activity_imported_messages (
-                        guild_id, message_id, import_batch_id, imported_at
-                    )
-                    VALUES (?, ?, ?, ?)
-                    """,
-                    (args.guild_id, message_id, batch_id, imported_at),
-                )
-                if cursor.rowcount == 0:
-                    result.duplicates_skipped += 1
-                    continue
-
-            hour = timestamp.replace(
-                minute=0, second=0, microsecond=0
-            ).isoformat()
-            bucket = buckets[(channel_id, user_id, hour)]
-            bucket["count"] += 1
-            bucket["channel_name"] = channel_name
-            bucket["username"] = username
-            bucket["display_name"] = display_name
-            result.messages_imported += 1
-
-        if args.dry_run:
-            connection.rollback()
-            return result
-
+    imported_at: str,
+) -> None:
+    if buckets:
         now = utcnow().isoformat()
         connection.executemany(
             """
@@ -564,12 +582,186 @@ def process_file(
                 for (channel_id, user_id, hour), values in buckets.items()
             ],
         )
+        buckets.clear()
+    connection.commit()
+
+
+def prepare_dry_run_dedupe(connection: sqlite3.Connection) -> None:
+    connection.execute("PRAGMA temp_store = FILE")
+    connection.execute(
+        """
+        CREATE TEMP TABLE IF NOT EXISTS dry_run_imported_messages (
+            guild_id INTEGER NOT NULL,
+            message_id TEXT NOT NULL,
+            PRIMARY KEY (guild_id, message_id)
+        )
+        """
+    )
+
+
+def is_dry_run_duplicate(
+    connection: sqlite3.Connection,
+    guild_id: int,
+    message_id: str,
+    dedupe_table_exists: bool,
+) -> bool:
+    cursor = connection.execute(
+        """
+        INSERT OR IGNORE INTO dry_run_imported_messages (guild_id, message_id)
+        VALUES (?, ?)
+        """,
+        (guild_id, message_id),
+    )
+    if cursor.rowcount == 0:
+        return True
+    if not dedupe_table_exists:
+        return False
+    return bool(
+        connection.execute(
+            """
+            SELECT 1 FROM stats_activity_imported_messages
+            WHERE guild_id = ? AND message_id = ?
+            """,
+            (guild_id, message_id),
+        ).fetchone()
+    )
+
+
+def process_file(
+    connection: sqlite3.Connection,
+    path: Path,
+    args: argparse.Namespace,
+    batch_id: str,
+) -> FileResult:
+    result = FileResult(filename=str(path))
+    imported_at = utcnow().isoformat()
+    buckets: dict[tuple[int, int, str], dict[str, Any]] = defaultdict(
+        lambda: {"count": 0, "channel_name": "", "username": "", "display_name": ""}
+    )
+
+    try:
+        messages, metadata = file_messages(path)
+        result.channel_id, result.channel_name = channel_metadata(
+            metadata,
+            path,
+            args.channel_id,
+            args.channel_name,
+        )
+        dedupe_table_exists = bool(
+            connection.execute(
+                """
+                SELECT 1 FROM sqlite_master
+                WHERE type = 'table' AND name = 'stats_activity_imported_messages'
+                """
+            ).fetchone()
+        )
+        if args.dry_run:
+            prepare_dry_run_dedupe(connection)
+
+        for message in messages:
+            result.messages_seen += 1
+            parsed = message_fields(
+                message, result.channel_id, result.channel_name
+            )
+            if parsed is None:
+                result.messages_skipped += 1
+            else:
+                (
+                    message_id,
+                    timestamp,
+                    user_id,
+                    username,
+                    display_name,
+                    channel_id,
+                    channel_name,
+                ) = parsed
+                update_range(result, timestamp)
+
+                if args.dry_run:
+                    duplicate = is_dry_run_duplicate(
+                        connection,
+                        args.guild_id,
+                        message_id,
+                        dedupe_table_exists,
+                    )
+                else:
+                    cursor = connection.execute(
+                        """
+                        INSERT OR IGNORE INTO stats_activity_imported_messages (
+                            guild_id, message_id, import_batch_id, imported_at
+                        )
+                        VALUES (?, ?, ?, ?)
+                        """,
+                        (args.guild_id, message_id, batch_id, imported_at),
+                    )
+                    duplicate = cursor.rowcount == 0
+
+                if duplicate:
+                    result.duplicates_skipped += 1
+                else:
+                    hour = timestamp.replace(
+                        minute=0, second=0, microsecond=0
+                    ).isoformat()
+                    bucket = buckets[(channel_id, user_id, hour)]
+                    bucket["count"] += 1
+                    bucket["channel_name"] = channel_name
+                    bucket["username"] = username
+                    bucket["display_name"] = display_name
+                    result.messages_imported += 1
+                    result.channel_totals[(channel_id, channel_name)] += 1
+
+            if result.messages_seen % PROGRESS_INTERVAL == 0:
+                print(
+                    f"  Progress: {result.messages_seen:,} messages seen; "
+                    f"{result.messages_imported:,} ready to import; "
+                    f"{result.duplicates_skipped:,} duplicates; "
+                    f"{result.messages_skipped:,} skipped",
+                    flush=True,
+                )
+
+            if (
+                not args.dry_run
+                and result.messages_seen % DATABASE_BATCH_SIZE == 0
+            ):
+                flush_activity_buckets(
+                    connection,
+                    buckets,
+                    args,
+                    batch_id,
+                    imported_at,
+                )
+
+        if args.dry_run:
+            buckets.clear()
+            update_result_channel(result)
+            return result
+
+        flush_activity_buckets(
+            connection,
+            buckets,
+            args,
+            batch_id,
+            imported_at,
+        )
+        update_result_channel(result)
         record_import(connection, args.guild_id, batch_id, imported_at, result)
         connection.commit()
         return result
-    except Exception:
+    except Exception as exc:
+        pending_totals = pending_channel_totals(buckets)
         connection.rollback()
-        raise
+        if not args.dry_run:
+            pending_count = sum(pending_totals.values())
+            result.messages_imported = max(
+                0,
+                result.messages_imported - pending_count,
+            )
+            result.channel_totals.subtract(pending_totals)
+            result.channel_totals = +result.channel_totals
+        update_result_channel(result)
+        result.status = "failed"
+        result.notes = safe_error_note(exc)
+        raise FileProcessingError(result) from exc
 
 
 def date_text(value: Optional[dt.datetime]) -> str:
@@ -586,7 +778,7 @@ def print_file_result(result: FileResult) -> None:
     print(f"  Messages skipped: {result.messages_skipped:,}")
     print(f"  Date range: {date_text(result.earliest)} to {date_text(result.latest)}")
     if result.notes:
-        print(f"  Error: {result.notes}")
+        print(f"  Notes: {result.notes}")
 
 
 def main() -> int:
@@ -624,13 +816,24 @@ def main() -> int:
     for path in files:
         try:
             result = process_file(connection, path, args, batch_id)
+        except FileProcessingError as exc:
+            result = exc.result
+            if not args.dry_run:
+                record_import(
+                    connection,
+                    args.guild_id,
+                    batch_id,
+                    utcnow().isoformat(),
+                    result,
+                )
+                connection.commit()
         except Exception as exc:
             result = FileResult(
                 filename=str(path),
                 channel_id=args.channel_id or 0,
                 channel_name=args.channel_name or infer_channel_name(path),
                 status="failed",
-                notes=f"{type(exc).__name__}: {exc}",
+                notes=safe_error_note(exc),
             )
             if not args.dry_run:
                 record_import(
@@ -642,10 +845,7 @@ def main() -> int:
                 )
                 connection.commit()
         results.append(result)
-        if result.messages_imported:
-            channel_totals[(result.channel_id, result.channel_name)] += (
-                result.messages_imported
-            )
+        channel_totals.update(result.channel_totals)
         print_file_result(result)
     connection.close()
 
