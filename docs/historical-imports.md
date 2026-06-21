@@ -10,6 +10,11 @@ imports/discord_history/
 Raw exports can be very large and may contain private server history. Never
 commit them to GitHub.
 
+Historical imports may be run repeatedly as more channel exports are added.
+This is an ongoing incremental workflow: continue placing new
+DiscordChatExporter files in `imports/discord_history/` and rerun the importer
+as additional channel history becomes available.
+
 ## What the importer stores
 
 The importer stores activity metadata only:
@@ -59,12 +64,15 @@ It does not store message content, attachments, embeds, stickers, or reactions.
    /stats activity channels period:all time source:imported
    ```
 
-Re-running imports is safe because message IDs are deduplicated.
+Re-running imports is safe because message IDs are deduplicated. Existing
+import scripts and commands remain supported while channel-history exports are
+still being collected.
 
 ## Archive completed exports
 
-Archiving is opt-in. `--archive-completed` moves clean files that imported at
-least one new message after processing finishes:
+Archiving is opt-in and only occurs when `--archive-completed` is explicitly
+requested. It moves clean files that imported at least one new message after
+processing finishes:
 
 ```bash
 python scripts/import_discord_history.py --folder imports/discord_history --guild-id 1278253523619807233 --archive-completed

@@ -19,5 +19,6 @@ __pycache__/
 **/imports/**/*.json
 **/exports/**/*.json
 *.json
+!/data/channel_categories.json
 *.csv
 *.zip

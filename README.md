@@ -19,11 +19,15 @@ commands when it starts.
 | Feature | Who can use it |
 | --- | --- |
 | `/ask` | All server members |
+| `/guide search` | All server members |
+| `/admin health` | Administrators only |
 | ModAI commands and context menus | Administrators or roles listed in `MODAI_ALLOWED_ROLE_IDS` |
 | Staff-note commands | Administrators or roles listed in `STAFF_NOTES_ALLOWED_ROLE_IDS` |
 | `/staffnote delete` | Administrators only |
 | `/staffnote edit` | Administrators or the original note author |
-| VC stats and reward-preview commands | Administrators or roles listed in `VCSTATS_ALLOWED_ROLE_IDS` |
+| VC stats commands | Administrators or roles listed in `VCSTATS_ALLOWED_ROLE_IDS` |
+| `/vcrewards audit` | Administrators or roles listed in `VCREWARDS_ALLOWED_ROLE_IDS`, falling back to `VCSTATS_ALLOWED_ROLE_IDS` |
+| Other VC reward commands | Administrators or roles listed in `VCSTATS_ALLOWED_ROLE_IDS` |
 | `/vcstats reset` | Administrators only |
 | `/vcrewards pulse` and `/vcrewards markpaid` | Administrators only |
 | Bank commands | Administrators or roles listed in `BANK_ALLOWED_ROLE_IDS` |
@@ -33,6 +37,22 @@ commands when it starts.
 
 For staff-restricted features, an empty role-ID environment variable makes the
 feature effectively administrator-only. This does not apply to `/ask`.
+
+## Admin and analytics commands
+
+- `/admin health` — Private bot, database, configuration, import, VCXP-role,
+  and Git health report. Secret values are never displayed.
+- `/stats activity trends [period] [source]` — Compares a fixed period with the
+  immediately preceding period.
+- `/stats activity categories [period] [source] [limit]` — Groups activity
+  using `data/channel_categories.json`.
+- `/stats activity heatmap [period] [source] [timezone]` — Summarizes activity
+  by local day, hour, and broad time block.
+- `/guide search <query>` — Searches only the public Survival Guide and Rules
+  without Gemini.
+- `/ask <question>` — Answers from public guidance with private follow-up
+  buttons.
+- `/vcrewards audit` — Runs a private, read-only VCXP safety audit.
 
 ## Member server-help command
 
@@ -61,6 +81,8 @@ events, verification, NSFW access, server features, and support.
   mentions are not allowed to notify users or roles.
 - Cooldown, configuration, channel-restriction, out-of-scope, and staff-only
   redirects are also shown ephemerally.
+- Successful answers include `Open Ticket`, `Search Guide`, `This Helped`, and
+  `Still Confused` buttons. Only the member who ran `/ask` can use them.
 
 `/ask` uses Gemini with only the local public knowledge in:
 
@@ -88,6 +110,17 @@ The command has a per-user cooldown of 30 seconds by default. If Gemini returns
 an empty or blocked response, the private embed says it cannot answer safely. If
 Gemini fails, the private embed directs the member to the support-ticket
 channel. Missing `GEMINI_API_KEY` configuration is reported ephemerally.
+
+### `/guide search <query>`
+
+Performs a deterministic, case-insensitive search of the public Survival Guide
+and Rules, returning up to three short matching snippets.
+
+- `query` — Required keywords or topic, from 2 to 200 characters.
+- Responses are ephemeral and available to all server members.
+- A 15-second per-user cooldown limits repeated searches.
+- It does not use Gemini or read staff/private data, imported chat history, or
+  activity statistics.
 
 The Gemini request uses `ASK_MODEL` when configured, otherwise `MODAI_MODEL`,
 and then the built-in default. The fallback follows the same order using
@@ -301,7 +334,7 @@ voice channel, and average session length.
 - `user` — Member whose VC activity should be displayed.
 - `days` — Optional lookback period from 1 to 3,650 days. Defaults to 30.
 
-### `/vcstats leaderboard [days] [limit] [eligible_only]`
+### `/vcstats leaderboard [days] [limit] [eligible_only] [include_left_members]`
 
 Ranks members by tracked or reward-eligible VC time.
 
@@ -309,6 +342,8 @@ Ranks members by tracked or reward-eligible VC time.
 - `limit` — Optional number of members from 1 to 25. Defaults to 10.
 - `eligible_only` — When true, ranks by reward-eligible time instead of all
   tracked time. Defaults to false.
+- `include_left_members` — Defaults to false, so only members currently cached
+  in the server are ranked. Set true to include historical users who left.
 
 ### `/vcstats current`
 
@@ -322,13 +357,15 @@ Shows activity for one voice channel or the ten most-used voice channels.
 - `channel` — Optional voice channel. Leave blank to show the top channels.
 - `days` — Optional lookback period. Defaults to 30.
 
-### `/vcstats export [days] [user] [channel]`
+### `/vcstats export [days] [user] [channel] [include_left_members]`
 
 Exports completed VC sessions to an ephemeral CSV attachment.
 
 - `days` — Optional lookback period. Defaults to 30.
 - `user` — Optional member filter.
 - `channel` — Optional voice-channel filter.
+- `include_left_members` — Defaults to false. When true, sessions for users who
+  left remain in the CSV and `is_current_member` identifies them.
 
 The CSV includes member and channel identifiers, timestamps, tracked and
 counted durations, eligibility, and best-effort mute/deafen/alone flags.
@@ -366,20 +403,32 @@ Shows whether automatic pulses are enabled, the configured trigger role,
 eligible minutes per pulse, removal delay, daily cap, weekly cap, and current
 configuration status.
 
-### `/vcrewards preview [days]`
+### `/vcrewards audit [include_left_members]`
+
+Runs a read-only safety audit of the role-pulse bridge. It reports whether
+VCXP is enabled, whether the trigger role exists and is manageable, pulse
+limits, unpaid-user and recent-paid counts, members currently holding the
+trigger role, and recent pulse statuses/errors. It never grants or removes
+roles, calls MEE6, starts a payout, or changes VCXP accounting.
+The unpaid-user count defaults to current members only. Set
+`include_left_members:true` to include historical users.
+
+### `/vcrewards preview [days] [include_left_members]`
 
 Shows eligible VC time in the selected lookback period and cumulative pulse
 accounting for up to 25 members.
 
 - `days` — Optional lookback period for displayed eligible time. Defaults to 7.
+- `include_left_members` — Defaults to false. Set true to include historical
+  users who are no longer in the server.
 
 The earned, paid, and unpaid pulse counts are cumulative because pulse
 boundaries are calculated from all completed eligible VC sessions.
 
-### `/vcrewards unpaid`
+### `/vcrewards unpaid [include_left_members]`
 
 Shows members whose cumulative earned pulse count is greater than their paid
-pulse count.
+pulse count. It defaults to current members only.
 
 ### `/vcrewards pulse <user> [pulses]`
 
@@ -401,10 +450,11 @@ equivalent XP manually.
 - `user` — Member whose pulse accounting should be updated.
 - `pulses` — Number of pulses to mark paid, from 1 to 100.
 
-### `/vcrewards export [days]`
+### `/vcrewards export [days] [include_left_members]`
 
 Exports eligible time and cumulative earned, paid, and unpaid pulse counts to
-an ephemeral CSV attachment.
+an ephemeral CSV attachment. The export defaults to current members only and
+includes an `is_current_member` column.
 
 ## Configuring the VC XP trigger role
 
@@ -571,6 +621,38 @@ and percentage of tracked messages.
 - If neither `period` nor `days` is supplied, the report defaults to 7 days.
 - `limit` defaults to 10 and supports up to 25.
 
+### `/stats activity trends [period] [source]`
+
+Compares `7 days`, `30 days`, `90 days`, or `365 days` with the immediately
+preceding period of equal length.
+
+- `period` defaults to 30 days; all-time trends are intentionally unsupported.
+- `source` defaults to `all` and can be `live` or `imported`.
+- Shows message/member percentage changes, growing and declining channels, and
+  the current period's busiest and quietest tracked dates.
+- If the previous window has no matching rows, current statistics are still
+  shown and the comparison is labeled limited.
+
+### `/stats activity categories [period] [source] [limit]`
+
+Groups activity using `data/channel_categories.json`.
+
+- `period` defaults to 30 days and supports all time.
+- `source` defaults to `all`; `limit` defaults to 10 and supports up to 25.
+- Unconfigured channels are grouped as `Uncategorized`.
+- Channels with `include_in_activity: false` are excluded.
+- Each category shows messages, unique members, percentage, and top channel.
+
+### `/stats activity heatmap [period] [source] [timezone]`
+
+Summarizes hourly activity by local day, hour, top day/hour combinations, and
+Overnight/Morning/Afternoon/Evening blocks.
+
+- `period` defaults to 30 days and supports all time.
+- `source` defaults to `all`.
+- `timezone` accepts an IANA timezone and defaults to `America/Chicago`.
+  Invalid names safely fall back to `America/Chicago`.
+
 ### `/stats activity quiet [period] [days] [limit] [source] [channel]`
 
 Shows visible text channels with low tracked activity and their last tracked
@@ -580,15 +662,18 @@ does not assess or shame individual members.
 - If neither `period` nor `days` is supplied, the report defaults to 14 days.
 - `limit` defaults to 10 and supports up to 25.
 
-### `/stats activity members [period] [days] [limit] [source] [channel]`
+### `/stats activity members [period] [days] [limit] [source] [include_left_members] [channel]`
 
 Shows members with the highest tracked message counts. Text and VC activity are
 not combined into a synthetic score.
 
 - If neither `period` nor `days` is supplied, the report defaults to 7 days.
 - `limit` defaults to 10 and supports up to 25.
+- `include_left_members` defaults to false. Current guild members are detected
+  from Discord's member cache and their current display names are preferred.
+  Set it true to include historical users who left the server.
 
-### `/stats activity vc [period] [days] [limit] [channel]`
+### `/stats activity vc [period] [days] [limit] [include_left_members] [channel]`
 
 Reads completed sessions from the `vc_sessions` table managed by
 `cogs/vc_stats.py`. It shows total tracked time, completed sessions, top voice
@@ -599,8 +684,11 @@ If the VC tracking table is unavailable, the command reports:
 
 The VC report also supports the preset periods, including all available tracked
 VC history with `period:all time`.
+Its top-member ranking defaults to current members only; set
+`include_left_members:true` to include historical users who left. Aggregate VC
+time and channel totals still include all matching sessions.
 
-### `/stats activity export [period] [days] [include_vc] [source]`
+### `/stats activity export [period] [days] [include_vc] [source] [include_left_members]`
 
 Exports a private CSV with a `section` column. Sections can include:
 
@@ -616,6 +704,11 @@ If neither `period` nor `days` is supplied, the export defaults to 7 days.
 `include_vc` defaults to true. All-time exports use `all_time` in the filename.
 Large exports may exceed Discord's upload limit; if that happens, choose a
 shorter period.
+
+User-level export rows default to current members only. Set
+`include_left_members:true` to include historical users; user rows include an
+`is_current_member` column. Aggregate overview and channel totals continue to
+include all matching imported and live activity regardless of membership.
 
 ### Activity database tables
 
@@ -637,6 +730,9 @@ contain private server history and can be very large, so they must not be
 committed to Git. Previously tracked exports should be removed from Git's index
 with `git rm --cached` while keeping the local files ignored.
 
+Historical imports may be run repeatedly as more channel exports are added.
+The workflow remains supported for ongoing incremental channel exports.
+
 Run a dry run first:
 
 ```bash
@@ -657,6 +753,9 @@ dedupe records are committed every 5,000 messages, and progress is printed
 every 10,000 messages. If a later batch fails, the audit record accurately
 reports the batches that were already committed. CSV exports remain supported,
 including channel metadata supplied on individual rows.
+
+Archiving remains opt-in with `--archive-completed`; failed or incomplete files
+stay available for repair or re-export.
 
 Historical imports: see
 [docs/historical-imports.md](docs/historical-imports.md) for the complete
@@ -827,6 +926,7 @@ Create a `.env` file in the project root. Do not commit it.
 | `MODAI_ALLOWED_ROLE_IDS` | Comma-separated Discord role IDs allowed to use ModAI. |
 | `STAFF_NOTES_ALLOWED_ROLE_IDS` | Comma-separated Discord role IDs allowed to use staff notes. |
 | `VCSTATS_ALLOWED_ROLE_IDS` | Comma-separated Discord role IDs allowed to use VC stats and reward previews. |
+| `VCREWARDS_ALLOWED_ROLE_IDS` | Optional role IDs allowed to use `/vcrewards audit`. Falls back to `VCSTATS_ALLOWED_ROLE_IDS`. |
 | `VCXP_TRIGGER_ROLE_ID` | Discord role ID temporarily added for each VC XP pulse. |
 | `VCXP_MINUTES_PER_PULSE` | Eligible VC minutes required per pulse. Defaults to `30`. |
 | `VCXP_ROLE_REMOVE_DELAY_SECONDS` | Seconds before the trigger role is removed. Defaults to `30`. |

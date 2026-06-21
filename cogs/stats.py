@@ -2,8 +2,12 @@ import asyncio
 import csv
 import datetime
 import io
+import json
 import os
+from collections import defaultdict
+from pathlib import Path
 from typing import Dict, Iterable, Optional, Set, Tuple
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 import discord
 from discord import app_commands
@@ -11,6 +15,7 @@ from discord.ext import commands
 
 from config import COLOR
 from utils.compact_roster import CompactRosterItem, render_compact_roster_pngs
+from utils.member_filter import current_member, member_filter_warning
 from utils.stats_reports import (
     render_missingrole_report,
     render_report_error,
@@ -33,6 +38,37 @@ ACTIVITY_PERIOD_CHOICES = [
     app_commands.Choice(name="365 days", value="365"),
     app_commands.Choice(name="All time", value="all_time"),
 ]
+ACTIVITY_FIXED_PERIOD_CHOICES = ACTIVITY_PERIOD_CHOICES[:-1]
+CHANNEL_CATEGORIES_PATH = (
+    Path(__file__).resolve().parent.parent / "data" / "channel_categories.json"
+)
+
+
+def load_channel_categories() -> Dict[str, dict]:
+    try:
+        data = json.loads(CHANNEL_CATEGORIES_PATH.read_text(encoding="utf-8"))
+    except (FileNotFoundError, OSError, UnicodeError, json.JSONDecodeError):
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def get_channel_category(
+    channel_id: int,
+    categories: Optional[Dict[str, dict]] = None,
+) -> Tuple[str, bool]:
+    entries = categories if categories is not None else load_channel_categories()
+    entry = entries.get(str(channel_id), {})
+    if not isinstance(entry, dict):
+        return "Uncategorized", True
+    category = str(entry.get("category") or "Uncategorized").strip()
+    return category or "Uncategorized", entry.get("include_in_activity") is not False
+
+
+def _percent_change(current: int, previous: int) -> str:
+    if previous == 0:
+        return "N/A" if current else "0.0%"
+    change = (current - previous) / previous * 100
+    return f"{change:+.1f}%"
 
 
 def format_duration(seconds: int) -> str:
@@ -952,6 +988,7 @@ class Stats(commands.Cog):
         days="Number of days to include",
         limit="Number of members to show",
         source="Include all, live, or imported message activity",
+        include_left_members="Include users who are no longer in the server",
         channel="Optional channel where the report should be posted",
     )
     @app_commands.choices(
@@ -967,6 +1004,7 @@ class Stats(commands.Cog):
         days: Optional[app_commands.Range[int, 1, 3650]] = None,
         limit: app_commands.Range[int, 1, 25] = 10,
         source: Optional[app_commands.Choice[str]] = None,
+        include_left_members: bool = False,
         channel: Optional[discord.TextChannel] = None,
     ) -> None:
         await interaction.response.defer(ephemeral=True)
@@ -983,20 +1021,40 @@ class Stats(commands.Cog):
             WHERE guild_id = ? {date_sql} {source_sql}
             GROUP BY user_id
             ORDER BY total DESC
-            LIMIT ?
             """,
             (
                 interaction.guild_id,
                 *date_parameters,
                 *source_parameters,
-                limit,
             ),
+        )
+        filtered_rows = []
+        for user_id, username, display_name, total in rows:
+            member = current_member(interaction.guild, user_id)
+            if member is None and not include_left_members:
+                continue
+            filtered_rows.append(
+                (
+                    user_id,
+                    member.name if member else username,
+                    member.display_name if member else display_name,
+                    total,
+                    member is not None,
+                )
+            )
+            if len(filtered_rows) >= limit:
+                break
+        scope = (
+            "Includes left members"
+            if include_left_members
+            else "Current members only"
         )
         embed = discord.Embed(
             title=f"Top text participants — {period_label} ({source_value})",
             color=discord.Color(COLOR),
             description=(
                 "Message counts only; no activity score or inactivity judgment."
+                f"\n**{scope}.**"
                 + (
                     "\n\nThis includes all currently tracked and imported "
                     "activity data."
@@ -1005,22 +1063,416 @@ class Stats(commands.Cog):
                 )
             ),
         )
-        if not rows:
+        warning = member_filter_warning(self.bot, interaction.guild)
+        if warning and not include_left_members:
+            embed.description += f"\n⚠️ {warning}"
+        if not filtered_rows:
             embed.add_field(
                 name="No results",
-                value="No text activity has been tracked for this period.",
+                value="No matching member activity was found for this period.",
                 inline=False,
             )
-        for index, (user_id, username, display_name, total) in enumerate(
-            rows, start=1
+        for index, (
+            user_id,
+            username,
+            display_name,
+            total,
+            is_current,
+        ) in enumerate(
+            filtered_rows, start=1
         ):
-            label = username or display_name or str(user_id)
+            label = display_name or username or str(user_id)
+            identity = f"<@{user_id}>" if is_current else f"`{user_id}` • Left server"
             embed.add_field(
                 name=f"{index}. {discord.utils.escape_markdown(label)}",
-                value=f"<@{user_id}> • **{total:,}** messages",
+                value=f"{identity} • **{total:,}** messages",
                 inline=False,
             )
         await self._send_activity_report(interaction, embed, channel)
+
+    @activity.command(
+        name="trends",
+        description="Compare activity with the immediately previous period",
+    )
+    @app_commands.describe(
+        period="Fixed period to compare",
+        source="Include all, live, or imported message activity",
+    )
+    @app_commands.choices(
+        period=ACTIVITY_FIXED_PERIOD_CHOICES,
+        source=ACTIVITY_SOURCE_CHOICES,
+    )
+    @app_commands.guild_only()
+    @app_commands.check(has_stats_access)
+    async def activity_trends(
+        self,
+        interaction: discord.Interaction,
+        period: Optional[app_commands.Choice[str]] = None,
+        source: Optional[app_commands.Choice[str]] = None,
+    ) -> None:
+        await interaction.response.defer(ephemeral=True)
+        days = int(period.value) if period else 30
+        source_value = self._activity_source_value(source)
+        source_sql, source_parameters = self._activity_source_filter(source_value)
+        current_start = self._activity_cutoff(days)
+        previous_start = self._activity_cutoff(days * 2)
+
+        totals = await self._fetchone(
+            f"""
+            SELECT
+                COALESCE(SUM(CASE WHEN activity_hour >= ?
+                    THEN message_count ELSE 0 END), 0),
+                COALESCE(SUM(CASE WHEN activity_hour >= ? AND activity_hour < ?
+                    THEN message_count ELSE 0 END), 0),
+                COUNT(DISTINCT CASE WHEN activity_hour >= ? THEN user_id END),
+                COUNT(DISTINCT CASE WHEN activity_hour >= ? AND activity_hour < ?
+                    THEN user_id END)
+            FROM stats_message_activity
+            WHERE guild_id = ? AND activity_hour >= ? {source_sql}
+            """,
+            (
+                current_start,
+                previous_start,
+                current_start,
+                current_start,
+                previous_start,
+                current_start,
+                interaction.guild_id,
+                previous_start,
+                *source_parameters,
+            ),
+        )
+        channel_rows = await self._fetchall(
+            f"""
+            SELECT channel_id, MAX(channel_name),
+                   COALESCE(SUM(CASE WHEN activity_hour >= ?
+                       THEN message_count ELSE 0 END), 0) AS current_messages,
+                   COALESCE(SUM(CASE WHEN activity_hour >= ? AND activity_hour < ?
+                       THEN message_count ELSE 0 END), 0) AS previous_messages
+            FROM stats_message_activity
+            WHERE guild_id = ? AND activity_hour >= ? {source_sql}
+            GROUP BY channel_id
+            """,
+            (
+                current_start,
+                previous_start,
+                current_start,
+                interaction.guild_id,
+                previous_start,
+                *source_parameters,
+            ),
+        )
+        day_rows = await self._fetchall(
+            f"""
+            SELECT activity_date, SUM(message_count)
+            FROM stats_message_activity
+            WHERE guild_id = ? AND activity_hour >= ? {source_sql}
+            GROUP BY activity_date
+            ORDER BY SUM(message_count) DESC
+            """,
+            (interaction.guild_id, current_start, *source_parameters),
+        )
+
+        current_messages, previous_messages, current_members, previous_members = (
+            (int(value or 0) for value in totals)
+        )
+        changes = [
+            (int(current or 0) - int(previous or 0), channel_id, channel_name)
+            for channel_id, channel_name, current, previous in channel_rows
+        ]
+        growing = sorted((row for row in changes if row[0] > 0), reverse=True)[:5]
+        declining = sorted((row for row in changes if row[0] < 0))[:5]
+        embed = discord.Embed(
+            title=f"Activity trends — {days} days ({source_value})",
+            color=discord.Color(COLOR),
+            timestamp=self._utcnow(),
+        )
+        if previous_messages == 0 and previous_members == 0:
+            embed.description = (
+                "Previous-period comparison is limited because no matching "
+                "activity was found in that window."
+            )
+        embed.add_field(
+            name="Messages",
+            value=(
+                f"Current: **{current_messages:,}**\n"
+                f"Previous: **{previous_messages:,}**\n"
+                f"Change: **{_percent_change(current_messages, previous_messages)}**"
+            ),
+            inline=True,
+        )
+        embed.add_field(
+            name="Active members",
+            value=(
+                f"Current: **{current_members:,}**\n"
+                f"Previous: **{previous_members:,}**\n"
+                f"Change: **{_percent_change(current_members, previous_members)}**"
+            ),
+            inline=True,
+        )
+        embed.add_field(
+            name="Current-period days",
+            value=(
+                f"Busiest: **{day_rows[0][0]}** — {day_rows[0][1]:,}\n"
+                f"Quietest: **{day_rows[-1][0]}** — {day_rows[-1][1]:,}"
+                if day_rows
+                else "No matching activity."
+            ),
+            inline=False,
+        )
+        embed.add_field(
+            name="Top growing channels",
+            value=(
+                "\n".join(
+                    f"{safe_channel_display(channel_id, name)} — **+{change:,}**"
+                    for change, channel_id, name in growing
+                )
+                or "No channels increased."
+            )[:1024],
+            inline=True,
+        )
+        embed.add_field(
+            name="Top declining channels",
+            value=(
+                "\n".join(
+                    f"{safe_channel_display(channel_id, name)} — **{change:,}**"
+                    for change, channel_id, name in declining
+                )
+                or "No channels declined."
+            )[:1024],
+            inline=True,
+        )
+        embed.set_footer(
+            text=f"Current {days} days compared with the preceding {days} days."
+        )
+        await interaction.followup.send(embed=embed, ephemeral=True)
+
+    @activity.command(
+        name="categories",
+        description="Group message activity by configured channel category",
+    )
+    @app_commands.describe(
+        period="Preset reporting period",
+        source="Include all, live, or imported message activity",
+        limit="Number of categories to show",
+    )
+    @app_commands.choices(
+        period=ACTIVITY_PERIOD_CHOICES,
+        source=ACTIVITY_SOURCE_CHOICES,
+    )
+    @app_commands.guild_only()
+    @app_commands.check(has_stats_access)
+    async def activity_categories(
+        self,
+        interaction: discord.Interaction,
+        period: Optional[app_commands.Choice[str]] = None,
+        source: Optional[app_commands.Choice[str]] = None,
+        limit: app_commands.Range[int, 1, 25] = 10,
+    ) -> None:
+        await interaction.response.defer(ephemeral=True)
+        selected_days = self._activity_period_days(period, None, default_days=30)
+        period_label = self._activity_period_label(selected_days)
+        source_value = self._activity_source_value(source)
+        source_sql, source_parameters = self._activity_source_filter(source_value)
+        date_sql, date_parameters = self._activity_date_filter(selected_days)
+        rows = await self._fetchall(
+            f"""
+            SELECT channel_id, MAX(channel_name), user_id, SUM(message_count)
+            FROM stats_message_activity
+            WHERE guild_id = ? {date_sql} {source_sql}
+            GROUP BY channel_id, user_id
+            """,
+            (
+                interaction.guild_id,
+                *date_parameters,
+                *source_parameters,
+            ),
+        )
+
+        category_config = load_channel_categories()
+        categories = defaultdict(
+            lambda: {"messages": 0, "members": set(), "channels": defaultdict(int)}
+        )
+        for channel_id, channel_name, user_id, messages in rows:
+            category, included = get_channel_category(channel_id, category_config)
+            if not included:
+                continue
+            item = categories[category]
+            item["messages"] += int(messages or 0)
+            item["members"].add(user_id)
+            item["channels"][(channel_id, channel_name)] += int(messages or 0)
+        ranked = sorted(
+            categories.items(),
+            key=lambda item: item[1]["messages"],
+            reverse=True,
+        )
+        total = sum(item["messages"] for _, item in ranked)
+        configured = bool(category_config)
+        embed = discord.Embed(
+            title=f"Activity by category — {period_label} ({source_value})",
+            color=discord.Color(COLOR),
+            timestamp=self._utcnow(),
+        )
+        if not configured:
+            embed.description = (
+                "No channel category config found. Channels are grouped as "
+                "Uncategorized."
+            )
+        if not ranked:
+            embed.add_field(
+                name="No results",
+                value="No included message activity was found for this period.",
+                inline=False,
+            )
+        for category, item in ranked[:limit]:
+            top_channel, top_messages = max(
+                item["channels"].items(),
+                key=lambda channel_item: channel_item[1],
+            )
+            percentage = item["messages"] / total * 100 if total else 0
+            embed.add_field(
+                name=category[:256],
+                value=(
+                    f"**{item['messages']:,}** messages • "
+                    f"**{len(item['members']):,}** active members • "
+                    f"**{percentage:.1f}%**\n"
+                    f"Top: {safe_channel_display(*top_channel)} "
+                    f"({top_messages:,})"
+                )[:1024],
+                inline=False,
+            )
+        await interaction.followup.send(embed=embed, ephemeral=True)
+
+    @activity.command(
+        name="heatmap",
+        description="Show the most and least active times",
+    )
+    @app_commands.describe(
+        period="Preset reporting period",
+        source="Include all, live, or imported message activity",
+        timezone="IANA timezone, such as America/Chicago",
+    )
+    @app_commands.choices(
+        period=ACTIVITY_PERIOD_CHOICES,
+        source=ACTIVITY_SOURCE_CHOICES,
+    )
+    @app_commands.guild_only()
+    @app_commands.check(has_stats_access)
+    async def activity_heatmap(
+        self,
+        interaction: discord.Interaction,
+        period: Optional[app_commands.Choice[str]] = None,
+        source: Optional[app_commands.Choice[str]] = None,
+        timezone: app_commands.Range[str, 1, 64] = "America/Chicago",
+    ) -> None:
+        await interaction.response.defer(ephemeral=True)
+        selected_days = self._activity_period_days(period, None, default_days=30)
+        period_label = self._activity_period_label(selected_days)
+        source_value = self._activity_source_value(source)
+        source_sql, source_parameters = self._activity_source_filter(source_value)
+        date_sql, date_parameters = self._activity_date_filter(selected_days)
+        rows = await self._fetchall(
+            f"""
+            SELECT activity_hour, SUM(message_count)
+            FROM stats_message_activity
+            WHERE guild_id = ? {date_sql} {source_sql}
+            GROUP BY activity_hour
+            """,
+            (
+                interaction.guild_id,
+                *date_parameters,
+                *source_parameters,
+            ),
+        )
+        try:
+            selected_timezone = ZoneInfo(timezone.strip())
+            timezone_label = timezone.strip()
+        except (ZoneInfoNotFoundError, ValueError):
+            selected_timezone = ZoneInfo("America/Chicago")
+            timezone_label = "America/Chicago (fallback)"
+
+        day_totals = {day: 0 for day in range(7)}
+        hour_totals = {hour: 0 for hour in range(24)}
+        combo_totals = defaultdict(int)
+        for activity_hour, messages in rows:
+            try:
+                parsed = datetime.datetime.fromisoformat(
+                    str(activity_hour).replace("Z", "+00:00")
+                )
+                if parsed.tzinfo is None:
+                    parsed = parsed.replace(tzinfo=datetime.timezone.utc)
+                local_hour = parsed.astimezone(selected_timezone)
+            except (TypeError, ValueError, OverflowError):
+                continue
+            count = int(messages or 0)
+            day_totals[local_hour.weekday()] += count
+            hour_totals[local_hour.hour] += count
+            combo_totals[(local_hour.weekday(), local_hour.hour)] += count
+
+        day_names = ("Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun")
+        blocks = {
+            "Overnight": sum(hour_totals[hour] for hour in range(0, 6)),
+            "Morning": sum(hour_totals[hour] for hour in range(6, 12)),
+            "Afternoon": sum(hour_totals[hour] for hour in range(12, 18)),
+            "Evening": sum(hour_totals[hour] for hour in range(18, 24)),
+        }
+        embed = discord.Embed(
+            title=f"Activity heatmap — {period_label} ({source_value})",
+            color=discord.Color(COLOR),
+            description=f"Times shown in **{timezone_label}**.",
+            timestamp=self._utcnow(),
+        )
+        if not rows or not any(hour_totals.values()):
+            embed.add_field(
+                name="No results",
+                value="No matching hourly activity was found.",
+                inline=False,
+            )
+            await interaction.followup.send(embed=embed, ephemeral=True)
+            return
+        busiest_day = max(day_totals, key=day_totals.get)
+        busiest_hour = max(hour_totals, key=hour_totals.get)
+        quietest_hour = min(hour_totals, key=hour_totals.get)
+        top_combinations = sorted(
+            combo_totals.items(),
+            key=lambda item: item[1],
+            reverse=True,
+        )[:3]
+        embed.add_field(
+            name="Highlights",
+            value=(
+                f"Most active day: **{day_names[busiest_day]}** "
+                f"({day_totals[busiest_day]:,})\n"
+                f"Most active hour: **{self._hour_label(busiest_hour)}** "
+                f"({hour_totals[busiest_hour]:,})\n"
+                f"Quietest hour: **{self._hour_label(quietest_hour)}** "
+                f"({hour_totals[quietest_hour]:,})"
+            ),
+            inline=False,
+        )
+        embed.add_field(
+            name="Top day/hour combinations",
+            value="\n".join(
+                f"{day_names[day]} {self._hour_label(hour)} — **{count:,}**"
+                for (day, hour), count in top_combinations
+            ),
+            inline=False,
+        )
+        embed.add_field(
+            name="By day",
+            value="\n".join(
+                f"`{day_names[day]}` {day_totals[day]:,}" for day in range(7)
+            ),
+            inline=True,
+        )
+        embed.add_field(
+            name="By time block",
+            value="\n".join(
+                f"`{name:<9}` {count:,}" for name, count in blocks.items()
+            ),
+            inline=True,
+        )
+        await interaction.followup.send(embed=embed, ephemeral=True)
 
     @activity.command(
         name="vc",
@@ -1030,6 +1482,7 @@ class Stats(commands.Cog):
         period="Preset reporting period; takes priority over days",
         days="Number of days to include",
         limit="Number of channels and members to show",
+        include_left_members="Include users who are no longer in the server",
         channel="Optional channel where the report should be posted",
     )
     @app_commands.choices(period=ACTIVITY_PERIOD_CHOICES)
@@ -1041,6 +1494,7 @@ class Stats(commands.Cog):
         period: Optional[app_commands.Choice[str]] = None,
         days: Optional[app_commands.Range[int, 1, 3650]] = None,
         limit: app_commands.Range[int, 1, 20] = 10,
+        include_left_members: bool = False,
         channel: Optional[discord.TextChannel] = None,
     ) -> None:
         await interaction.response.defer(ephemeral=True)
@@ -1084,10 +1538,25 @@ class Stats(commands.Cog):
             WHERE guild_id = ? {date_sql}
             GROUP BY user_id
             ORDER BY SUM(duration_seconds) DESC
-            LIMIT ?
             """,
-            (interaction.guild_id, *date_parameters, limit),
+            (interaction.guild_id, *date_parameters),
         )
+        filtered_member_rows = []
+        for user_id, username, display_name, seconds in member_rows:
+            member = current_member(interaction.guild, user_id)
+            if member is None and not include_left_members:
+                continue
+            filtered_member_rows.append(
+                (
+                    user_id,
+                    member.name if member else username,
+                    member.display_name if member else display_name,
+                    seconds,
+                    member is not None,
+                )
+            )
+            if len(filtered_member_rows) >= limit:
+                break
         embed = discord.Embed(
             title=f"Voice activity — {period_label}",
             color=discord.Color(COLOR),
@@ -1111,15 +1580,35 @@ class Stats(commands.Cog):
                 )[:1024],
                 inline=False,
             )
-        if member_rows:
+        if filtered_member_rows:
             embed.add_field(
                 name="Top VC members",
                 value="\n".join(
-                    f"{index}. <@{row[0]}> — **{format_duration(row[3])}**"
-                    for index, row in enumerate(member_rows, start=1)
+                    (
+                        f"{index}. "
+                        f"{f'<@{row[0]}>' if row[4] else discord.utils.escape_markdown(row[2] or row[1] or str(row[0])) + ' — Left server'} "
+                        f"— **{format_duration(row[3])}**"
+                    )
+                    for index, row in enumerate(filtered_member_rows, start=1)
                 )[:1024],
                 inline=False,
             )
+        scope = (
+            "Includes left members"
+            if include_left_members
+            else "Current members only"
+        )
+        warning = member_filter_warning(self.bot, interaction.guild)
+        embed.set_footer(
+            text=(
+                f"Member ranking: {scope}."
+                + (
+                    f" {warning}"
+                    if warning and not include_left_members
+                    else ""
+                )
+            )
+        )
         await self._send_activity_report(interaction, embed, channel)
 
     @activity.command(
@@ -1131,6 +1620,7 @@ class Stats(commands.Cog):
         days="Number of days to include",
         include_vc="Include VC sessions when available",
         source="Include all, live, or imported message activity",
+        include_left_members="Include users who are no longer in the server",
     )
     @app_commands.choices(
         period=ACTIVITY_PERIOD_CHOICES,
@@ -1145,16 +1635,18 @@ class Stats(commands.Cog):
         days: Optional[app_commands.Range[int, 1, 3650]] = None,
         include_vc: bool = True,
         source: Optional[app_commands.Choice[str]] = None,
+        include_left_members: bool = False,
     ) -> None:
         await interaction.response.defer(ephemeral=True, thinking=True)
         selected_days = self._activity_period_days(period, days, default_days=7)
         period_label = self._activity_period_label(selected_days)
         source_value = self._activity_source_value(source)
         file = await self._activity_export_file(
-            interaction.guild_id,
+            interaction.guild,
             selected_days,
             include_vc,
             source_value,
+            include_left_members,
         )
         if file is None:
             await interaction.followup.send(
@@ -1165,7 +1657,14 @@ class Stats(commands.Cog):
             return
         await interaction.followup.send(
             f"Exported **{source_value}** activity metadata for "
-            f"**{period_label}**.",
+            f"**{period_label}** "
+            f"({'includes left members' if include_left_members else 'current members only for user rows'})."
+            + (
+                f"\n⚠️ {member_filter_warning(self.bot, interaction.guild)}"
+                if not include_left_members
+                and member_filter_warning(self.bot, interaction.guild)
+                else ""
+            ),
             file=file,
             ephemeral=True,
         )
@@ -2442,6 +2941,12 @@ class Stats(commands.Cog):
     def _activity_period_label(days: Optional[int]) -> str:
         return "All time" if days is None else f"Last {days} days"
 
+    @staticmethod
+    def _hour_label(hour: int) -> str:
+        suffix = "AM" if hour < 12 else "PM"
+        display_hour = hour % 12 or 12
+        return f"{display_hour}:00 {suffix}"
+
     def _activity_date_filter(
         self,
         days: Optional[int],
@@ -2691,11 +3196,13 @@ class Stats(commands.Cog):
 
     async def _activity_export_file(
         self,
-        guild_id: int,
+        guild: discord.Guild,
         days: Optional[int],
         include_vc: bool,
         source: str = "all",
+        include_left_members: bool = False,
     ) -> Optional[discord.File]:
+        guild_id = guild.id
         source_sql, source_parameters = self._activity_source_filter(source)
         date_sql, date_parameters = self._activity_date_filter(days)
         output = io.StringIO(newline="")
@@ -2707,6 +3214,7 @@ class Stats(commands.Cog):
             "user_id",
             "username",
             "display_name",
+            "is_current_member",
             "activity_date",
             "activity_hour",
             "message_count",
@@ -2753,6 +3261,9 @@ class Stats(commands.Cog):
             (guild_id, *date_parameters, *source_parameters),
         )
         for row in message_rows:
+            member = current_member(guild, row[2])
+            if member is None and not include_left_members:
+                continue
             writer.writerow(
                 {
                     "section": "message_activity",
@@ -2760,8 +3271,9 @@ class Stats(commands.Cog):
                     "channel_id": row[0],
                     "channel_name": row[1],
                     "user_id": row[2],
-                    "username": row[3],
-                    "display_name": row[4],
+                    "username": member.name if member else row[3],
+                    "display_name": member.display_name if member else row[4],
+                    "is_current_member": member is not None,
                     "activity_date": row[5],
                     "activity_hour": row[6],
                     "message_count": row[7],
@@ -2804,13 +3316,19 @@ class Stats(commands.Cog):
             (guild_id, *date_parameters, *source_parameters),
         )
         for user_id, username, display_name, count in member_rows:
+            member = current_member(guild, user_id)
+            if member is None and not include_left_members:
+                continue
             writer.writerow(
                 {
                     "section": "member_summary",
                     "guild_id": guild_id,
                     "user_id": user_id,
-                    "username": username,
-                    "display_name": display_name,
+                    "username": member.name if member else username,
+                    "display_name": (
+                        member.display_name if member else display_name
+                    ),
+                    "is_current_member": member is not None,
                     "metric": "message_count",
                     "value": count,
                 }
@@ -2834,13 +3352,19 @@ class Stats(commands.Cog):
                 (guild_id, *event_parameters),
             )
             for user_id, username, display_name, event_time in rows:
+                member = current_member(guild, user_id)
+                if member is None and not include_left_members:
+                    continue
                 writer.writerow(
                     {
                         "section": section,
                         "guild_id": guild_id,
                         "user_id": user_id,
-                        "username": username,
-                        "display_name": display_name,
+                        "username": member.name if member else username,
+                        "display_name": (
+                            member.display_name if member else display_name
+                        ),
+                        "is_current_member": member is not None,
                         "event_time": event_time,
                     }
                 )
@@ -2862,13 +3386,19 @@ class Stats(commands.Cog):
                 (guild_id, *vc_parameters),
             )
             for row in rows:
+                member = current_member(guild, row[0])
+                if member is None and not include_left_members:
+                    continue
                 writer.writerow(
                     {
                         "section": "vc_session",
                         "guild_id": guild_id,
                         "user_id": row[0],
-                        "username": row[1],
-                        "display_name": row[2],
+                        "username": member.name if member else row[1],
+                        "display_name": (
+                            member.display_name if member else row[2]
+                        ),
+                        "is_current_member": member is not None,
                         "channel_id": row[3],
                         "channel_name": row[4],
                         "duration_seconds": row[5],

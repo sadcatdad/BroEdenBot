@@ -13,6 +13,8 @@ import discord
 from discord import app_commands
 from discord.ext import commands, tasks
 
+from utils.member_filter import current_member, member_filter_warning
+
 
 logger = logging.getLogger(__name__)
 
@@ -83,6 +85,10 @@ class VCStats(commands.Cog):
         self.allowed_role_ids = self._parse_allowed_role_ids(
             os.getenv("VCSTATS_ALLOWED_ROLE_IDS", "")
         )
+        rewards_roles = os.getenv("VCREWARDS_ALLOWED_ROLE_IDS", "").strip()
+        self.rewards_allowed_role_ids = self._parse_allowed_role_ids(
+            rewards_roles
+        ) if rewards_roles else set(self.allowed_role_ids)
         self.vcxp_enabled = env_bool("VCXP_ENABLED", False)
         self.vcxp_trigger_role_id = env_int("VCXP_TRIGGER_ROLE_ID", 0)
         self.vcxp_minutes_per_pulse = env_int(
@@ -298,6 +304,16 @@ class VCStats(commands.Cog):
             return True
         return any(
             role.id in self.allowed_role_ids for role in interaction.user.roles
+        )
+
+    def _has_rewards_access(self, interaction: discord.Interaction) -> bool:
+        if not interaction.guild or not isinstance(interaction.user, discord.Member):
+            return False
+        if interaction.user.guild_permissions.administrator:
+            return True
+        return any(
+            role.id in self.rewards_allowed_role_ids
+            for role in interaction.user.roles
         )
 
     async def _deny_if_unauthorised(
@@ -1094,6 +1110,13 @@ class VCStats(commands.Cog):
         await cursor.close()
         return rows
 
+    async def _table_exists(self, table_name: str) -> bool:
+        rows = await self._fetchall(
+            "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?",
+            (table_name,),
+        )
+        return bool(rows)
+
     async def _send_lines(
         self,
         interaction: discord.Interaction,
@@ -1169,6 +1192,7 @@ class VCStats(commands.Cog):
         days="Lookback period in days",
         limit="Number of members to show",
         eligible_only="Rank using reward-eligible time only",
+        include_left_members="Include users who are no longer in the server",
     )
     @app_commands.guild_only()
     async def leaderboard(
@@ -1177,6 +1201,7 @@ class VCStats(commands.Cog):
         days: app_commands.Range[int, 1, 3650] = 30,
         limit: app_commands.Range[int, 1, 25] = 10,
         eligible_only: bool = False,
+        include_left_members: bool = False,
     ) -> None:
         if await self._deny_if_unauthorised(interaction):
             return
@@ -1191,23 +1216,46 @@ class VCStats(commands.Cog):
             GROUP BY user_id
             HAVING ranked_seconds > 0
             ORDER BY ranked_seconds DESC
-            LIMIT ?
             """,
-            (interaction.guild_id, self._cutoff(days), limit),
+            (interaction.guild_id, self._cutoff(days)),
         )
-        if not rows:
+        filtered_rows = []
+        for user_id, display_name, username, ranked_seconds in rows:
+            member = current_member(interaction.guild, user_id)
+            if member is None and not include_left_members:
+                continue
+            filtered_rows.append(
+                (
+                    user_id,
+                    member.display_name if member else display_name,
+                    member.name if member else username,
+                    ranked_seconds,
+                    member is not None,
+                )
+            )
+            if len(filtered_rows) >= limit:
+                break
+        if not filtered_rows:
             await interaction.followup.send(
                 "No matching VC sessions were found.", ephemeral=True
             )
             return
         label = "eligible time" if eligible_only else "tracked time"
         lines = [
-            f"{index}. <@{row[0]}> — **{format_duration(row[3])}**"
-            for index, row in enumerate(rows, 1)
+            (
+                f"{index}. "
+                f"{f'<@{row[0]}>' if row[4] else discord.utils.escape_markdown(row[1] or row[2] or str(row[0])) + ' — Left server'} "
+                f"— **{format_duration(row[3])}**"
+            )
+            for index, row in enumerate(filtered_rows, 1)
         ]
+        scope = "Includes left members" if include_left_members else "Current members only"
+        warning = member_filter_warning(self.bot, interaction.guild)
+        if warning and not include_left_members:
+            lines.append(f"⚠️ {warning}")
         await self._send_lines(
             interaction,
-            f"**VC leaderboard — {label}, last {days} days**",
+            f"**VC leaderboard — {label}, last {days} days**\n{scope}.",
             lines,
         )
 
@@ -1367,6 +1415,7 @@ class VCStats(commands.Cog):
         days="Lookback period in days",
         user="Optional member filter",
         channel="Optional voice-channel filter",
+        include_left_members="Include users who are no longer in the server",
     )
     @app_commands.guild_only()
     async def export_sessions(
@@ -1375,6 +1424,7 @@ class VCStats(commands.Cog):
         days: app_commands.Range[int, 1, 3650] = 30,
         user: Optional[discord.Member] = None,
         channel: Optional[discord.VoiceChannel] = None,
+        include_left_members: bool = False,
     ) -> None:
         if await self._deny_if_unauthorised(interaction):
             return
@@ -1385,20 +1435,29 @@ class VCStats(commands.Cog):
             user.id if user else None,
             channel.id if channel else None,
         )
-        export_rows = [
-            (
-                *row[:8],
-                format_duration(row[7]),
-                row[8],
-                format_duration(row[8]),
-                *row[9:],
+        export_rows = []
+        for row in rows:
+            member = current_member(interaction.guild, row[0])
+            if member is None and not include_left_members:
+                continue
+            export_rows.append(
+                (
+                    row[0],
+                    member.name if member else row[1],
+                    member.display_name if member else row[2],
+                    member is not None,
+                    *row[3:8],
+                    format_duration(row[7]),
+                    row[8],
+                    format_duration(row[8]),
+                    *row[9:],
+                )
             )
-            for row in rows
-        ]
         headers = [
             "user_id",
             "username",
             "display_name",
+            "is_current_member",
             "channel_id",
             "channel_name",
             "joined_at",
@@ -1424,7 +1483,13 @@ class VCStats(commands.Cog):
             )
             return
         await interaction.followup.send(
-            f"Exported **{len(rows)}** matching VC sessions.",
+            f"Exported **{len(export_rows)}** matching VC sessions."
+            + (
+                f"\n⚠️ {member_filter_warning(self.bot, interaction.guild)}"
+                if not include_left_members
+                and member_filter_warning(self.bot, interaction.guild)
+                else ""
+            ),
             file=file,
             ephemeral=True,
         )
@@ -1489,8 +1554,11 @@ class VCStats(commands.Cog):
         )
 
     async def _xp_preview_rows(
-        self, guild: discord.Guild, days: int
-    ) -> List[Tuple[int, str, str, int, int, int, int, int]]:
+        self,
+        guild: discord.Guild,
+        days: int,
+        include_left_members: bool = False,
+    ) -> List[Tuple[int, str, str, int, int, int, int, int, bool]]:
         await self._sync_xp_states(guild.id)
         period_rows = await self._fetchall(
             """
@@ -1516,14 +1584,15 @@ class VCStats(commands.Cog):
         )
         preview = []
         for user_id, eligible_total, pulses_earned, pulses_paid in state_rows:
+            member = current_member(guild, user_id)
+            if member is None and not include_left_members:
+                continue
             username, display_name, period_seconds = period_by_user.get(
                 user_id, ("", "", 0)
             )
-            if not username:
-                member = guild.get_member(user_id)
-                if member:
-                    username = member.name
-                    display_name = member.display_name
+            if member:
+                username = member.name
+                display_name = member.display_name
             unpaid = max(0, int(pulses_earned) - int(pulses_paid))
             if period_seconds <= 0 and unpaid <= 0:
                 continue
@@ -1537,6 +1606,7 @@ class VCStats(commands.Cog):
                     int(pulses_earned),
                     int(pulses_paid),
                     unpaid,
+                    member is not None,
                 )
             )
         preview.sort(key=lambda row: (row[7], row[3]), reverse=True)
@@ -1585,19 +1655,199 @@ class VCStats(commands.Cog):
         )
 
     @vcrewards.command(
+        name="audit",
+        description="Audit whether the VC XP role-pulse bridge is safe",
+    )
+    @app_commands.describe(
+        include_left_members="Include users who are no longer in the server",
+    )
+    @app_commands.guild_only()
+    async def rewards_audit(
+        self,
+        interaction: discord.Interaction,
+        include_left_members: bool = False,
+    ) -> None:
+        if not self._has_rewards_access(interaction):
+            await interaction.response.send_message(
+                "You do not have permission to audit VC rewards.",
+                ephemeral=True,
+            )
+            return
+        await interaction.response.defer(ephemeral=True, thinking=True)
+
+        guild = interaction.guild
+        role = (
+            guild.get_role(self.vcxp_trigger_role_id)
+            if self.vcxp_trigger_role_id
+            else None
+        )
+        bot_member = guild.me
+        manage_roles = bool(
+            bot_member and bot_member.guild_permissions.manage_roles
+        )
+        hierarchy_ok = bool(role and bot_member and bot_member.top_role > role)
+        role_usable = bool(role and not role.managed and hierarchy_ok and manage_roles)
+
+        state_exists = await self._table_exists("vc_xp_user_state")
+        pulses_exists = await self._table_exists("vc_xp_pulses")
+        unpaid_users = 0
+        paid_last_day = 0
+        recent_rows = []
+        if state_exists:
+            rows = await self._fetchall(
+                """
+                SELECT user_id
+                FROM vc_xp_user_state
+                WHERE guild_id = ? AND pulses_earned > pulses_paid
+                """,
+                (guild.id,),
+            )
+            unpaid_users = sum(
+                1
+                for (user_id,) in rows
+                if include_left_members or current_member(guild, user_id)
+            )
+        if pulses_exists:
+            day_ago = (utc_now() - timedelta(hours=24)).isoformat()
+            rows = await self._fetchall(
+                """
+                SELECT COUNT(*)
+                FROM vc_xp_pulses
+                WHERE guild_id = ? AND granted_at >= ?
+                  AND status IN (
+                      'paid', 'remove_failed_assumed_paid',
+                      'stale_assumed_paid', 'marked_paid'
+                  )
+                """,
+                (guild.id, day_ago),
+            )
+            paid_last_day = int(rows[0][0] or 0)
+            recent_rows = await self._fetchall(
+                """
+                SELECT user_id, status, error, granted_at
+                FROM vc_xp_pulses
+                WHERE guild_id = ?
+                ORDER BY granted_at DESC, id DESC
+                LIMIT 5
+                """,
+                (guild.id,),
+            )
+
+        stuck_members = []
+        if role:
+            stuck_members = [member for member in role.members if not member.bot]
+
+        def label(passed: bool, *, warning: bool = False) -> str:
+            if passed:
+                return "✅ PASS"
+            return "⚠️ WARN" if warning else "❌ FAIL"
+
+        embed = discord.Embed(
+            title="VC rewards safety audit",
+            color=discord.Color.green() if role_usable else discord.Color.orange(),
+            timestamp=utc_now(),
+            description=(
+                "Read-only audit. No roles, payouts, or VCXP state were changed."
+            ),
+        )
+        embed.add_field(
+            name="Configuration",
+            value=(
+                f"{label(self.vcxp_enabled, warning=True)} `VCXP_ENABLED`: "
+                f"**{'true' if self.vcxp_enabled else 'false'}**\n"
+                f"{label(bool(self.vcxp_trigger_role_id))} Trigger role configured\n"
+                f"{label(bool(role))} Trigger role found\n"
+                f"{label(manage_roles)} Bot has Manage Roles\n"
+                f"{label(hierarchy_ok)} Bot role is above trigger role"
+            ),
+            inline=False,
+        )
+        embed.add_field(
+            name="Pulse limits",
+            value=(
+                f"Minutes per pulse: **{self.vcxp_minutes_per_pulse}**\n"
+                f"Role removal delay: **{self.vcxp_role_remove_delay_seconds}s**\n"
+                f"Daily cap: **{self.vcxp_daily_pulse_cap}**\n"
+                f"Weekly cap: **{self.vcxp_weekly_pulse_cap}**"
+            ),
+            inline=True,
+        )
+        state_text = (
+            f"Users with unpaid pulses "
+            f"({'includes left members' if include_left_members else 'current members only'}): "
+            f"**{unpaid_users:,}**\n"
+            f"Pulses paid in last 24h: **{paid_last_day:,}**"
+            if state_exists and pulses_exists
+            else "VCXP state tables not found yet."
+        )
+        embed.add_field(name="Accounting", value=state_text, inline=True)
+        warning = member_filter_warning(self.bot, guild)
+        if warning and not include_left_members:
+            embed.add_field(
+                name="Member filtering",
+                value=f"⚠️ {warning}",
+                inline=False,
+            )
+        embed.add_field(
+            name=f"Members currently holding trigger role ({len(stuck_members)})",
+            value=(
+                "\n".join(
+                    f"<@{member.id}>" for member in stuck_members[:10]
+                )
+                + (
+                    f"\n…and {len(stuck_members) - 10} more."
+                    if len(stuck_members) > 10
+                    else ""
+                )
+                if stuck_members
+                else "None found."
+            )[:1024],
+            inline=False,
+        )
+        if recent_rows:
+            embed.add_field(
+                name="Most recent pulse statuses",
+                value="\n".join(
+                    f"<@{user_id}> — **{status}**"
+                    f"{f' ({error})' if error else ''} — `{granted_at}`"
+                    for user_id, status, error, granted_at in recent_rows
+                )[:1024],
+                inline=False,
+            )
+        else:
+            embed.add_field(
+                name="Most recent pulse statuses",
+                value="No pulse records found.",
+                inline=False,
+            )
+        await interaction.followup.send(
+            embed=embed,
+            ephemeral=True,
+            allowed_mentions=discord.AllowedMentions.none(),
+        )
+
+    @vcrewards.command(
         name="preview", description="Preview eligible time and VC XP pulses"
     )
-    @app_commands.describe(days="Lookback period for displayed eligible time")
+    @app_commands.describe(
+        days="Lookback period for displayed eligible time",
+        include_left_members="Include users who are no longer in the server",
+    )
     @app_commands.guild_only()
     async def rewards_preview(
         self,
         interaction: discord.Interaction,
         days: app_commands.Range[int, 1, 3650] = 7,
+        include_left_members: bool = False,
     ) -> None:
         if await self._deny_if_unauthorised(interaction):
             return
         await interaction.response.defer(ephemeral=True, thinking=True)
-        rows = await self._xp_preview_rows(interaction.guild, days)
+        rows = await self._xp_preview_rows(
+            interaction.guild,
+            days,
+            include_left_members,
+        )
         if not rows:
             await interaction.followup.send(
                 "No eligible VC time or unpaid VC XP pulses were found.",
@@ -1605,24 +1855,35 @@ class VCStats(commands.Cog):
             )
             return
         lines = [
-            f"{index}. <@{row[0]}> — {format_duration(row[3])} eligible "
+            f"{index}. "
+            f"{f'<@{row[0]}>' if row[8] else discord.utils.escape_markdown(row[2] or row[1] or str(row[0])) + ' — Left server'} "
+            f"— {format_duration(row[3])} eligible "
             f"in period — earned **{row[5]}** / paid **{row[6]}** / "
             f"unpaid **{row[7]}**"
             for index, row in enumerate(rows[:25], 1)
         ]
         if len(rows) > 25:
             lines.append(f"…and {len(rows) - 25} more members.")
+        warning = member_filter_warning(self.bot, interaction.guild)
+        if warning and not include_left_members:
+            lines.append(f"⚠️ {warning}")
         await self._send_lines(
             interaction,
             f"**VC XP pulse preview — last {days} days**\n"
-            "Earned, paid, and unpaid counts are cumulative.",
+            "Earned, paid, and unpaid counts are cumulative.\n"
+            f"{'Includes left members' if include_left_members else 'Current members only'}.",
             lines,
         )
 
     @vcrewards.command(name="unpaid", description="Show unpaid VC XP pulses")
+    @app_commands.describe(
+        include_left_members="Include users who are no longer in the server",
+    )
     @app_commands.guild_only()
     async def rewards_unpaid(
-        self, interaction: discord.Interaction
+        self,
+        interaction: discord.Interaction,
+        include_left_members: bool = False,
     ) -> None:
         if await self._deny_if_unauthorised(interaction):
             return
@@ -1635,22 +1896,39 @@ class VCStats(commands.Cog):
             FROM vc_xp_user_state
             WHERE guild_id = ? AND pulses_earned > pulses_paid
             ORDER BY unpaid DESC, eligible_seconds_total DESC
-            LIMIT 75
             """,
             (interaction.guild_id,),
         )
-        if not rows:
+        filtered_rows = []
+        for row in rows:
+            member = current_member(interaction.guild, row[0])
+            if member is None and not include_left_members:
+                continue
+            filtered_rows.append((*row, member))
+            if len(filtered_rows) >= 75:
+                break
+        if not filtered_rows:
             await interaction.followup.send(
                 "No members currently have unpaid VC XP pulses.",
                 ephemeral=True,
             )
             return
         lines = [
-            f"{index}. <@{row[0]}> — {format_duration(row[1])} eligible "
+            f"{index}. "
+            f"{f'<@{row[0]}>' if row[5] else f'`{row[0]}` — Left server'} "
+            f"— {format_duration(row[1])} eligible "
             f"— earned **{row[2]}** / paid **{row[3]}** / unpaid **{row[4]}**"
-            for index, row in enumerate(rows, 1)
+            for index, row in enumerate(filtered_rows, 1)
         ]
-        await self._send_lines(interaction, "**Unpaid VC XP pulses**", lines)
+        warning = member_filter_warning(self.bot, interaction.guild)
+        if warning and not include_left_members:
+            lines.append(f"⚠️ {warning}")
+        await self._send_lines(
+            interaction,
+            "**Unpaid VC XP pulses**\n"
+            f"{'Includes left members' if include_left_members else 'Current members only'}.",
+            lines,
+        )
 
     @vcrewards.command(
         name="pulse", description="Manually test the VC XP trigger role"
@@ -1766,17 +2044,25 @@ class VCStats(commands.Cog):
     @vcrewards.command(
         name="export", description="Export the VC XP pulse preview to CSV"
     )
-    @app_commands.describe(days="Lookback period for eligible VC time")
+    @app_commands.describe(
+        days="Lookback period for eligible VC time",
+        include_left_members="Include users who are no longer in the server",
+    )
     @app_commands.guild_only()
     async def rewards_export(
         self,
         interaction: discord.Interaction,
         days: app_commands.Range[int, 1, 3650] = 7,
+        include_left_members: bool = False,
     ) -> None:
         if await self._deny_if_unauthorised(interaction):
             return
         await interaction.response.defer(ephemeral=True, thinking=True)
-        rows = await self._xp_preview_rows(interaction.guild, days)
+        rows = await self._xp_preview_rows(
+            interaction.guild,
+            days,
+            include_left_members,
+        )
         export_rows = [
             (
                 row[0],
@@ -1789,6 +2075,7 @@ class VCStats(commands.Cog):
                 row[5],
                 row[6],
                 row[7],
+                row[8],
                 days,
                 self.vcxp_minutes_per_pulse,
             )
@@ -1805,6 +2092,7 @@ class VCStats(commands.Cog):
             "pulses_earned",
             "pulses_paid",
             "unpaid_pulses",
+            "is_current_member",
             "period_days",
             "minutes_per_pulse",
         ]
@@ -1818,7 +2106,13 @@ class VCStats(commands.Cog):
             )
             return
         await interaction.followup.send(
-            f"Exported VC XP pulse data for **{len(rows)}** members.",
+            f"Exported VC XP pulse data for **{len(rows)}** members."
+            + (
+                f"\n⚠️ {member_filter_warning(self.bot, interaction.guild)}"
+                if not include_left_members
+                and member_filter_warning(self.bot, interaction.guild)
+                else ""
+            ),
             file=file,
             ephemeral=True,
         )

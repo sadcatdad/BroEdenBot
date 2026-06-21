@@ -140,6 +140,90 @@ def _format_public_response(question: str, answer: str) -> discord.Embed:
     )
 
 
+def _guide_keywords(question: str) -> str:
+    words = re.findall(r"[a-z0-9']+", question.casefold())
+    ignored = {
+        "about",
+        "could",
+        "does",
+        "have",
+        "how",
+        "what",
+        "when",
+        "where",
+        "which",
+        "with",
+        "would",
+        "your",
+    }
+    keywords = []
+    for word in words:
+        if len(word) < 3 or word in ignored or word in keywords:
+            continue
+        keywords.append(word)
+    return " ".join(keywords[:5])
+
+
+class AskResponseView(discord.ui.View):
+    def __init__(self, owner_id: int, question: str):
+        super().__init__(timeout=15 * 60)
+        self.owner_id = owner_id
+        self.keywords = _guide_keywords(question)
+
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        if interaction.user.id == self.owner_id:
+            return True
+        await interaction.response.send_message(
+            "This response belongs to someone else. Please run /ask yourself.",
+            ephemeral=True,
+        )
+        return False
+
+    @discord.ui.button(label="Open Ticket", style=discord.ButtonStyle.primary)
+    async def open_ticket(
+        self,
+        interaction: discord.Interaction,
+        button: discord.ui.Button,
+    ) -> None:
+        await interaction.response.send_message(
+            f"Please submit a ticket in {SUPPORT_CHANNEL} so staff can help.",
+            ephemeral=True,
+            allowed_mentions=discord.AllowedMentions.none(),
+        )
+
+    @discord.ui.button(label="Search Guide", style=discord.ButtonStyle.secondary)
+    async def search_guide(
+        self,
+        interaction: discord.Interaction,
+        button: discord.ui.Button,
+    ) -> None:
+        suggestion = "Try /guide search with a few keywords from your question."
+        if self.keywords:
+            suggestion += f"\nSuggested query: `{self.keywords}`"
+        await interaction.response.send_message(suggestion, ephemeral=True)
+
+    @discord.ui.button(label="This Helped", style=discord.ButtonStyle.success)
+    async def helped(
+        self,
+        interaction: discord.Interaction,
+        button: discord.ui.Button,
+    ) -> None:
+        await interaction.response.send_message("Glad it helped!", ephemeral=True)
+
+    @discord.ui.button(label="Still Confused", style=discord.ButtonStyle.danger)
+    async def still_confused(
+        self,
+        interaction: discord.Interaction,
+        button: discord.ui.Button,
+    ) -> None:
+        await interaction.response.send_message(
+            f"No worries. Please submit a ticket in {SUPPORT_CHANNEL} "
+            "so staff can help directly.",
+            ephemeral=True,
+            allowed_mentions=discord.AllowedMentions.none(),
+        )
+
+
 class Ask(commands.Cog):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
@@ -365,6 +449,7 @@ MEMBER QUESTION:
 
         await interaction.followup.send(
             embed=_format_public_response(question, answer),
+            view=AskResponseView(interaction.user.id, question),
             ephemeral=True,
             allowed_mentions=discord.AllowedMentions.none(),
         )
