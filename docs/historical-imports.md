@@ -33,13 +33,13 @@ It does not store message content, attachments, embeds, stickers, or reactions.
 2. Transfer new exports from the Mac to the Raspberry Pi:
 
    ```bash
-   rsync -avh --progress ~/Documents/BroEdenBot/imports/discord_history/ sadcatdad@raspberrypi.local:/home/sadcatdad/BroEdenBot/imports/discord_history/
+   rsync -avh --progress ~/Documents/BroEdenBot/imports/discord_history/ pi-user@raspberrypi.local:/home/pi-user/BroEdenBot/imports/discord_history/
    ```
 
 3. Connect to the Pi and activate the project environment:
 
    ```bash
-   ssh sadcatdad@raspberrypi.local
+   ssh pi-user@raspberrypi.local
    cd ~/BroEdenBot
    source .venv/bin/activate
    ```
@@ -120,8 +120,8 @@ These examples use the current project paths and guild ID.
 On the Mac:
 
 ```bash
-alias bedsync='rsync -avh --progress ~/Documents/BroEdenBot/imports/discord_history/ sadcatdad@raspberrypi.local:/home/sadcatdad/BroEdenBot/imports/discord_history/'
-alias bedssh='ssh sadcatdad@raspberrypi.local'
+alias bedsync='rsync -avh --progress ~/Documents/BroEdenBot/imports/discord_history/ pi-user@raspberrypi.local:/home/pi-user/BroEdenBot/imports/discord_history/'
+alias bedssh='ssh pi-user@raspberrypi.local'
 ```
 
 On the Pi:
