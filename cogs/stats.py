@@ -11,11 +11,16 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 import discord
 from discord import app_commands
-from discord.ext import commands
+from discord.ext import commands, tasks
 
 from config import COLOR
 from utils.compact_roster import CompactRosterItem, render_compact_roster_pngs
 from utils.member_filter import current_member, member_filter_warning
+from utils.ranked_graphic import (
+    RankedGraphicItem,
+    RankedGraphicSection,
+    render_ranked_graphic,
+)
 from utils.stats_reports import (
     render_missingrole_report,
     render_report_error,
@@ -39,6 +44,7 @@ ACTIVITY_PERIOD_CHOICES = [
     app_commands.Choice(name="All time", value="all_time"),
 ]
 ACTIVITY_FIXED_PERIOD_CHOICES = ACTIVITY_PERIOD_CHOICES[:-1]
+ACTIVITY_GRAPHIC_REPORTS = {"channels", "quiet", "members", "vc"}
 CHANNEL_CATEGORIES_PATH = (
     Path(__file__).resolve().parent.parent / "data" / "channel_categories.json"
 )
@@ -480,10 +486,34 @@ class Stats(commands.Cog):
             )
             """
         )
+        await self.bot.db.execute(
+            """
+            CREATE TABLE IF NOT EXISTS tracked_activity_reports (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                guild_id INTEGER NOT NULL,
+                channel_id INTEGER NOT NULL,
+                message_id INTEGER NOT NULL,
+                report_type TEXT NOT NULL,
+                config_json TEXT NOT NULL,
+                created_by INTEGER,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            )
+            """
+        )
+        await self.bot.db.execute(
+            """
+            CREATE UNIQUE INDEX IF NOT EXISTS idx_tracked_activity_message
+            ON tracked_activity_reports (guild_id, message_id)
+            """
+        )
         await self.bot.db.commit()
         self.bot.add_view(self._export_view)
+        if not self.daily_stats_refresh.is_running():
+            self.daily_stats_refresh.start()
 
     async def cog_unload(self) -> None:
+        self.daily_stats_refresh.cancel()
         for task in self._refresh_tasks.values():
             task.cancel()
         self._refresh_tasks.clear()
@@ -637,7 +667,7 @@ class Stats(commands.Cog):
 
     @stats.command(
         name="refresh",
-        description="Refresh all tracked role embeds in this server",
+        description="Refresh every tracked stats page in this server",
     )
     @app_commands.guild_only()
     @app_commands.check(has_stats_access)
@@ -645,6 +675,9 @@ class Stats(commands.Cog):
         await interaction.response.defer(ephemeral=True)
         rows = await self._tracked_rows(guild_id=interaction.guild_id)
         report_rows = await self._tracked_report_rows(
+            guild_id=interaction.guild_id
+        )
+        activity_rows = await self._tracked_activity_rows(
             guild_id=interaction.guild_id
         )
 
@@ -660,8 +693,13 @@ class Stats(commands.Cog):
                 refreshed += 1
             else:
                 failed += 1
+        for row in activity_rows:
+            if await self._refresh_activity_report_row(row):
+                refreshed += 1
+            else:
+                failed += 1
 
-        total = len(rows) + len(report_rows)
+        total = len(rows) + len(report_rows) + len(activity_rows)
         if not total:
             message = "There are no tracked stats pages in this server."
         else:
@@ -697,85 +735,20 @@ class Stats(commands.Cog):
     ) -> None:
         await interaction.response.defer(ephemeral=True, thinking=True)
         selected_days = self._activity_period_days(period, days, default_days=7)
-        period_label = self._activity_period_label(selected_days)
         source_value = self._activity_source_value(source)
-        data = await self._activity_overview_data(
-            interaction.guild_id, selected_days, source_value
+        config = {"days": selected_days, "source": source_value}
+        embed = await self._build_activity_report_embed(
+            interaction.guild,
+            "overview",
+            config,
         )
-        embed = discord.Embed(
-            title=f"Community activity overview — {period_label} ({source_value})",
-            color=discord.Color(COLOR),
-            timestamp=self._utcnow(),
+        await self._send_activity_report(
+            interaction,
+            embed,
+            channel,
+            report_type="overview",
+            config=config,
         )
-        if selected_days is None:
-            embed.description = (
-                "This includes all currently tracked and imported activity data."
-            )
-        embed.add_field(name="Period", value=period_label, inline=True)
-        embed.add_field(
-            name="Data range",
-            value=data["data_range"],
-            inline=True,
-        )
-        embed.add_field(
-            name="Messages tracked",
-            value=f"{data['total_messages']:,}",
-            inline=True,
-        )
-        embed.add_field(
-            name="Unique active members",
-            value=f"{data['active_members']:,}",
-            inline=True,
-        )
-        embed.add_field(
-            name="Joins / Leaves",
-            value=f"{data['joins']:,} / {data['leaves']:,}",
-            inline=True,
-        )
-        embed.add_field(
-            name="Top text channel",
-            value=data["top_text_channel"],
-            inline=True,
-        )
-        embed.add_field(
-            name="Busiest day",
-            value=data["busiest_day"],
-            inline=True,
-        )
-        embed.add_field(
-            name="Quietest day",
-            value=data["quietest_day"],
-            inline=True,
-        )
-        if data["vc_available"]:
-            embed.add_field(
-                name="Tracked VC time",
-                value=format_duration(data["vc_seconds"]),
-                inline=True,
-            )
-            embed.add_field(
-                name="Top VC channel",
-                value=data["top_vc_channel"],
-                inline=True,
-            )
-        else:
-            embed.add_field(
-                name="Voice activity",
-                value="VC activity tracking is not available yet.",
-                inline=False,
-            )
-        embed.add_field(
-            name="Deterministic vibe summary",
-            value=data["vibe"],
-            inline=False,
-        )
-        embed.set_footer(
-            text=(
-                f"Activity tracking began {data['tracking_started']}. "
-                "Older periods may be incomplete."
-            )
-        )
-        await self._send_activity_report(interaction, embed, channel)
 
     @activity.command(
         name="channels",
@@ -805,60 +778,24 @@ class Stats(commands.Cog):
     ) -> None:
         await interaction.response.defer(ephemeral=True)
         selected_days = self._activity_period_days(period, days, default_days=7)
-        period_label = self._activity_period_label(selected_days)
         source_value = self._activity_source_value(source)
-        source_sql, source_parameters = self._activity_source_filter(source_value)
-        date_sql, date_parameters = self._activity_date_filter(selected_days)
-        rows = await self._fetchall(
-            f"""
-            SELECT channel_id, MAX(channel_name), SUM(message_count),
-                   COUNT(DISTINCT user_id)
-            FROM stats_message_activity
-            WHERE guild_id = ? {date_sql} {source_sql}
-            GROUP BY channel_id
-            ORDER BY SUM(message_count) DESC
-            LIMIT ?
-            """,
-            (
-                interaction.guild_id,
-                *date_parameters,
-                *source_parameters,
-                limit,
-            ),
+        config = {
+            "days": selected_days,
+            "source": source_value,
+            "limit": limit,
+        }
+        embed = await self._build_activity_report_embed(
+            interaction.guild,
+            "channels",
+            config,
         )
-        total_row = await self._fetchone(
-            f"""
-            SELECT COALESCE(SUM(message_count), 0)
-            FROM stats_message_activity
-            WHERE guild_id = ? {date_sql} {source_sql}
-            """,
-            (interaction.guild_id, *date_parameters, *source_parameters),
+        await self._send_activity_report(
+            interaction,
+            embed,
+            channel,
+            report_type="channels",
+            config=config,
         )
-        total = total_row[0] if total_row else 0
-        embed = discord.Embed(
-            title=f"Top text channels — {period_label} ({source_value})",
-            color=discord.Color(COLOR),
-        )
-        if selected_days is None:
-            embed.description = (
-                "This includes all currently tracked and imported activity data."
-            )
-        if not rows:
-            embed.description = "No text activity has been tracked for this period."
-        for index, (channel_id, channel_name, messages, posters) in enumerate(
-            rows, start=1
-        ):
-            percentage = messages / total * 100 if total else 0
-            embed.add_field(
-                name=f"{index}. {safe_channel_display(channel_id, channel_name)}",
-                value=(
-                    f"**{messages:,}** messages • **{posters:,}** unique posters "
-                    f"• **{percentage:.1f}%** of tracked messages"
-                ),
-                inline=False,
-            )
-        embed.set_footer(text="Use /stats activity export for complete data.")
-        await self._send_activity_report(interaction, embed, channel)
 
     @activity.command(
         name="quiet",
@@ -888,96 +825,24 @@ class Stats(commands.Cog):
     ) -> None:
         await interaction.response.defer(ephemeral=True)
         selected_days = self._activity_period_days(period, days, default_days=14)
-        period_label = self._activity_period_label(selected_days)
         source_value = self._activity_source_value(source)
-        source_sql, source_parameters = self._activity_source_filter(source_value)
-        if selected_days is None:
-            rows = await self._fetchall(
-                f"""
-                SELECT channel_id, SUM(message_count), MAX(activity_hour)
-                FROM stats_message_activity
-                WHERE guild_id = ? {source_sql}
-                GROUP BY channel_id
-                """,
-                (interaction.guild_id, *source_parameters),
-            )
-        else:
-            cutoff = self._activity_cutoff(selected_days)
-            rows = await self._fetchall(
-                f"""
-                SELECT channel_id, SUM(
-                           CASE WHEN activity_hour >= ? THEN message_count ELSE 0 END
-                       ) AS period_messages,
-                       MAX(CASE WHEN activity_hour >= ? THEN activity_hour END)
-                FROM stats_message_activity
-                WHERE guild_id = ? {source_sql}
-                GROUP BY channel_id
-                """,
-                (
-                    cutoff,
-                    cutoff,
-                    interaction.guild_id,
-                    *source_parameters,
-                ),
-            )
-        tracked = {
-            row[0]: {"messages": row[1] or 0, "last": row[2]} for row in rows
+        config = {
+            "days": selected_days,
+            "source": source_value,
+            "limit": limit,
         }
-        tracking_started = await self._tracking_started_datetime()
-        candidates = []
-        me = interaction.guild.me
-        for text_channel in interaction.guild.text_channels:
-            if me and not text_channel.permissions_for(me).view_channel:
-                continue
-            data = tracked.get(text_channel.id)
-            if (
-                data is None
-                and tracking_started
-                and text_channel.created_at >= tracking_started
-            ):
-                continue
-            candidates.append(
-                (
-                    data["messages"] if data else 0,
-                    data["last"] if data else None,
-                    text_channel,
-                )
-            )
-        candidates.sort(key=lambda item: (item[0], item[1] or ""))
-        embed = discord.Embed(
-            title=f"Low-activity text channels — {period_label} ({source_value})",
-            color=discord.Color(COLOR),
-            description=(
-                "Neutral activity signal for channel planning. "
-                "This does not evaluate individual members."
-                + (
-                    "\n\nThis includes all currently tracked and imported "
-                    "activity data."
-                    if selected_days is None
-                    else ""
-                )
-            ),
+        embed = await self._build_activity_report_embed(
+            interaction.guild,
+            "quiet",
+            config,
         )
-        for messages, last_activity, text_channel in candidates[:limit]:
-            last_text = (
-                "<t:"
-                f"{int(datetime.datetime.fromisoformat(last_activity).timestamp())}"
-                ":R>"
-                if last_activity
-                else "No tracked activity yet"
-            )
-            embed.add_field(
-                name=text_channel.mention,
-                value=f"**{messages:,}** messages • Last tracked: {last_text}",
-                inline=False,
-            )
-        if not candidates:
-            embed.add_field(
-                name="No results",
-                value="No eligible visible text channels were found.",
-                inline=False,
-            )
-        await self._send_activity_report(interaction, embed, channel)
+        await self._send_activity_report(
+            interaction,
+            embed,
+            channel,
+            report_type="quiet",
+            config=config,
+        )
 
     @activity.command(
         name="members",
@@ -1009,86 +874,25 @@ class Stats(commands.Cog):
     ) -> None:
         await interaction.response.defer(ephemeral=True)
         selected_days = self._activity_period_days(period, days, default_days=7)
-        period_label = self._activity_period_label(selected_days)
         source_value = self._activity_source_value(source)
-        source_sql, source_parameters = self._activity_source_filter(source_value)
-        date_sql, date_parameters = self._activity_date_filter(selected_days)
-        rows = await self._fetchall(
-            f"""
-            SELECT user_id, MAX(username), MAX(display_name),
-                   SUM(message_count) AS total
-            FROM stats_message_activity
-            WHERE guild_id = ? {date_sql} {source_sql}
-            GROUP BY user_id
-            ORDER BY total DESC
-            """,
-            (
-                interaction.guild_id,
-                *date_parameters,
-                *source_parameters,
-            ),
+        config = {
+            "days": selected_days,
+            "source": source_value,
+            "limit": limit,
+            "include_left_members": include_left_members,
+        }
+        embed = await self._build_activity_report_embed(
+            interaction.guild,
+            "members",
+            config,
         )
-        filtered_rows = []
-        for user_id, username, display_name, total in rows:
-            member = current_member(interaction.guild, user_id)
-            if member is None and not include_left_members:
-                continue
-            filtered_rows.append(
-                (
-                    user_id,
-                    member.name if member else username,
-                    member.display_name if member else display_name,
-                    total,
-                    member is not None,
-                )
-            )
-            if len(filtered_rows) >= limit:
-                break
-        scope = (
-            "Includes left members"
-            if include_left_members
-            else "Current members only"
+        await self._send_activity_report(
+            interaction,
+            embed,
+            channel,
+            report_type="members",
+            config=config,
         )
-        embed = discord.Embed(
-            title=f"Top text participants — {period_label} ({source_value})",
-            color=discord.Color(COLOR),
-            description=(
-                "Message counts only; no activity score or inactivity judgment."
-                f"\n**{scope}.**"
-                + (
-                    "\n\nThis includes all currently tracked and imported "
-                    "activity data."
-                    if selected_days is None
-                    else ""
-                )
-            ),
-        )
-        warning = member_filter_warning(self.bot, interaction.guild)
-        if warning and not include_left_members:
-            embed.description += f"\n⚠️ {warning}"
-        if not filtered_rows:
-            embed.add_field(
-                name="No results",
-                value="No matching member activity was found for this period.",
-                inline=False,
-            )
-        for index, (
-            user_id,
-            username,
-            display_name,
-            total,
-            is_current,
-        ) in enumerate(
-            filtered_rows, start=1
-        ):
-            label = display_name or username or str(user_id)
-            identity = f"<@{user_id}>" if is_current else f"`{user_id}` • Left server"
-            embed.add_field(
-                name=f"{index}. {discord.utils.escape_markdown(label)}",
-                value=f"{identity} • **{total:,}** messages",
-                inline=False,
-            )
-        await self._send_activity_report(interaction, embed, channel)
 
     @activity.command(
         name="trends",
@@ -1097,6 +901,7 @@ class Stats(commands.Cog):
     @app_commands.describe(
         period="Fixed period to compare",
         source="Include all, live, or imported message activity",
+        channel="Optional channel where the report should be posted",
     )
     @app_commands.choices(
         period=ACTIVITY_FIXED_PERIOD_CHOICES,
@@ -1109,143 +914,24 @@ class Stats(commands.Cog):
         interaction: discord.Interaction,
         period: Optional[app_commands.Choice[str]] = None,
         source: Optional[app_commands.Choice[str]] = None,
+        channel: Optional[discord.TextChannel] = None,
     ) -> None:
         await interaction.response.defer(ephemeral=True)
         days = int(period.value) if period else 30
         source_value = self._activity_source_value(source)
-        source_sql, source_parameters = self._activity_source_filter(source_value)
-        current_start = self._activity_cutoff(days)
-        previous_start = self._activity_cutoff(days * 2)
-
-        totals = await self._fetchone(
-            f"""
-            SELECT
-                COALESCE(SUM(CASE WHEN activity_hour >= ?
-                    THEN message_count ELSE 0 END), 0),
-                COALESCE(SUM(CASE WHEN activity_hour >= ? AND activity_hour < ?
-                    THEN message_count ELSE 0 END), 0),
-                COUNT(DISTINCT CASE WHEN activity_hour >= ? THEN user_id END),
-                COUNT(DISTINCT CASE WHEN activity_hour >= ? AND activity_hour < ?
-                    THEN user_id END)
-            FROM stats_message_activity
-            WHERE guild_id = ? AND activity_hour >= ? {source_sql}
-            """,
-            (
-                current_start,
-                previous_start,
-                current_start,
-                current_start,
-                previous_start,
-                current_start,
-                interaction.guild_id,
-                previous_start,
-                *source_parameters,
-            ),
+        config = {"days": days, "source": source_value}
+        embed = await self._build_activity_report_embed(
+            interaction.guild,
+            "trends",
+            config,
         )
-        channel_rows = await self._fetchall(
-            f"""
-            SELECT channel_id, MAX(channel_name),
-                   COALESCE(SUM(CASE WHEN activity_hour >= ?
-                       THEN message_count ELSE 0 END), 0) AS current_messages,
-                   COALESCE(SUM(CASE WHEN activity_hour >= ? AND activity_hour < ?
-                       THEN message_count ELSE 0 END), 0) AS previous_messages
-            FROM stats_message_activity
-            WHERE guild_id = ? AND activity_hour >= ? {source_sql}
-            GROUP BY channel_id
-            """,
-            (
-                current_start,
-                previous_start,
-                current_start,
-                interaction.guild_id,
-                previous_start,
-                *source_parameters,
-            ),
+        await self._send_activity_report(
+            interaction,
+            embed,
+            channel,
+            report_type="trends",
+            config=config,
         )
-        day_rows = await self._fetchall(
-            f"""
-            SELECT activity_date, SUM(message_count)
-            FROM stats_message_activity
-            WHERE guild_id = ? AND activity_hour >= ? {source_sql}
-            GROUP BY activity_date
-            ORDER BY SUM(message_count) DESC
-            """,
-            (interaction.guild_id, current_start, *source_parameters),
-        )
-
-        current_messages, previous_messages, current_members, previous_members = (
-            (int(value or 0) for value in totals)
-        )
-        changes = [
-            (int(current or 0) - int(previous or 0), channel_id, channel_name)
-            for channel_id, channel_name, current, previous in channel_rows
-        ]
-        growing = sorted((row for row in changes if row[0] > 0), reverse=True)[:5]
-        declining = sorted((row for row in changes if row[0] < 0))[:5]
-        embed = discord.Embed(
-            title=f"Activity trends — {days} days ({source_value})",
-            color=discord.Color(COLOR),
-            timestamp=self._utcnow(),
-        )
-        if previous_messages == 0 and previous_members == 0:
-            embed.description = (
-                "Previous-period comparison is limited because no matching "
-                "activity was found in that window."
-            )
-        embed.add_field(
-            name="Messages",
-            value=(
-                f"Current: **{current_messages:,}**\n"
-                f"Previous: **{previous_messages:,}**\n"
-                f"Change: **{_percent_change(current_messages, previous_messages)}**"
-            ),
-            inline=True,
-        )
-        embed.add_field(
-            name="Active members",
-            value=(
-                f"Current: **{current_members:,}**\n"
-                f"Previous: **{previous_members:,}**\n"
-                f"Change: **{_percent_change(current_members, previous_members)}**"
-            ),
-            inline=True,
-        )
-        embed.add_field(
-            name="Current-period days",
-            value=(
-                f"Busiest: **{day_rows[0][0]}** — {day_rows[0][1]:,}\n"
-                f"Quietest: **{day_rows[-1][0]}** — {day_rows[-1][1]:,}"
-                if day_rows
-                else "No matching activity."
-            ),
-            inline=False,
-        )
-        embed.add_field(
-            name="Top growing channels",
-            value=(
-                "\n".join(
-                    f"{safe_channel_display(channel_id, name)} — **+{change:,}**"
-                    for change, channel_id, name in growing
-                )
-                or "No channels increased."
-            )[:1024],
-            inline=True,
-        )
-        embed.add_field(
-            name="Top declining channels",
-            value=(
-                "\n".join(
-                    f"{safe_channel_display(channel_id, name)} — **{change:,}**"
-                    for change, channel_id, name in declining
-                )
-                or "No channels declined."
-            )[:1024],
-            inline=True,
-        )
-        embed.set_footer(
-            text=f"Current {days} days compared with the preceding {days} days."
-        )
-        await interaction.followup.send(embed=embed, ephemeral=True)
 
     @activity.command(
         name="categories",
@@ -1255,6 +941,7 @@ class Stats(commands.Cog):
         period="Preset reporting period",
         source="Include all, live, or imported message activity",
         limit="Number of categories to show",
+        channel="Optional channel where the report should be posted",
     )
     @app_commands.choices(
         period=ACTIVITY_PERIOD_CHOICES,
@@ -1268,80 +955,28 @@ class Stats(commands.Cog):
         period: Optional[app_commands.Choice[str]] = None,
         source: Optional[app_commands.Choice[str]] = None,
         limit: app_commands.Range[int, 1, 25] = 10,
+        channel: Optional[discord.TextChannel] = None,
     ) -> None:
         await interaction.response.defer(ephemeral=True)
         selected_days = self._activity_period_days(period, None, default_days=30)
-        period_label = self._activity_period_label(selected_days)
         source_value = self._activity_source_value(source)
-        source_sql, source_parameters = self._activity_source_filter(source_value)
-        date_sql, date_parameters = self._activity_date_filter(selected_days)
-        rows = await self._fetchall(
-            f"""
-            SELECT channel_id, MAX(channel_name), user_id, SUM(message_count)
-            FROM stats_message_activity
-            WHERE guild_id = ? {date_sql} {source_sql}
-            GROUP BY channel_id, user_id
-            """,
-            (
-                interaction.guild_id,
-                *date_parameters,
-                *source_parameters,
-            ),
+        config = {
+            "days": selected_days,
+            "source": source_value,
+            "limit": limit,
+        }
+        embed = await self._build_activity_report_embed(
+            interaction.guild,
+            "categories",
+            config,
         )
-
-        category_config = load_channel_categories()
-        categories = defaultdict(
-            lambda: {"messages": 0, "members": set(), "channels": defaultdict(int)}
+        await self._send_activity_report(
+            interaction,
+            embed,
+            channel,
+            report_type="categories",
+            config=config,
         )
-        for channel_id, channel_name, user_id, messages in rows:
-            category, included = get_channel_category(channel_id, category_config)
-            if not included:
-                continue
-            item = categories[category]
-            item["messages"] += int(messages or 0)
-            item["members"].add(user_id)
-            item["channels"][(channel_id, channel_name)] += int(messages or 0)
-        ranked = sorted(
-            categories.items(),
-            key=lambda item: item[1]["messages"],
-            reverse=True,
-        )
-        total = sum(item["messages"] for _, item in ranked)
-        configured = bool(category_config)
-        embed = discord.Embed(
-            title=f"Activity by category — {period_label} ({source_value})",
-            color=discord.Color(COLOR),
-            timestamp=self._utcnow(),
-        )
-        if not configured:
-            embed.description = (
-                "No channel category config found. Channels are grouped as "
-                "Uncategorized."
-            )
-        if not ranked:
-            embed.add_field(
-                name="No results",
-                value="No included message activity was found for this period.",
-                inline=False,
-            )
-        for category, item in ranked[:limit]:
-            top_channel, top_messages = max(
-                item["channels"].items(),
-                key=lambda channel_item: channel_item[1],
-            )
-            percentage = item["messages"] / total * 100 if total else 0
-            embed.add_field(
-                name=category[:256],
-                value=(
-                    f"**{item['messages']:,}** messages • "
-                    f"**{len(item['members']):,}** active members • "
-                    f"**{percentage:.1f}%**\n"
-                    f"Top: {safe_channel_display(*top_channel)} "
-                    f"({top_messages:,})"
-                )[:1024],
-                inline=False,
-            )
-        await interaction.followup.send(embed=embed, ephemeral=True)
 
     @activity.command(
         name="heatmap",
@@ -1351,6 +986,7 @@ class Stats(commands.Cog):
         period="Preset reporting period",
         source="Include all, live, or imported message activity",
         timezone="IANA timezone, such as America/Chicago",
+        channel="Optional channel where the report should be posted",
     )
     @app_commands.choices(
         period=ACTIVITY_PERIOD_CHOICES,
@@ -1364,115 +1000,28 @@ class Stats(commands.Cog):
         period: Optional[app_commands.Choice[str]] = None,
         source: Optional[app_commands.Choice[str]] = None,
         timezone: app_commands.Range[str, 1, 64] = "America/Chicago",
+        channel: Optional[discord.TextChannel] = None,
     ) -> None:
         await interaction.response.defer(ephemeral=True)
         selected_days = self._activity_period_days(period, None, default_days=30)
-        period_label = self._activity_period_label(selected_days)
         source_value = self._activity_source_value(source)
-        source_sql, source_parameters = self._activity_source_filter(source_value)
-        date_sql, date_parameters = self._activity_date_filter(selected_days)
-        rows = await self._fetchall(
-            f"""
-            SELECT activity_hour, SUM(message_count)
-            FROM stats_message_activity
-            WHERE guild_id = ? {date_sql} {source_sql}
-            GROUP BY activity_hour
-            """,
-            (
-                interaction.guild_id,
-                *date_parameters,
-                *source_parameters,
-            ),
-        )
-        try:
-            selected_timezone = ZoneInfo(timezone.strip())
-            timezone_label = timezone.strip()
-        except (ZoneInfoNotFoundError, ValueError):
-            selected_timezone = ZoneInfo("America/Chicago")
-            timezone_label = "America/Chicago (fallback)"
-
-        day_totals = {day: 0 for day in range(7)}
-        hour_totals = {hour: 0 for hour in range(24)}
-        combo_totals = defaultdict(int)
-        for activity_hour, messages in rows:
-            try:
-                parsed = datetime.datetime.fromisoformat(
-                    str(activity_hour).replace("Z", "+00:00")
-                )
-                if parsed.tzinfo is None:
-                    parsed = parsed.replace(tzinfo=datetime.timezone.utc)
-                local_hour = parsed.astimezone(selected_timezone)
-            except (TypeError, ValueError, OverflowError):
-                continue
-            count = int(messages or 0)
-            day_totals[local_hour.weekday()] += count
-            hour_totals[local_hour.hour] += count
-            combo_totals[(local_hour.weekday(), local_hour.hour)] += count
-
-        day_names = ("Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun")
-        blocks = {
-            "Overnight": sum(hour_totals[hour] for hour in range(0, 6)),
-            "Morning": sum(hour_totals[hour] for hour in range(6, 12)),
-            "Afternoon": sum(hour_totals[hour] for hour in range(12, 18)),
-            "Evening": sum(hour_totals[hour] for hour in range(18, 24)),
+        config = {
+            "days": selected_days,
+            "source": source_value,
+            "timezone": timezone.strip(),
         }
-        embed = discord.Embed(
-            title=f"Activity heatmap — {period_label} ({source_value})",
-            color=discord.Color(COLOR),
-            description=f"Times shown in **{timezone_label}**.",
-            timestamp=self._utcnow(),
+        embed = await self._build_activity_report_embed(
+            interaction.guild,
+            "heatmap",
+            config,
         )
-        if not rows or not any(hour_totals.values()):
-            embed.add_field(
-                name="No results",
-                value="No matching hourly activity was found.",
-                inline=False,
-            )
-            await interaction.followup.send(embed=embed, ephemeral=True)
-            return
-        busiest_day = max(day_totals, key=day_totals.get)
-        busiest_hour = max(hour_totals, key=hour_totals.get)
-        quietest_hour = min(hour_totals, key=hour_totals.get)
-        top_combinations = sorted(
-            combo_totals.items(),
-            key=lambda item: item[1],
-            reverse=True,
-        )[:3]
-        embed.add_field(
-            name="Highlights",
-            value=(
-                f"Most active day: **{day_names[busiest_day]}** "
-                f"({day_totals[busiest_day]:,})\n"
-                f"Most active hour: **{self._hour_label(busiest_hour)}** "
-                f"({hour_totals[busiest_hour]:,})\n"
-                f"Quietest hour: **{self._hour_label(quietest_hour)}** "
-                f"({hour_totals[quietest_hour]:,})"
-            ),
-            inline=False,
+        await self._send_activity_report(
+            interaction,
+            embed,
+            channel,
+            report_type="heatmap",
+            config=config,
         )
-        embed.add_field(
-            name="Top day/hour combinations",
-            value="\n".join(
-                f"{day_names[day]} {self._hour_label(hour)} — **{count:,}**"
-                for (day, hour), count in top_combinations
-            ),
-            inline=False,
-        )
-        embed.add_field(
-            name="By day",
-            value="\n".join(
-                f"`{day_names[day]}` {day_totals[day]:,}" for day in range(7)
-            ),
-            inline=True,
-        )
-        embed.add_field(
-            name="By time block",
-            value="\n".join(
-                f"`{name:<9}` {count:,}" for name, count in blocks.items()
-            ),
-            inline=True,
-        )
-        await interaction.followup.send(embed=embed, ephemeral=True)
 
     @activity.command(
         name="vc",
@@ -1498,118 +1047,24 @@ class Stats(commands.Cog):
         channel: Optional[discord.TextChannel] = None,
     ) -> None:
         await interaction.response.defer(ephemeral=True)
-        if not await self._table_exists("vc_sessions"):
-            await self._send_activity_text(
-                interaction,
-                "VC activity tracking is not available yet.",
-                channel,
-            )
-            return
         selected_days = self._activity_period_days(period, days, default_days=7)
-        period_label = self._activity_period_label(selected_days)
-        date_sql, date_parameters = self._activity_date_filter(
-            selected_days,
-            column="left_at",
+        config = {
+            "days": selected_days,
+            "limit": limit,
+            "include_left_members": include_left_members,
+        }
+        embed = await self._build_activity_report_embed(
+            interaction.guild,
+            "vc",
+            config,
         )
-        total = await self._fetchone(
-            f"""
-            SELECT COALESCE(SUM(duration_seconds), 0), COUNT(*)
-            FROM vc_sessions
-            WHERE guild_id = ? {date_sql}
-            """,
-            (interaction.guild_id, *date_parameters),
+        await self._send_activity_report(
+            interaction,
+            embed,
+            channel,
+            report_type="vc",
+            config=config,
         )
-        channel_rows = await self._fetchall(
-            f"""
-            SELECT channel_id, MAX(channel_name), SUM(duration_seconds)
-            FROM vc_sessions
-            WHERE guild_id = ? {date_sql}
-            GROUP BY channel_id
-            ORDER BY SUM(duration_seconds) DESC
-            LIMIT ?
-            """,
-            (interaction.guild_id, *date_parameters, limit),
-        )
-        member_rows = await self._fetchall(
-            f"""
-            SELECT user_id, MAX(username), MAX(display_name),
-                   SUM(duration_seconds)
-            FROM vc_sessions
-            WHERE guild_id = ? {date_sql}
-            GROUP BY user_id
-            ORDER BY SUM(duration_seconds) DESC
-            """,
-            (interaction.guild_id, *date_parameters),
-        )
-        filtered_member_rows = []
-        for user_id, username, display_name, seconds in member_rows:
-            member = current_member(interaction.guild, user_id)
-            if member is None and not include_left_members:
-                continue
-            filtered_member_rows.append(
-                (
-                    user_id,
-                    member.name if member else username,
-                    member.display_name if member else display_name,
-                    seconds,
-                    member is not None,
-                )
-            )
-            if len(filtered_member_rows) >= limit:
-                break
-        embed = discord.Embed(
-            title=f"Voice activity — {period_label}",
-            color=discord.Color(COLOR),
-            description=(
-                f"**{format_duration(total[0])}** tracked across "
-                f"**{total[1]:,}** completed sessions."
-                + (
-                    "\n\nThis includes all currently tracked voice activity data."
-                    if selected_days is None
-                    else ""
-                )
-            ),
-        )
-        if channel_rows:
-            embed.add_field(
-                name="Top VC channels",
-                value="\n".join(
-                    f"{index}. {safe_channel_display(row[0], row[1])} — "
-                    f"**{format_duration(row[2])}**"
-                    for index, row in enumerate(channel_rows, start=1)
-                )[:1024],
-                inline=False,
-            )
-        if filtered_member_rows:
-            embed.add_field(
-                name="Top VC members",
-                value="\n".join(
-                    (
-                        f"{index}. "
-                        f"{f'<@{row[0]}>' if row[4] else discord.utils.escape_markdown(row[2] or row[1] or str(row[0])) + ' — Left server'} "
-                        f"— **{format_duration(row[3])}**"
-                    )
-                    for index, row in enumerate(filtered_member_rows, start=1)
-                )[:1024],
-                inline=False,
-            )
-        scope = (
-            "Includes left members"
-            if include_left_members
-            else "Current members only"
-        )
-        warning = member_filter_warning(self.bot, interaction.guild)
-        embed.set_footer(
-            text=(
-                f"Member ranking: {scope}."
-                + (
-                    f" {warning}"
-                    if warning and not include_left_members
-                    else ""
-                )
-            )
-        )
-        await self._send_activity_report(interaction, embed, channel)
 
     @activity.command(
         name="export",
@@ -1621,6 +1076,7 @@ class Stats(commands.Cog):
         include_vc="Include VC sessions when available",
         source="Include all, live, or imported message activity",
         include_left_members="Include users who are no longer in the server",
+        channel="Optional staff channel where the CSV should be posted",
     )
     @app_commands.choices(
         period=ACTIVITY_PERIOD_CHOICES,
@@ -1636,6 +1092,7 @@ class Stats(commands.Cog):
         include_vc: bool = True,
         source: Optional[app_commands.Choice[str]] = None,
         include_left_members: bool = False,
+        channel: Optional[discord.TextChannel] = None,
     ) -> None:
         await interaction.response.defer(ephemeral=True, thinking=True)
         selected_days = self._activity_period_days(period, days, default_days=7)
@@ -1655,7 +1112,7 @@ class Stats(commands.Cog):
                 ephemeral=True,
             )
             return
-        await interaction.followup.send(
+        summary = (
             f"Exported **{source_value}** activity metadata for "
             f"**{period_label}** "
             f"({'includes left members' if include_left_members else 'current members only for user rows'})."
@@ -1664,78 +1121,45 @@ class Stats(commands.Cog):
                 if not include_left_members
                 and member_filter_warning(self.bot, interaction.guild)
                 else ""
-            ),
-            file=file,
-            ephemeral=True,
+            )
+        )
+        await self._send_activity_file(
+            interaction,
+            summary,
+            file,
+            channel,
         )
 
     @activity.command(
         name="importinfo",
         description="Show recent historical activity import batches",
     )
-    @app_commands.describe(limit="Number of recent import files to show")
+    @app_commands.describe(
+        limit="Number of recent import files to show",
+        channel="Optional channel where the report should be posted",
+    )
     @app_commands.guild_only()
     @app_commands.check(has_stats_access)
     async def activity_importinfo(
         self,
         interaction: discord.Interaction,
         limit: app_commands.Range[int, 1, 25] = 10,
+        channel: Optional[discord.TextChannel] = None,
     ) -> None:
         await interaction.response.defer(ephemeral=True)
-        rows = await self._fetchall(
-            """
-            SELECT import_batch_id, filename, channel_id, channel_name,
-                   messages_seen, messages_imported, duplicates_skipped,
-                   messages_skipped, earliest_message_at, latest_message_at,
-                   imported_at, status
-            FROM stats_activity_imports
-            WHERE guild_id = ?
-            ORDER BY imported_at DESC, id DESC
-            LIMIT ?
-            """,
-            (interaction.guild_id, limit),
+        config = {"limit": limit}
+        embed = await self._build_activity_report_embed(
+            interaction.guild,
+            "importinfo",
+            config,
         )
-        embed = discord.Embed(
-            title="Recent historical activity imports",
-            color=discord.Color(COLOR),
-            timestamp=self._utcnow(),
+        await self._send_activity_report(
+            interaction,
+            embed,
+            channel,
+            report_type="importinfo",
+            config=config,
         )
-        if not rows:
-            embed.description = "No historical activity imports have been recorded."
-        for row in rows:
-            (
-                batch_id,
-                filename,
-                channel_id,
-                channel_name,
-                seen,
-                imported,
-                duplicates,
-                skipped,
-                earliest,
-                latest,
-                imported_at,
-                status,
-            ) = row
-            short_batch = (batch_id or "unknown")[:8]
-            display_filename = os.path.basename(filename or "Unknown file")
-            date_range = (
-                f"{(earliest or 'n/a')[:10]} to {(latest or 'n/a')[:10]}"
-            )
-            embed.add_field(
-                name=f"{display_filename[:80]} • {status or 'unknown'}",
-                value=(
-                    f"Batch `{short_batch}` • "
-                    f"{safe_channel_display(channel_id or 0, channel_name)} "
-                    f"(`{channel_id or 0}`)\n"
-                    f"Seen **{seen or 0:,}** • Imported **{imported or 0:,}** • "
-                    f"Duplicates **{duplicates or 0:,}** • "
-                    f"Skipped **{skipped or 0:,}**\n"
-                    f"Messages: {date_range}\nImported: {imported_at or 'n/a'}"
-                )[:1024],
-                inline=False,
-            )
-        await interaction.followup.send(embed=embed, ephemeral=True)
 
     @stats.command(
         name="rolecompare",
@@ -2309,7 +1733,7 @@ class Stats(commands.Cog):
                 discord.SelectOption(
                     label=option_label[:100],
                     value=f"{source}:{message_id}",
-                    description="Tracked role stats page",
+                    description="Tracked stats page",
                     emoji="📊",
                 )
             )
@@ -2344,10 +1768,20 @@ class Stats(commands.Cog):
                     created_at
                 FROM tracked_stats_reports
                 WHERE guild_id = ?
+                UNION ALL
+                SELECT
+                    'activity' AS source,
+                    message_id,
+                    channel_id,
+                    NULL AS role_id,
+                    report_type || ' activity report' AS title,
+                    created_at
+                FROM tracked_activity_reports
+                WHERE guild_id = ?
             )
             ORDER BY created_at DESC
             """,
-            (guild_id, guild_id),
+            (guild_id, guild_id, guild_id),
         )
         rows = await cursor.fetchall()
         await cursor.close()
@@ -2368,20 +1802,27 @@ class Stats(commands.Cog):
                 SELECT 'report', id, channel_id, message_id
                 FROM tracked_stats_reports
                 WHERE guild_id = ?
+                UNION ALL
+                SELECT 'activity', id, channel_id, message_id
+                FROM tracked_activity_reports
+                WHERE guild_id = ?
                 """,
-                (guild.id, guild.id),
+                (guild.id, guild.id, guild.id),
             )
             rows = await cursor.fetchall()
             await cursor.close()
         elif ":" in selection:
             source, raw_message_id = selection.split(":", 1)
-            if source not in {"roster", "report"} or not raw_message_id.isdigit():
+            if (
+                source not in {"roster", "report", "activity"}
+                or not raw_message_id.isdigit()
+            ):
                 return "That tracked stats selection is no longer valid."
-            table = (
-                "role_stat_embeds"
-                if source == "roster"
-                else "tracked_stats_reports"
-            )
+            table = {
+                "roster": "role_stat_embeds",
+                "report": "tracked_stats_reports",
+                "activity": "tracked_activity_reports",
+            }[source]
             cursor = await self.bot.db.execute(
                 f"""
                 SELECT ?, id, channel_id, message_id
@@ -2400,6 +1841,7 @@ class Stats(commands.Cog):
 
         roster_ids = [row[1] for row in rows if row[0] == "roster"]
         report_ids = [row[1] for row in rows if row[0] == "report"]
+        activity_ids = [row[1] for row in rows if row[0] == "activity"]
         if roster_ids:
             placeholders = ", ".join("?" for _ in roster_ids)
             await self.bot.db.execute(
@@ -2411,6 +1853,15 @@ class Stats(commands.Cog):
             await self.bot.db.execute(
                 f"DELETE FROM tracked_stats_reports WHERE id IN ({placeholders})",
                 report_ids,
+            )
+        if activity_ids:
+            placeholders = ", ".join("?" for _ in activity_ids)
+            await self.bot.db.execute(
+                f"""
+                DELETE FROM tracked_activity_reports
+                WHERE id IN ({placeholders})
+                """,
+                activity_ids,
             )
         await self.bot.db.commit()
 
@@ -3421,14 +2872,1231 @@ class Stats(commands.Cog):
             ),
         )
 
+    async def _build_activity_report_assets(
+        self,
+        guild: discord.Guild,
+        report_type: str,
+        config: dict,
+    ) -> list:
+        if report_type not in ACTIVITY_GRAPHIC_REPORTS:
+            return []
+
+        days = config.get("days")
+        period_label = self._activity_period_label(days)
+        source = config.get("source", "all")
+        limit = int(config.get("limit", 10))
+        sections = []
+        title = "Activity leaderboard"
+        subtitle = f"{period_label} • {source}"
+
+        if report_type == "channels":
+            source_sql, source_parameters = self._activity_source_filter(source)
+            date_sql, date_parameters = self._activity_date_filter(days)
+            rows = await self._fetchall(
+                f"""
+                SELECT channel_id, MAX(channel_name), SUM(message_count),
+                       COUNT(DISTINCT user_id)
+                FROM stats_message_activity
+                WHERE guild_id = ? {date_sql} {source_sql}
+                GROUP BY channel_id
+                ORDER BY SUM(message_count) DESC
+                LIMIT ?
+                """,
+                (guild.id, *date_parameters, *source_parameters, limit),
+            )
+            total_row = await self._fetchone(
+                f"""
+                SELECT COALESCE(SUM(message_count), 0)
+                FROM stats_message_activity
+                WHERE guild_id = ? {date_sql} {source_sql}
+                """,
+                (guild.id, *date_parameters, *source_parameters),
+            )
+            total = int(total_row[0] if total_row else 0)
+            items = [
+                RankedGraphicItem(
+                    label=f"#{channel_name or channel_id}",
+                    value=f"{messages:,}",
+                    subtitle=(
+                        f"{posters:,} unique posters • "
+                        f"{messages / total * 100 if total else 0:.1f}% of activity"
+                    ),
+                    score=float(messages or 0),
+                )
+                for channel_id, channel_name, messages, posters in rows
+            ]
+            title = "Top Text Channels"
+            subtitle = f"{period_label} • {source} activity • {total:,} messages"
+            sections = [RankedGraphicSection("Channel leaderboard", items)]
+
+        elif report_type == "quiet":
+            source_sql, source_parameters = self._activity_source_filter(source)
+            if days is None:
+                rows = await self._fetchall(
+                    f"""
+                    SELECT channel_id, MAX(channel_name), SUM(message_count),
+                           MAX(activity_hour)
+                    FROM stats_message_activity
+                    WHERE guild_id = ? {source_sql}
+                    GROUP BY channel_id
+                    """,
+                    (guild.id, *source_parameters),
+                )
+            else:
+                cutoff = self._activity_cutoff(days)
+                rows = await self._fetchall(
+                    f"""
+                    SELECT channel_id, MAX(channel_name),
+                           SUM(CASE WHEN activity_hour >= ?
+                               THEN message_count ELSE 0 END),
+                           MAX(CASE WHEN activity_hour >= ?
+                               THEN activity_hour END)
+                    FROM stats_message_activity
+                    WHERE guild_id = ? {source_sql}
+                    GROUP BY channel_id
+                    """,
+                    (cutoff, cutoff, guild.id, *source_parameters),
+                )
+            row_map = {
+                channel_id: (channel_name, int(messages or 0), last_activity)
+                for channel_id, channel_name, messages, last_activity in rows
+            }
+            candidates = []
+            for channel in guild.text_channels:
+                if guild.me and not channel.permissions_for(guild.me).view_channel:
+                    continue
+                channel_name, messages, last_activity = row_map.get(
+                    channel.id,
+                    (channel.name, 0, None),
+                )
+                candidates.append(
+                    (messages, channel.id, channel_name, last_activity)
+                )
+            candidates.sort(key=lambda item: (item[0], item[2] or ""))
+            candidates = candidates[:limit]
+            maximum = max((row[0] for row in candidates), default=0)
+            items = [
+                RankedGraphicItem(
+                    label=f"#{channel_name or channel_id}",
+                    value=f"{messages:,}",
+                    subtitle=(
+                        f"Last activity {str(last_activity)[:10]}"
+                        if last_activity
+                        else "No tracked activity"
+                    ),
+                    score=float(maximum - messages + 1),
+                )
+                for messages, channel_id, channel_name, last_activity in candidates
+            ]
+            title = "Quiet Channel Watch"
+            subtitle = f"{period_label} • {source} activity • quietest first"
+            sections = [RankedGraphicSection("Low-activity channels", items)]
+
+        elif report_type == "members":
+            source_sql, source_parameters = self._activity_source_filter(source)
+            date_sql, date_parameters = self._activity_date_filter(days)
+            rows = await self._fetchall(
+                f"""
+                SELECT user_id, MAX(username), MAX(display_name),
+                       SUM(message_count) AS total
+                FROM stats_message_activity
+                WHERE guild_id = ? {date_sql} {source_sql}
+                GROUP BY user_id
+                ORDER BY total DESC
+                """,
+                (guild.id, *date_parameters, *source_parameters),
+            )
+            include_left = bool(config.get("include_left_members", False))
+            items = []
+            for user_id, username, display_name, total in rows:
+                member = current_member(guild, user_id)
+                if member is None and not include_left:
+                    continue
+                items.append(
+                    RankedGraphicItem(
+                        label=(
+                            member.display_name
+                            if member
+                            else display_name or username or str(user_id)
+                        ),
+                        value=f"{total:,}",
+                        subtitle=(
+                            f"@{member.name}"
+                            if member
+                            else f"@{username or user_id} • Left server"
+                        ),
+                        avatar_url=(
+                            str(member.display_avatar.replace(size=64).url)
+                            if member
+                            else None
+                        ),
+                        score=float(total or 0),
+                    )
+                )
+                if len(items) >= limit:
+                    break
+            title = "Top Text Participants"
+            subtitle = (
+                f"{period_label} • {source} activity • "
+                f"{'includes former members' if include_left else 'current members'}"
+            )
+            sections = [RankedGraphicSection("Member leaderboard", items)]
+
+        elif report_type == "vc":
+            if not await self._table_exists("vc_sessions"):
+                sections = [RankedGraphicSection("Voice activity", [])]
+            else:
+                date_sql, date_parameters = self._activity_date_filter(
+                    days,
+                    column="left_at",
+                )
+                channel_rows = await self._fetchall(
+                    f"""
+                    SELECT channel_id, MAX(channel_name), SUM(duration_seconds)
+                    FROM vc_sessions
+                    WHERE guild_id = ? {date_sql}
+                    GROUP BY channel_id
+                    ORDER BY SUM(duration_seconds) DESC
+                    LIMIT ?
+                    """,
+                    (guild.id, *date_parameters, limit),
+                )
+                member_rows = await self._fetchall(
+                    f"""
+                    SELECT user_id, MAX(username), MAX(display_name),
+                           SUM(duration_seconds)
+                    FROM vc_sessions
+                    WHERE guild_id = ? {date_sql}
+                    GROUP BY user_id
+                    ORDER BY SUM(duration_seconds) DESC
+                    """,
+                    (guild.id, *date_parameters),
+                )
+                channel_items = [
+                    RankedGraphicItem(
+                        label=channel_name or str(channel_id),
+                        value=format_duration(seconds),
+                        subtitle="Voice channel",
+                        score=float(seconds or 0),
+                    )
+                    for channel_id, channel_name, seconds in channel_rows
+                ]
+                include_left = bool(config.get("include_left_members", False))
+                member_items = []
+                for user_id, username, display_name, seconds in member_rows:
+                    member = current_member(guild, user_id)
+                    if member is None and not include_left:
+                        continue
+                    member_items.append(
+                        RankedGraphicItem(
+                            label=(
+                                member.display_name
+                                if member
+                                else display_name or username or str(user_id)
+                            ),
+                            value=format_duration(seconds),
+                            subtitle=(
+                                f"@{member.name}"
+                                if member
+                                else f"@{username or user_id} • Left server"
+                            ),
+                            avatar_url=(
+                                str(member.display_avatar.replace(size=64).url)
+                                if member
+                                else None
+                            ),
+                            score=float(seconds or 0),
+                        )
+                    )
+                    if len(member_items) >= limit:
+                        break
+                sections = [
+                    RankedGraphicSection("Top voice channels", channel_items),
+                    RankedGraphicSection("Top voice members", member_items),
+                ]
+            title = "Voice Activity Leaders"
+            subtitle = f"{period_label} • completed VC sessions"
+
+        png = await render_ranked_graphic(
+            title=title,
+            subtitle=subtitle,
+            sections=sections,
+            updated_at=self._utcnow(),
+            accent_color=COLOR,
+        )
+        return [(f"stats_{report_type}_leaderboard.png", png)]
+
+    async def _tracked_activity_rows(
+        self,
+        *,
+        guild_id: Optional[int] = None,
+    ):
+        query = """
+            SELECT id, guild_id, channel_id, message_id, report_type, config_json
+            FROM tracked_activity_reports
+        """
+        parameters = ()
+        if guild_id is not None:
+            query += " WHERE guild_id = ?"
+            parameters = (guild_id,)
+        return await self._fetchall(query, parameters)
+
+    async def _refresh_activity_report_row(self, row) -> bool:
+        record_id, guild_id, channel_id, message_id, report_type, config_json = row
+        guild = self.bot.get_guild(guild_id)
+        if guild is None:
+            return False
+        channel = self._get_channel(guild, channel_id)
+        if channel is None or not hasattr(channel, "fetch_message"):
+            return False
+        try:
+            config = json.loads(config_json)
+        except (TypeError, json.JSONDecodeError):
+            return False
+        if not isinstance(config, dict):
+            return False
+        try:
+            embed = await self._build_activity_report_embed(
+                guild,
+                report_type,
+                config,
+            )
+            assets = await self._build_activity_report_assets(
+                guild,
+                report_type,
+                config,
+            )
+        except Exception:
+            return False
+
+        try:
+            message = await channel.fetch_message(message_id)
+        except discord.NotFound:
+            message = None
+        except (discord.Forbidden, discord.HTTPException):
+            return False
+
+        now = self._utcnow().isoformat()
+        if message is not None:
+            try:
+                if assets:
+                    files = [
+                        discord.File(io.BytesIO(data), filename=filename)
+                        for filename, data in assets
+                    ]
+                    await message.edit(
+                        content=None,
+                        embeds=[],
+                        attachments=files,
+                    )
+                else:
+                    await message.edit(
+                        content=None,
+                        embed=embed,
+                        attachments=[],
+                    )
+                await self.bot.db.execute(
+                    """
+                    UPDATE tracked_activity_reports
+                    SET updated_at = ?
+                    WHERE id = ?
+                    """,
+                    (now, record_id),
+                )
+                await self.bot.db.commit()
+                return True
+            except (discord.NotFound, discord.Forbidden, discord.HTTPException):
+                pass
+
+        try:
+            if assets:
+                files = [
+                    discord.File(io.BytesIO(data), filename=filename)
+                    for filename, data in assets
+                ]
+                new_message = await channel.send(files=files)
+            else:
+                new_message = await channel.send(embed=embed)
+        except (discord.Forbidden, discord.HTTPException):
+            return False
+        if message is not None:
+            try:
+                await message.delete()
+            except (discord.NotFound, discord.Forbidden, discord.HTTPException):
+                try:
+                    await new_message.delete()
+                except (discord.NotFound, discord.Forbidden, discord.HTTPException):
+                    pass
+                return False
+        await self.bot.db.execute(
+            """
+            UPDATE tracked_activity_reports
+            SET message_id = ?, updated_at = ?
+            WHERE id = ?
+            """,
+            (new_message.id, now, record_id),
+        )
+        await self.bot.db.commit()
+        return True
+
+    @tasks.loop(time=datetime.time(hour=12, minute=0, tzinfo=datetime.timezone.utc))
+    async def daily_stats_refresh(self) -> None:
+        refresh_groups = (
+            (await self._tracked_rows(), self._refresh_row),
+            (await self._tracked_report_rows(), self._refresh_report_row),
+            (
+                await self._tracked_activity_rows(),
+                self._refresh_activity_report_row,
+            ),
+        )
+        for rows, refresher in refresh_groups:
+            for row in rows:
+                try:
+                    await refresher(row)
+                except Exception:
+                    pass
+                await asyncio.sleep(0.25)
+
+    @daily_stats_refresh.before_loop
+    async def before_daily_stats_refresh(self) -> None:
+        await self.bot.wait_until_ready()
+
+    async def _build_activity_report_embed(
+        self,
+        guild: discord.Guild,
+        report_type: str,
+        config: dict,
+    ) -> discord.Embed:
+        builders = {
+            "overview": self._build_activity_overview_embed,
+            "channels": self._build_activity_channels_embed,
+            "quiet": self._build_activity_quiet_embed,
+            "members": self._build_activity_members_embed,
+            "trends": self._build_activity_trends_embed,
+            "categories": self._build_activity_categories_embed,
+            "heatmap": self._build_activity_heatmap_embed,
+            "vc": self._build_activity_vc_embed,
+            "importinfo": self._build_activity_importinfo_embed,
+        }
+        builder = builders.get(report_type)
+        if builder is None:
+            raise ValueError(f"Unsupported activity report type: {report_type}")
+        return await builder(guild, config)
+
+    async def _build_activity_overview_embed(
+        self,
+        guild: discord.Guild,
+        config: dict,
+    ) -> discord.Embed:
+        days = config.get("days")
+        source = config.get("source", "all")
+        period_label = self._activity_period_label(days)
+        data = await self._activity_overview_data(guild.id, days, source)
+        embed = discord.Embed(
+            title=f"Community activity overview — {period_label} ({source})",
+            color=discord.Color(COLOR),
+            timestamp=self._utcnow(),
+            description=(
+                "This includes all currently tracked and imported activity data."
+                if days is None
+                else None
+            ),
+        )
+        for name, value in (
+            ("Period", period_label),
+            ("Data range", data["data_range"]),
+            ("Messages tracked", f"{data['total_messages']:,}"),
+            ("Unique active members", f"{data['active_members']:,}"),
+            ("Joins / Leaves", f"{data['joins']:,} / {data['leaves']:,}"),
+            ("Top text channel", data["top_text_channel"]),
+            ("Busiest day", data["busiest_day"]),
+            ("Quietest day", data["quietest_day"]),
+        ):
+            embed.add_field(name=name, value=value, inline=True)
+        if data["vc_available"]:
+            embed.add_field(
+                name="Tracked VC time",
+                value=format_duration(data["vc_seconds"]),
+                inline=True,
+            )
+            embed.add_field(
+                name="Top VC channel",
+                value=data["top_vc_channel"],
+                inline=True,
+            )
+        else:
+            embed.add_field(
+                name="Voice activity",
+                value="VC activity tracking is not available yet.",
+                inline=False,
+            )
+        embed.add_field(
+            name="Deterministic vibe summary",
+            value=data["vibe"],
+            inline=False,
+        )
+        embed.set_footer(
+            text=(
+                f"Activity tracking began {data['tracking_started']}. "
+                "Older periods may be incomplete."
+            )
+        )
+        return embed
+
+    async def _build_activity_channels_embed(
+        self,
+        guild: discord.Guild,
+        config: dict,
+    ) -> discord.Embed:
+        days = config.get("days")
+        source = config.get("source", "all")
+        limit = int(config.get("limit", 10))
+        source_sql, source_parameters = self._activity_source_filter(source)
+        date_sql, date_parameters = self._activity_date_filter(days)
+        rows = await self._fetchall(
+            f"""
+            SELECT channel_id, MAX(channel_name), SUM(message_count),
+                   COUNT(DISTINCT user_id)
+            FROM stats_message_activity
+            WHERE guild_id = ? {date_sql} {source_sql}
+            GROUP BY channel_id
+            ORDER BY SUM(message_count) DESC
+            LIMIT ?
+            """,
+            (guild.id, *date_parameters, *source_parameters, limit),
+        )
+        total_row = await self._fetchone(
+            f"""
+            SELECT COALESCE(SUM(message_count), 0)
+            FROM stats_message_activity
+            WHERE guild_id = ? {date_sql} {source_sql}
+            """,
+            (guild.id, *date_parameters, *source_parameters),
+        )
+        total = total_row[0] if total_row else 0
+        embed = discord.Embed(
+            title=(
+                f"Top text channels — {self._activity_period_label(days)} "
+                f"({source})"
+            ),
+            color=discord.Color(COLOR),
+            timestamp=self._utcnow(),
+            description=(
+                "This includes all currently tracked and imported activity data."
+                if days is None
+                else None
+            ),
+        )
+        if not rows:
+            embed.description = "No text activity has been tracked for this period."
+        for index, (channel_id, channel_name, messages, posters) in enumerate(
+            rows,
+            start=1,
+        ):
+            percentage = messages / total * 100 if total else 0
+            embed.add_field(
+                name=f"{index}. {safe_channel_display(channel_id, channel_name)}",
+                value=(
+                    f"**{messages:,}** messages • **{posters:,}** unique posters "
+                    f"• **{percentage:.1f}%** of tracked messages"
+                ),
+                inline=False,
+            )
+        embed.set_footer(text="Use /stats activity export for complete data.")
+        return embed
+
+    async def _build_activity_quiet_embed(
+        self,
+        guild: discord.Guild,
+        config: dict,
+    ) -> discord.Embed:
+        days = config.get("days")
+        source = config.get("source", "all")
+        limit = int(config.get("limit", 10))
+        source_sql, source_parameters = self._activity_source_filter(source)
+        if days is None:
+            rows = await self._fetchall(
+                f"""
+                SELECT channel_id, SUM(message_count), MAX(activity_hour)
+                FROM stats_message_activity
+                WHERE guild_id = ? {source_sql}
+                GROUP BY channel_id
+                """,
+                (guild.id, *source_parameters),
+            )
+        else:
+            cutoff = self._activity_cutoff(days)
+            rows = await self._fetchall(
+                f"""
+                SELECT channel_id,
+                       SUM(CASE WHEN activity_hour >= ?
+                           THEN message_count ELSE 0 END),
+                       MAX(CASE WHEN activity_hour >= ?
+                           THEN activity_hour END)
+                FROM stats_message_activity
+                WHERE guild_id = ? {source_sql}
+                GROUP BY channel_id
+                """,
+                (cutoff, cutoff, guild.id, *source_parameters),
+            )
+        tracked = {
+            row[0]: {"messages": row[1] or 0, "last": row[2]} for row in rows
+        }
+        tracking_started = await self._tracking_started_datetime()
+        candidates = []
+        for text_channel in guild.text_channels:
+            if guild.me and not text_channel.permissions_for(guild.me).view_channel:
+                continue
+            data = tracked.get(text_channel.id)
+            if (
+                data is None
+                and tracking_started
+                and text_channel.created_at >= tracking_started
+            ):
+                continue
+            candidates.append(
+                (
+                    data["messages"] if data else 0,
+                    data["last"] if data else None,
+                    text_channel,
+                )
+            )
+        candidates.sort(key=lambda item: (item[0], item[1] or ""))
+        embed = discord.Embed(
+            title=(
+                f"Low-activity text channels — "
+                f"{self._activity_period_label(days)} ({source})"
+            ),
+            color=discord.Color(COLOR),
+            timestamp=self._utcnow(),
+            description=(
+                "Neutral activity signal for channel planning. "
+                "This does not evaluate individual members."
+                + (
+                    "\n\nThis includes all currently tracked and imported "
+                    "activity data."
+                    if days is None
+                    else ""
+                )
+            ),
+        )
+        for messages, last_activity, text_channel in candidates[:limit]:
+            last_text = (
+                f"<t:{int(datetime.datetime.fromisoformat(last_activity).timestamp())}:R>"
+                if last_activity
+                else "No tracked activity yet"
+            )
+            embed.add_field(
+                name=text_channel.mention,
+                value=f"**{messages:,}** messages • Last tracked: {last_text}",
+                inline=False,
+            )
+        if not candidates:
+            embed.add_field(
+                name="No results",
+                value="No eligible visible text channels were found.",
+                inline=False,
+            )
+        return embed
+
+    async def _build_activity_members_embed(
+        self,
+        guild: discord.Guild,
+        config: dict,
+    ) -> discord.Embed:
+        days = config.get("days")
+        source = config.get("source", "all")
+        limit = int(config.get("limit", 10))
+        include_left = bool(config.get("include_left_members", False))
+        source_sql, source_parameters = self._activity_source_filter(source)
+        date_sql, date_parameters = self._activity_date_filter(days)
+        rows = await self._fetchall(
+            f"""
+            SELECT user_id, MAX(username), MAX(display_name),
+                   SUM(message_count) AS total
+            FROM stats_message_activity
+            WHERE guild_id = ? {date_sql} {source_sql}
+            GROUP BY user_id
+            ORDER BY total DESC
+            """,
+            (guild.id, *date_parameters, *source_parameters),
+        )
+        filtered_rows = []
+        for user_id, username, display_name, total in rows:
+            member = current_member(guild, user_id)
+            if member is None and not include_left:
+                continue
+            filtered_rows.append(
+                (
+                    user_id,
+                    member.name if member else username,
+                    member.display_name if member else display_name,
+                    total,
+                    member is not None,
+                )
+            )
+            if len(filtered_rows) >= limit:
+                break
+        scope = "Includes left members" if include_left else "Current members only"
+        embed = discord.Embed(
+            title=(
+                f"Top text participants — {self._activity_period_label(days)} "
+                f"({source})"
+            ),
+            color=discord.Color(COLOR),
+            timestamp=self._utcnow(),
+            description=(
+                "Message counts only; no activity score or inactivity judgment."
+                f"\n**{scope}.**"
+                + (
+                    "\n\nThis includes all currently tracked and imported "
+                    "activity data."
+                    if days is None
+                    else ""
+                )
+            ),
+        )
+        warning = member_filter_warning(self.bot, guild)
+        if warning and not include_left:
+            embed.description += f"\n⚠️ {warning}"
+        if not filtered_rows:
+            embed.add_field(
+                name="No results",
+                value="No matching member activity was found for this period.",
+                inline=False,
+            )
+        for index, (user_id, username, display_name, total, is_current) in enumerate(
+            filtered_rows,
+            start=1,
+        ):
+            label = display_name or username or str(user_id)
+            identity = f"<@{user_id}>" if is_current else f"`{user_id}` • Left server"
+            embed.add_field(
+                name=f"{index}. {discord.utils.escape_markdown(label)}",
+                value=f"{identity} • **{total:,}** messages",
+                inline=False,
+            )
+        return embed
+
+    async def _build_activity_trends_embed(
+        self,
+        guild: discord.Guild,
+        config: dict,
+    ) -> discord.Embed:
+        days = int(config.get("days", 30))
+        source = config.get("source", "all")
+        source_sql, source_parameters = self._activity_source_filter(source)
+        current_start = self._activity_cutoff(days)
+        previous_start = self._activity_cutoff(days * 2)
+        totals = await self._fetchone(
+            f"""
+            SELECT
+                COALESCE(SUM(CASE WHEN activity_hour >= ?
+                    THEN message_count ELSE 0 END), 0),
+                COALESCE(SUM(CASE WHEN activity_hour >= ? AND activity_hour < ?
+                    THEN message_count ELSE 0 END), 0),
+                COUNT(DISTINCT CASE WHEN activity_hour >= ? THEN user_id END),
+                COUNT(DISTINCT CASE WHEN activity_hour >= ? AND activity_hour < ?
+                    THEN user_id END)
+            FROM stats_message_activity
+            WHERE guild_id = ? AND activity_hour >= ? {source_sql}
+            """,
+            (
+                current_start,
+                previous_start,
+                current_start,
+                current_start,
+                previous_start,
+                current_start,
+                guild.id,
+                previous_start,
+                *source_parameters,
+            ),
+        )
+        channel_rows = await self._fetchall(
+            f"""
+            SELECT channel_id, MAX(channel_name),
+                   COALESCE(SUM(CASE WHEN activity_hour >= ?
+                       THEN message_count ELSE 0 END), 0),
+                   COALESCE(SUM(CASE WHEN activity_hour >= ? AND activity_hour < ?
+                       THEN message_count ELSE 0 END), 0)
+            FROM stats_message_activity
+            WHERE guild_id = ? AND activity_hour >= ? {source_sql}
+            GROUP BY channel_id
+            """,
+            (
+                current_start,
+                previous_start,
+                current_start,
+                guild.id,
+                previous_start,
+                *source_parameters,
+            ),
+        )
+        day_rows = await self._fetchall(
+            f"""
+            SELECT activity_date, SUM(message_count)
+            FROM stats_message_activity
+            WHERE guild_id = ? AND activity_hour >= ? {source_sql}
+            GROUP BY activity_date
+            ORDER BY SUM(message_count) DESC
+            """,
+            (guild.id, current_start, *source_parameters),
+        )
+        current_messages, previous_messages, current_members, previous_members = (
+            int(value or 0) for value in totals
+        )
+        changes = [
+            (int(current or 0) - int(previous or 0), channel_id, channel_name)
+            for channel_id, channel_name, current, previous in channel_rows
+        ]
+        growing = sorted((row for row in changes if row[0] > 0), reverse=True)[:5]
+        declining = sorted((row for row in changes if row[0] < 0))[:5]
+        embed = discord.Embed(
+            title=f"Activity trends — {days} days ({source})",
+            color=discord.Color(COLOR),
+            timestamp=self._utcnow(),
+        )
+        if previous_messages == 0 and previous_members == 0:
+            embed.description = (
+                "Previous-period comparison is limited because no matching "
+                "activity was found in that window."
+            )
+        embed.add_field(
+            name="Messages",
+            value=(
+                f"Current: **{current_messages:,}**\n"
+                f"Previous: **{previous_messages:,}**\n"
+                f"Change: **{_percent_change(current_messages, previous_messages)}**"
+            ),
+            inline=True,
+        )
+        embed.add_field(
+            name="Active members",
+            value=(
+                f"Current: **{current_members:,}**\n"
+                f"Previous: **{previous_members:,}**\n"
+                f"Change: **{_percent_change(current_members, previous_members)}**"
+            ),
+            inline=True,
+        )
+        embed.add_field(
+            name="Current-period days",
+            value=(
+                f"Busiest: **{day_rows[0][0]}** — {day_rows[0][1]:,}\n"
+                f"Quietest: **{day_rows[-1][0]}** — {day_rows[-1][1]:,}"
+                if day_rows
+                else "No matching activity."
+            ),
+            inline=False,
+        )
+        for field_name, rows, empty_text in (
+            ("Top growing channels", growing, "No channels increased."),
+            ("Top declining channels", declining, "No channels declined."),
+        ):
+            embed.add_field(
+                name=field_name,
+                value=(
+                    "\n".join(
+                        f"{safe_channel_display(channel_id, name)} — "
+                        f"**{change:+,}**"
+                        for change, channel_id, name in rows
+                    )
+                    or empty_text
+                )[:1024],
+                inline=True,
+            )
+        embed.set_footer(
+            text=f"Current {days} days compared with the preceding {days} days."
+        )
+        return embed
+
+    async def _build_activity_categories_embed(
+        self,
+        guild: discord.Guild,
+        config: dict,
+    ) -> discord.Embed:
+        days = config.get("days")
+        source = config.get("source", "all")
+        limit = int(config.get("limit", 10))
+        source_sql, source_parameters = self._activity_source_filter(source)
+        date_sql, date_parameters = self._activity_date_filter(days)
+        rows = await self._fetchall(
+            f"""
+            SELECT channel_id, MAX(channel_name), user_id, SUM(message_count)
+            FROM stats_message_activity
+            WHERE guild_id = ? {date_sql} {source_sql}
+            GROUP BY channel_id, user_id
+            """,
+            (guild.id, *date_parameters, *source_parameters),
+        )
+        category_config = load_channel_categories()
+        categories = defaultdict(
+            lambda: {"messages": 0, "members": set(), "channels": defaultdict(int)}
+        )
+        for channel_id, channel_name, user_id, messages in rows:
+            category, included = get_channel_category(channel_id, category_config)
+            if not included:
+                continue
+            item = categories[category]
+            item["messages"] += int(messages or 0)
+            item["members"].add(user_id)
+            item["channels"][(channel_id, channel_name)] += int(messages or 0)
+        ranked = sorted(
+            categories.items(),
+            key=lambda item: item[1]["messages"],
+            reverse=True,
+        )
+        total = sum(item["messages"] for _, item in ranked)
+        embed = discord.Embed(
+            title=(
+                f"Activity by category — {self._activity_period_label(days)} "
+                f"({source})"
+            ),
+            color=discord.Color(COLOR),
+            timestamp=self._utcnow(),
+        )
+        if not category_config:
+            embed.description = (
+                "No channel category config found. Channels are grouped as "
+                "Uncategorized."
+            )
+        if not ranked:
+            embed.add_field(
+                name="No results",
+                value="No included message activity was found for this period.",
+                inline=False,
+            )
+        for category, item in ranked[:limit]:
+            top_channel, top_messages = max(
+                item["channels"].items(),
+                key=lambda channel_item: channel_item[1],
+            )
+            percentage = item["messages"] / total * 100 if total else 0
+            embed.add_field(
+                name=category[:256],
+                value=(
+                    f"**{item['messages']:,}** messages • "
+                    f"**{len(item['members']):,}** active members • "
+                    f"**{percentage:.1f}%**\n"
+                    f"Top: {safe_channel_display(*top_channel)} "
+                    f"({top_messages:,})"
+                )[:1024],
+                inline=False,
+            )
+        return embed
+
+    async def _build_activity_heatmap_embed(
+        self,
+        guild: discord.Guild,
+        config: dict,
+    ) -> discord.Embed:
+        days = config.get("days")
+        source = config.get("source", "all")
+        timezone_name = str(config.get("timezone", "America/Chicago"))
+        source_sql, source_parameters = self._activity_source_filter(source)
+        date_sql, date_parameters = self._activity_date_filter(days)
+        rows = await self._fetchall(
+            f"""
+            SELECT activity_hour, SUM(message_count)
+            FROM stats_message_activity
+            WHERE guild_id = ? {date_sql} {source_sql}
+            GROUP BY activity_hour
+            """,
+            (guild.id, *date_parameters, *source_parameters),
+        )
+        try:
+            selected_timezone = ZoneInfo(timezone_name)
+            timezone_label = timezone_name
+        except (ZoneInfoNotFoundError, ValueError):
+            selected_timezone = ZoneInfo("America/Chicago")
+            timezone_label = "America/Chicago (fallback)"
+        day_totals = {day: 0 for day in range(7)}
+        hour_totals = {hour: 0 for hour in range(24)}
+        combo_totals = defaultdict(int)
+        for activity_hour, messages in rows:
+            try:
+                parsed = datetime.datetime.fromisoformat(
+                    str(activity_hour).replace("Z", "+00:00")
+                )
+                if parsed.tzinfo is None:
+                    parsed = parsed.replace(tzinfo=datetime.timezone.utc)
+                local_hour = parsed.astimezone(selected_timezone)
+            except (TypeError, ValueError, OverflowError):
+                continue
+            count = int(messages or 0)
+            day_totals[local_hour.weekday()] += count
+            hour_totals[local_hour.hour] += count
+            combo_totals[(local_hour.weekday(), local_hour.hour)] += count
+        day_names = ("Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun")
+        embed = discord.Embed(
+            title=(
+                f"Activity heatmap — {self._activity_period_label(days)} "
+                f"({source})"
+            ),
+            color=discord.Color(COLOR),
+            description=f"Times shown in **{timezone_label}**.",
+            timestamp=self._utcnow(),
+        )
+        if not rows or not any(hour_totals.values()):
+            embed.add_field(
+                name="No results",
+                value="No matching hourly activity was found.",
+                inline=False,
+            )
+            return embed
+        busiest_day = max(day_totals, key=day_totals.get)
+        busiest_hour = max(hour_totals, key=hour_totals.get)
+        quietest_hour = min(hour_totals, key=hour_totals.get)
+        embed.add_field(
+            name="Highlights",
+            value=(
+                f"Most active day: **{day_names[busiest_day]}** "
+                f"({day_totals[busiest_day]:,})\n"
+                f"Most active hour: **{self._hour_label(busiest_hour)}** "
+                f"({hour_totals[busiest_hour]:,})\n"
+                f"Quietest hour: **{self._hour_label(quietest_hour)}** "
+                f"({hour_totals[quietest_hour]:,})"
+            ),
+            inline=False,
+        )
+        embed.add_field(
+            name="Top day/hour combinations",
+            value="\n".join(
+                f"{day_names[day]} {self._hour_label(hour)} — **{count:,}**"
+                for (day, hour), count in sorted(
+                    combo_totals.items(),
+                    key=lambda item: item[1],
+                    reverse=True,
+                )[:3]
+            ),
+            inline=False,
+        )
+        embed.add_field(
+            name="By day",
+            value="\n".join(
+                f"`{day_names[day]}` {day_totals[day]:,}" for day in range(7)
+            ),
+            inline=True,
+        )
+        blocks = {
+            "Overnight": sum(hour_totals[hour] for hour in range(0, 6)),
+            "Morning": sum(hour_totals[hour] for hour in range(6, 12)),
+            "Afternoon": sum(hour_totals[hour] for hour in range(12, 18)),
+            "Evening": sum(hour_totals[hour] for hour in range(18, 24)),
+        }
+        embed.add_field(
+            name="By time block",
+            value="\n".join(
+                f"`{name:<9}` {count:,}" for name, count in blocks.items()
+            ),
+            inline=True,
+        )
+        return embed
+
+    async def _build_activity_vc_embed(
+        self,
+        guild: discord.Guild,
+        config: dict,
+    ) -> discord.Embed:
+        days = config.get("days")
+        limit = int(config.get("limit", 10))
+        include_left = bool(config.get("include_left_members", False))
+        if not await self._table_exists("vc_sessions"):
+            return discord.Embed(
+                title="Voice activity",
+                description="VC activity tracking is not available yet.",
+                color=discord.Color(COLOR),
+                timestamp=self._utcnow(),
+            )
+        date_sql, date_parameters = self._activity_date_filter(
+            days,
+            column="left_at",
+        )
+        total = await self._fetchone(
+            f"""
+            SELECT COALESCE(SUM(duration_seconds), 0), COUNT(*)
+            FROM vc_sessions
+            WHERE guild_id = ? {date_sql}
+            """,
+            (guild.id, *date_parameters),
+        )
+        channel_rows = await self._fetchall(
+            f"""
+            SELECT channel_id, MAX(channel_name), SUM(duration_seconds)
+            FROM vc_sessions
+            WHERE guild_id = ? {date_sql}
+            GROUP BY channel_id
+            ORDER BY SUM(duration_seconds) DESC
+            LIMIT ?
+            """,
+            (guild.id, *date_parameters, limit),
+        )
+        member_rows = await self._fetchall(
+            f"""
+            SELECT user_id, MAX(username), MAX(display_name),
+                   SUM(duration_seconds)
+            FROM vc_sessions
+            WHERE guild_id = ? {date_sql}
+            GROUP BY user_id
+            ORDER BY SUM(duration_seconds) DESC
+            """,
+            (guild.id, *date_parameters),
+        )
+        filtered = []
+        for user_id, username, display_name, seconds in member_rows:
+            member = current_member(guild, user_id)
+            if member is None and not include_left:
+                continue
+            filtered.append(
+                (
+                    user_id,
+                    member.name if member else username,
+                    member.display_name if member else display_name,
+                    seconds,
+                    member is not None,
+                )
+            )
+            if len(filtered) >= limit:
+                break
+        embed = discord.Embed(
+            title=f"Voice activity — {self._activity_period_label(days)}",
+            color=discord.Color(COLOR),
+            timestamp=self._utcnow(),
+            description=(
+                f"**{format_duration(total[0])}** tracked across "
+                f"**{total[1]:,}** completed sessions."
+                + (
+                    "\n\nThis includes all currently tracked voice activity data."
+                    if days is None
+                    else ""
+                )
+            ),
+        )
+        if channel_rows:
+            embed.add_field(
+                name="Top VC channels",
+                value="\n".join(
+                    f"{index}. {safe_channel_display(row[0], row[1])} — "
+                    f"**{format_duration(row[2])}**"
+                    for index, row in enumerate(channel_rows, start=1)
+                )[:1024],
+                inline=False,
+            )
+        if filtered:
+            embed.add_field(
+                name="Top VC members",
+                value="\n".join(
+                    f"{index}. "
+                    f"{f'<@{row[0]}>' if row[4] else discord.utils.escape_markdown(row[2] or row[1] or str(row[0])) + ' — Left server'} "
+                    f"— **{format_duration(row[3])}**"
+                    for index, row in enumerate(filtered, start=1)
+                )[:1024],
+                inline=False,
+            )
+        scope = "Includes left members" if include_left else "Current members only"
+        warning = member_filter_warning(self.bot, guild)
+        embed.set_footer(
+            text=(
+                f"Member ranking: {scope}."
+                + (f" {warning}" if warning and not include_left else "")
+            )
+        )
+        return embed
+
+    async def _build_activity_importinfo_embed(
+        self,
+        guild: discord.Guild,
+        config: dict,
+    ) -> discord.Embed:
+        limit = int(config.get("limit", 10))
+        rows = await self._fetchall(
+            """
+            SELECT import_batch_id, filename, channel_id, channel_name,
+                   messages_seen, messages_imported, duplicates_skipped,
+                   messages_skipped, earliest_message_at, latest_message_at,
+                   imported_at, status
+            FROM stats_activity_imports
+            WHERE guild_id = ?
+            ORDER BY imported_at DESC, id DESC
+            LIMIT ?
+            """,
+            (guild.id, limit),
+        )
+        embed = discord.Embed(
+            title="Recent historical activity imports",
+            color=discord.Color(COLOR),
+            timestamp=self._utcnow(),
+        )
+        if not rows:
+            embed.description = "No historical activity imports have been recorded."
+        for row in rows:
+            (
+                batch_id,
+                filename,
+                channel_id,
+                channel_name,
+                seen,
+                imported,
+                duplicates,
+                skipped,
+                earliest,
+                latest,
+                imported_at,
+                status,
+            ) = row
+            embed.add_field(
+                name=(
+                    f"{os.path.basename(filename or 'Unknown file')[:80]} • "
+                    f"{status or 'unknown'}"
+                ),
+                value=(
+                    f"Batch `{(batch_id or 'unknown')[:8]}` • "
+                    f"{safe_channel_display(channel_id or 0, channel_name)} "
+                    f"(`{channel_id or 0}`)\n"
+                    f"Seen **{seen or 0:,}** • Imported **{imported or 0:,}** • "
+                    f"Duplicates **{duplicates or 0:,}** • "
+                    f"Skipped **{skipped or 0:,}**\n"
+                    f"Messages: {(earliest or 'n/a')[:10]} to "
+                    f"{(latest or 'n/a')[:10]}\n"
+                    f"Imported: {imported_at or 'n/a'}"
+                )[:1024],
+                inline=False,
+            )
+        return embed
+
     async def _send_activity_report(
         self,
         interaction: discord.Interaction,
         embed: discord.Embed,
         channel: Optional[discord.TextChannel],
+        *,
+        report_type: Optional[str] = None,
+        config: Optional[dict] = None,
     ) -> None:
+        assets = []
+        if report_type:
+            try:
+                assets = await self._build_activity_report_assets(
+                    interaction.guild,
+                    report_type,
+                    config or {},
+                )
+            except Exception:
+                await interaction.followup.send(
+                    "I could not generate the activity graphic.",
+                    ephemeral=True,
+                )
+                return
         if channel is None:
-            await interaction.followup.send(embed=embed, ephemeral=True)
+            if assets:
+                files = [
+                    discord.File(io.BytesIO(data), filename=filename)
+                    for filename, data in assets
+                ]
+                await interaction.followup.send(files=files, ephemeral=True)
+            else:
+                await interaction.followup.send(embed=embed, ephemeral=True)
             return
         if not self._valid_target_channel(interaction, channel):
             await interaction.followup.send(
@@ -3438,7 +4106,14 @@ class Stats(commands.Cog):
             )
             return
         try:
-            await channel.send(embed=embed)
+            if assets:
+                files = [
+                    discord.File(io.BytesIO(data), filename=filename)
+                    for filename, data in assets
+                ]
+                message = await channel.send(files=files)
+            else:
+                message = await channel.send(embed=embed)
         except (discord.Forbidden, discord.HTTPException):
             await interaction.followup.send(
                 "I could not post the activity report in that channel. "
@@ -3446,38 +4121,83 @@ class Stats(commands.Cog):
                 ephemeral=True,
             )
             return
+        if report_type:
+            now = self._utcnow().isoformat()
+            try:
+                await self.bot.db.execute(
+                    """
+                    INSERT INTO tracked_activity_reports (
+                        guild_id,
+                        channel_id,
+                        message_id,
+                        report_type,
+                        config_json,
+                        created_by,
+                        created_at,
+                        updated_at
+                    )
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        interaction.guild_id,
+                        channel.id,
+                        message.id,
+                        report_type,
+                        json.dumps(config or {}, separators=(",", ":")),
+                        interaction.user.id,
+                        now,
+                        now,
+                    ),
+                )
+                await self.bot.db.commit()
+            except Exception:
+                try:
+                    await message.delete()
+                except (discord.NotFound, discord.Forbidden, discord.HTTPException):
+                    pass
+                await interaction.followup.send(
+                    "The report was generated, but I could not save its refresh "
+                    "configuration, so the channel post was removed.",
+                    ephemeral=True,
+                )
+                return
         await interaction.followup.send(
-            f"Posted the activity report in {channel.mention}.",
+            (
+                f"Posted and tracked the activity report in {channel.mention}."
+                if report_type
+                else f"Posted the activity report in {channel.mention}."
+            ),
             ephemeral=True,
         )
 
-    async def _send_activity_text(
+    async def _send_activity_file(
         self,
         interaction: discord.Interaction,
         text: str,
+        file: discord.File,
         channel: Optional[discord.TextChannel],
     ) -> None:
         if channel is None:
-            await interaction.followup.send(text, ephemeral=True)
+            await interaction.followup.send(text, file=file, ephemeral=True)
             return
         if not self._valid_target_channel(interaction, channel):
             await interaction.followup.send(
-                "The activity report must be posted in a text channel "
+                "The activity export must be posted in a text channel "
                 "in this server.",
                 ephemeral=True,
             )
             return
         try:
-            await channel.send(text)
+            await channel.send(content=text, file=file)
         except (discord.Forbidden, discord.HTTPException):
             await interaction.followup.send(
-                "I could not post the activity report in that channel. "
+                "I could not post the activity export in that channel. "
                 "Please check my channel permissions.",
                 ephemeral=True,
             )
             return
         await interaction.followup.send(
-            f"Posted the activity report in {channel.mention}.",
+            f"Posted the activity export in {channel.mention}.",
             ephemeral=True,
         )
 

@@ -48,12 +48,12 @@ feature effectively administrator-only. This does not apply to `/ask`.
 
 - `/admin health` — Private bot, database, configuration, import, VCXP-role,
   and Git health report. Secret values are never displayed.
-- `/stats activity trends [period] [source]` — Compares a fixed period with the
-  immediately preceding period.
-- `/stats activity categories [period] [source] [limit]` — Groups activity
-  using `data/channel_categories.json`.
-- `/stats activity heatmap [period] [source] [timezone]` — Summarizes activity
-  by local day, hour, and broad time block.
+- `/stats activity trends [period] [source] [channel]` — Compares a fixed
+  period with the immediately preceding period.
+- `/stats activity categories [period] [source] [limit] [channel]` — Groups
+  activity using `data/channel_categories.json`.
+- `/stats activity heatmap [period] [source] [timezone] [channel]` — Summarizes
+  activity by local day, hour, and broad time block.
 - `/guide search <query>` — Searches only the public Survival Guide and Rules
   without Gemini.
 - `/ask <question>` — Answers from public guidance with private follow-up
@@ -342,6 +342,9 @@ voice channel, and average session length.
 
 ### `/vcstats leaderboard [days] [limit] [eligible_only] [include_left_members]`
 
+Shows a wide member leaderboard graphic with avatars, medal ranks, duration
+bars, and tracked-time or reward-eligible-time totals.
+
 Ranks members by tracked or reward-eligible VC time.
 
 - `days` — Optional lookback period. Defaults to 30.
@@ -531,8 +534,10 @@ After running the command, a modal asks for:
 
 ### `/stats refresh`
 
-Immediately refreshes every tracked role roster and tracked stats report in
-the server. It has no inputs.
+Immediately refreshes every tracked stats page in the server, including role
+rosters, role audits, and channel-posted `/stats activity` reports. It has no
+inputs. The same tracked pages also refresh automatically once daily at
+12:00 UTC.
 
 ### `/stats rolecompare <role_1> <role_2> [title] [body] [channel]`
 
@@ -579,8 +584,17 @@ commands. Visual reports have an optional `channel` parameter:
 - Select a text channel to post the report there for other staff to see. The
   command runner receives an ephemeral confirmation.
 
-CSV exports remain ephemeral because they contain member-level activity
-metadata.
+Channel-posted activity reports are saved as tracked pages. `/stats refresh`
+rebuilds and edits them alongside role rosters, role comparisons, and missing
+role reports. The bot also refreshes every tracked stats page automatically
+once daily at 12:00 UTC.
+
+Activity reports posted before this tracking upgrade remain ordinary snapshots.
+Recreate each old report once with its `channel` option to make it refreshable.
+
+CSV exports remain ephemeral by default because they contain member-level
+activity metadata. Staff can explicitly select a `channel` to post an export
+there when appropriate; CSV messages are not tracked dashboards.
 
 Text activity is tracked from the time this feature is deployed. The bot stores
 hourly counts and basic member/channel metadata only. It does **not** store
@@ -622,12 +636,13 @@ overview displays the actual available data range. All-time reports are labeled
 ### `/stats activity channels [period] [days] [limit] [source] [channel]`
 
 Shows the top text channels by tracked message count, including unique posters
-and percentage of tracked messages.
+and percentage of tracked messages. This report renders as a wide ranked PNG
+with medal colors, activity bars, and compact metric cards.
 
 - If neither `period` nor `days` is supplied, the report defaults to 7 days.
 - `limit` defaults to 10 and supports up to 25.
 
-### `/stats activity trends [period] [source]`
+### `/stats activity trends [period] [source] [channel]`
 
 Compares `7 days`, `30 days`, `90 days`, or `365 days` with the immediately
 preceding period of equal length.
@@ -639,7 +654,7 @@ preceding period of equal length.
 - If the previous window has no matching rows, current statistics are still
   shown and the comparison is labeled limited.
 
-### `/stats activity categories [period] [source] [limit]`
+### `/stats activity categories [period] [source] [limit] [channel]`
 
 Groups activity using `data/channel_categories.json`.
 
@@ -649,7 +664,7 @@ Groups activity using `data/channel_categories.json`.
 - Channels with `include_in_activity: false` are excluded.
 - Each category shows messages, unique members, percentage, and top channel.
 
-### `/stats activity heatmap [period] [source] [timezone]`
+### `/stats activity heatmap [period] [source] [timezone] [channel]`
 
 Summarizes hourly activity by local day, hour, top day/hour combinations, and
 Overnight/Morning/Afternoon/Evening blocks.
@@ -663,7 +678,8 @@ Overnight/Morning/Afternoon/Evening blocks.
 
 Shows visible text channels with low tracked activity and their last tracked
 activity time. This is intended for neutral channel-planning decisions and
-does not assess or shame individual members.
+does not assess or shame individual members. It renders as a quietest-first
+graphic with message totals and last-activity context.
 
 - If neither `period` nor `days` is supplied, the report defaults to 14 days.
 - `limit` defaults to 10 and supports up to 25.
@@ -671,7 +687,8 @@ does not assess or shame individual members.
 ### `/stats activity members [period] [days] [limit] [source] [include_left_members] [channel]`
 
 Shows members with the highest tracked message counts. Text and VC activity are
-not combined into a synthetic score.
+not combined into a synthetic score. It renders as a wide member leaderboard
+with avatars, display names, usernames, medal ranks, and message-count bars.
 
 - If neither `period` nor `days` is supplied, the report defaults to 7 days.
 - `limit` defaults to 10 and supports up to 25.
@@ -683,7 +700,7 @@ not combined into a synthetic score.
 
 Reads completed sessions from the `vc_sessions` table managed by
 `cogs/vc_stats.py`. It shows total tracked time, completed sessions, top voice
-channels, and top voice participants.
+channels, and top voice participants in a split-screen PNG leaderboard.
 
 If the VC tracking table is unavailable, the command reports:
 `VC activity tracking is not available yet.`
@@ -694,7 +711,7 @@ Its top-member ranking defaults to current members only; set
 `include_left_members:true` to include historical users who left. Aggregate VC
 time and channel totals still include all matching sessions.
 
-### `/stats activity export [period] [days] [include_vc] [source] [include_left_members]`
+### `/stats activity export [period] [days] [include_vc] [source] [include_left_members] [channel]`
 
 Exports a private CSV with a `section` column. Sections can include:
 
@@ -716,6 +733,11 @@ User-level export rows default to current members only. Set
 `is_current_member` column. Aggregate overview and channel totals continue to
 include all matching imported and live activity regardless of membership.
 
+### `/stats activity importinfo [limit] [channel]`
+
+Shows recent historical import batches. If posted to a channel, the report is
+tracked and updates through `/stats refresh` and the daily automatic refresh.
+
 ### Activity database tables
 
 The activity feature creates these tables in `data.db`:
@@ -724,6 +746,7 @@ The activity feature creates these tables in `data.db`:
 - `stats_member_joins`
 - `stats_member_leaves`
 - `stats_activity_settings`
+- `tracked_activity_reports`
 
 `stats_message_activity` uses one row per guild, text channel, member, and UTC
 hour, incrementing `message_count` as messages arrive.
@@ -851,7 +874,9 @@ Subtracts points from a user without allowing the total to fall below zero.
 
 ### `/leaderboards <name>`
 
-Displays a leaderboard as a paginated graphic, ten members per page.
+Displays a leaderboard as a wide paginated graphic, ten members per page. The
+graphic uses the same dark visual system as stats leaderboards, including
+avatars, medal ranks, progress rails, point pills, and a live timestamp.
 Empty leaderboards display a friendly empty state. If an avatar cannot be
 downloaded, the leaderboard still renders with a placeholder.
 

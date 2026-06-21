@@ -13,7 +13,13 @@ import discord
 from discord import app_commands
 from discord.ext import commands, tasks
 
+from config import COLOR
 from utils.member_filter import current_member, member_filter_warning
+from utils.ranked_graphic import (
+    RankedGraphicItem,
+    RankedGraphicSection,
+    render_ranked_graphic,
+)
 
 
 logger = logging.getLogger(__name__)
@@ -1241,22 +1247,46 @@ class VCStats(commands.Cog):
             )
             return
         label = "eligible time" if eligible_only else "tracked time"
-        lines = [
-            (
-                f"{index}. "
-                f"{f'<@{row[0]}>' if row[4] else discord.utils.escape_markdown(row[1] or row[2] or str(row[0])) + ' — Left server'} "
-                f"— **{format_duration(row[3])}**"
-            )
-            for index, row in enumerate(filtered_rows, 1)
-        ]
         scope = "Includes left members" if include_left_members else "Current members only"
         warning = member_filter_warning(self.bot, interaction.guild)
-        if warning and not include_left_members:
-            lines.append(f"⚠️ {warning}")
-        await self._send_lines(
-            interaction,
-            f"**VC leaderboard — {label}, last {days} days**\n{scope}.",
-            lines,
+        items = []
+        for user_id, display_name, username, ranked_seconds, is_current in filtered_rows:
+            member = current_member(interaction.guild, user_id)
+            items.append(
+                RankedGraphicItem(
+                    label=display_name or username or str(user_id),
+                    value=format_duration(ranked_seconds),
+                    subtitle=(
+                        f"@{username}"
+                        if is_current
+                        else f"@{username or user_id} • Left server"
+                    ),
+                    avatar_url=(
+                        str(member.display_avatar.replace(size=64).url)
+                        if member
+                        else None
+                    ),
+                    score=float(ranked_seconds or 0),
+                )
+            )
+        png = await render_ranked_graphic(
+            title="VC Leaderboard",
+            subtitle=f"Last {days} days • {label} • {scope.lower()}",
+            sections=[RankedGraphicSection("Member leaderboard", items)],
+            updated_at=utc_now(),
+            accent_color=COLOR,
+        )
+        await interaction.followup.send(
+            content=(
+                f"⚠️ {warning}"
+                if warning and not include_left_members
+                else None
+            ),
+            file=discord.File(
+                io.BytesIO(png),
+                filename="vc_leaderboard.png",
+            ),
+            ephemeral=True,
         )
 
     @vcstats.command(

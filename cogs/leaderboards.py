@@ -1,18 +1,21 @@
 from __future__ import annotations
 
-import asyncio
 import hashlib
 import io
 import math
+from datetime import datetime, timezone
 from typing import Optional
 
 import discord
-import requests
 from discord import app_commands
 from discord.ext import commands
-from PIL import Image, ImageDraw, ImageFont, UnidentifiedImageError
 
 from config import COLOR
+from utils.ranked_graphic import (
+    RankedGraphicItem,
+    RankedGraphicSection,
+    render_ranked_graphic,
+)
 from utils.ui import error_embed, success_embed, warning_embed
 
 
@@ -367,13 +370,46 @@ class Leaderboards(commands.Cog):
         rows = await cursor.fetchall()
         await cursor.close()
 
-        file = await asyncio.to_thread(
-            self.create_leaderboard_banner,
-            leaderboard,
-            rows,
-            page,
-            total_entries,
+        items = []
+        for user_id, points in rows:
+            user = self.bot.get_user(user_id)
+            formatted_points = f"{points:,.2f}".rstrip("0").rstrip(".")
+            items.append(
+                RankedGraphicItem(
+                    label=(
+                        user.display_name
+                        if user is not None
+                        else f"User {user_id}"
+                    ),
+                    value=f"{formatted_points} pts",
+                    subtitle=(
+                        f"@{user.name}"
+                        if user is not None
+                        else f"Discord ID {user_id}"
+                    ),
+                    avatar_url=(
+                        str(user.display_avatar.replace(size=64).url)
+                        if user is not None
+                        else None
+                    ),
+                    score=float(points),
+                )
+            )
+        png = await render_ranked_graphic(
+            title=leaderboard,
+            subtitle=f"Page {page + 1} of {total_pages}",
+            sections=[
+                RankedGraphicSection(
+                    "Member leaderboard",
+                    items,
+                    rank_start=page * PAGE_SIZE + 1,
+                )
+            ],
+            updated_at=datetime.now(timezone.utc),
+            accent_color=COLOR,
+            total_entries=total_entries,
         )
+        file = discord.File(io.BytesIO(png), filename="leaderboard.png")
         token = self._token(leaderboard)
         view = discord.ui.View(timeout=None)
         view.add_item(
@@ -403,140 +439,6 @@ class Leaderboards(commands.Cog):
             )
         )
         return file, view
-
-    def create_leaderboard_banner(
-        self,
-        title: str,
-        data: list[tuple[int, float]],
-        page: int,
-        total_entries: int,
-    ) -> discord.File:
-        width = 760
-        header_height = 130
-        row_height = 72
-        gap = 8
-        padding = 26
-        rows = max(1, len(data))
-        height = header_height + padding + rows * (row_height + gap) + 26
-        image = Image.new("RGB", (width, height), "#121419")
-        draw = ImageDraw.Draw(image)
-        title_font = ImageFont.truetype("assets/OpenSansEmoji.ttf", 34)
-        subtitle_font = ImageFont.truetype("assets/calibri-regular.ttf", 18)
-        name_font = ImageFont.truetype("assets/calibri-regular.ttf", 22)
-        points_font = ImageFont.truetype("assets/calibri-regular.ttf", 23)
-        rank_font = ImageFont.truetype("assets/calibri-regular.ttf", 20)
-
-        draw.rounded_rectangle(
-            (16, 16, width - 16, header_height),
-            radius=22,
-            fill="#1D2027",
-        )
-        draw.rounded_rectangle(
-            (16, 16, 24, header_height),
-            radius=4,
-            fill=f"#{COLOR:06x}",
-        )
-        safe_title = title if len(title) <= 36 else title[:35] + "…"
-        draw.text((44, 36), safe_title, font=title_font, fill="#F2F3F5")
-        draw.text(
-            (45, 86),
-            f"{total_entries:,} ranked member(s) • Page {page + 1}",
-            font=subtitle_font,
-            fill="#AAB1BD",
-        )
-
-        if not data:
-            draw.rounded_rectangle(
-                (padding, header_height + padding, width - padding, height - 26),
-                radius=18,
-                fill="#1D2027",
-            )
-            empty = "No points have been awarded yet."
-            text_width = draw.textlength(empty, font=name_font)
-            draw.text(
-                ((width - text_width) / 2, header_height + padding + 26),
-                empty,
-                font=name_font,
-                fill="#AAB1BD",
-            )
-
-        rank_colors = {0: "#FFD166", 1: "#D6D9E0", 2: "#D9965B"}
-        for index, (user_id, points) in enumerate(data):
-            absolute_rank = page * PAGE_SIZE + index
-            y = header_height + padding + index * (row_height + gap)
-            fill = "#22262E" if index % 2 == 0 else "#1D2027"
-            draw.rounded_rectangle(
-                (padding, y, width - padding, y + row_height),
-                radius=16,
-                fill=fill,
-            )
-            rank_color = rank_colors.get(absolute_rank, "#D7DAE0")
-            rank_text = f"#{absolute_rank + 1}"
-            draw.text((44, y + 24), rank_text, font=rank_font, fill=rank_color)
-
-            user = self.bot.get_user(user_id)
-            name = user.display_name if user else f"User {user_id}"
-            avatar_x = 106
-            avatar_y = y + 11
-            avatar_drawn = False
-            if user is not None:
-                try:
-                    with requests.get(
-                        user.display_avatar.url,
-                        timeout=5,
-                    ) as response:
-                        response.raise_for_status()
-                        with Image.open(io.BytesIO(response.content)) as source:
-                            avatar = source.convert("RGBA").resize(
-                                (50, 50),
-                                Image.Resampling.LANCZOS,
-                            )
-                    mask = Image.new("L", (50, 50), 0)
-                    ImageDraw.Draw(mask).ellipse((0, 0, 49, 49), fill=255)
-                    avatar.putalpha(mask)
-                    image.paste(avatar, (avatar_x, avatar_y), avatar)
-                    avatar_drawn = True
-                except (
-                    requests.RequestException,
-                    UnidentifiedImageError,
-                    OSError,
-                ):
-                    pass
-            if not avatar_drawn:
-                draw.ellipse(
-                    (avatar_x, avatar_y, avatar_x + 50, avatar_y + 50),
-                    fill=f"#{COLOR:06x}",
-                )
-                initial = name[:1].upper() or "?"
-                initial_width = draw.textlength(initial, font=rank_font)
-                draw.text(
-                    (avatar_x + (50 - initial_width) / 2, avatar_y + 14),
-                    initial,
-                    font=rank_font,
-                    fill="#FFFFFF",
-                )
-
-            shown_name = name if len(name) <= 28 else name[:27] + "…"
-            draw.text((176, y + 24), shown_name, font=name_font, fill="#F2F3F5")
-            points_text = f"{round(points, 2):,} pts"
-            points_width = draw.textlength(points_text, font=points_font)
-            pill_left = width - padding - points_width - 34
-            draw.rounded_rectangle(
-                (pill_left, y + 17, width - padding - 12, y + 56),
-                radius=18,
-                fill="#303641",
-            )
-            draw.text(
-                (pill_left + 16, y + 25),
-                points_text,
-                font=points_font,
-                fill="#FFFFFF",
-            )
-
-        output = io.BytesIO()
-        image.save(output, "PNG", optimize=True)
-        output.seek(0)
-        return discord.File(output, filename="leaderboard.png")
 
     @commands.Cog.listener()
     async def on_interaction(self, interaction: discord.Interaction) -> None:
