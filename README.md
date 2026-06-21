@@ -971,7 +971,6 @@ notify anyone.
 Commit and push the changes, then:
 
 ```bash
-ssh sadcatdad@raspberrypi.local
 cd ~/BroEdenBot
 ./deploy.sh
 ```
