@@ -27,9 +27,43 @@ The importer stores activity metadata only:
 
 It does not store message content, attachments, embeds, stickers, or reactions.
 
+## JSON and CSV exports
+
+JSON is preferred because it preserves DiscordChatExporter structure and
+metadata more reliably. CSV is also supported for lighter or smaller exports
+and is processed one row at a time without loading the whole file into memory.
+
+CSV imports still never store message content. They require a timestamp column
+and an author or user ID column. Message IDs are used for deduplication when
+present; if one is missing, the importer creates a deterministic, content-free
+fallback ID from the filename, row number, timestamp, user ID, and channel ID.
+
+If a CSV does not include channel metadata, provide it explicitly:
+
+```bash
+python scripts/import_discord_history.py \
+  --file imports/discord_history/vent-summit.csv \
+  --guild-id 1278253523619807233 \
+  --channel-id 1278260413078700032 \
+  --channel-name "vent-summit" \
+  --dry-run
+```
+
+For the real import with completed-file archiving:
+
+```bash
+python scripts/import_discord_history.py \
+  --file imports/discord_history/vent-summit.csv \
+  --guild-id 1278253523619807233 \
+  --channel-id 1278260413078700032 \
+  --channel-name "vent-summit" \
+  --archive-completed \
+  --archive-duplicates
+```
+
 ## Import workflow
 
-1. Export channels with DiscordChatExporter CLI as JSON.
+1. Export channels with DiscordChatExporter CLI as JSON or CSV.
 2. Transfer new exports from the Mac to the Raspberry Pi:
 
    ```bash

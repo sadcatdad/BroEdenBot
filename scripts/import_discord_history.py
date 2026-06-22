@@ -7,6 +7,7 @@ import argparse
 import csv
 import datetime as dt
 import os
+import re
 import shutil
 import sqlite3
 import sys
@@ -37,6 +38,29 @@ SKIPPED_IMPORT_FOLDER_NAMES = {
     "archived",
     "broken_exports",
     "repaired_from_pi",
+}
+CSV_COLUMN_ALIASES = {
+    "message_id": ("messageid", "id"),
+    "timestamp": ("date", "timestamp", "sentat", "createdat"),
+    "user_id": ("authorid", "userid"),
+    "author_name": (
+        "author",
+        "authorname",
+        "authorusername",
+        "authordisplayname",
+        "username",
+        "displayname",
+    ),
+    "channel_id": ("channelid",),
+    "channel_name": ("channel", "channelname"),
+    "bot": (
+        "isbot",
+        "bot",
+        "authorbot",
+        "authorisbot",
+        "userbot",
+        "userisbot",
+    ),
 }
 
 
@@ -568,15 +592,107 @@ def json_messages(path: Path) -> tuple[Iterator[dict[str, Any]], dict[str, Any]]
     return items(), metadata
 
 
-def csv_messages(path: Path) -> tuple[Iterator[dict[str, Any]], dict[str, Any]]:
-    handle = path.open("r", encoding="utf-8-sig", newline="")
-    reader = csv.DictReader(handle)
+def normalize_csv_column(value: Any) -> str:
+    return re.sub(r"[^a-z0-9]+", "", str(value or "").strip().casefold())
 
+
+def csv_column_indexes(header: list[str]) -> dict[str, Optional[int]]:
+    normalized_header: dict[str, int] = {}
+    for index, column_name in enumerate(header):
+        normalized_header.setdefault(normalize_csv_column(column_name), index)
+    return {
+        field: next(
+            (
+                normalized_header[alias]
+                for alias in aliases
+                if alias in normalized_header
+            ),
+            None,
+        )
+        for field, aliases in CSV_COLUMN_ALIASES.items()
+    }
+
+
+def csv_row_value(
+    row: list[str],
+    indexes: dict[str, Optional[int]],
+    field: str,
+) -> Optional[str]:
+    index = indexes.get(field)
+    if index is None or index >= len(row):
+        return None
+    value = row[index].strip()
+    return value or None
+
+
+def canonical_csv_message(
+    path: Path,
+    row: list[str],
+    indexes: dict[str, Optional[int]],
+    row_number: int,
+) -> dict[str, Any]:
+    author: dict[str, Any] = {
+        "id": csv_row_value(row, indexes, "user_id"),
+        "name": csv_row_value(row, indexes, "author_name"),
+        "isBot": csv_row_value(row, indexes, "bot"),
+    }
+    channel: dict[str, Any] = {
+        "id": csv_row_value(row, indexes, "channel_id"),
+        "name": csv_row_value(row, indexes, "channel_name"),
+    }
+    return {
+        "id": csv_row_value(row, indexes, "message_id"),
+        "timestamp": csv_row_value(row, indexes, "timestamp"),
+        "author": author,
+        "channel": channel,
+        "__csv_filename": path.name,
+        "__csv_row_number": row_number,
+    }
+
+
+def csv_messages(path: Path) -> tuple[Iterator[dict[str, Any]], dict[str, Any]]:
     def rows() -> Iterator[dict[str, Any]]:
-        try:
-            yield from reader
-        finally:
-            handle.close()
+        with path.open("r", encoding="utf-8-sig", newline="") as handle:
+            reader = csv.reader(handle, strict=True)
+            try:
+                header = next(reader)
+            except StopIteration as exc:
+                raise ValueError("CSV export is empty") from exc
+            except csv.Error as exc:
+                raise ValueError("CSV header could not be read") from exc
+
+            indexes = csv_column_indexes(header)
+            previous_error_line = -1
+            while True:
+                try:
+                    row = next(reader)
+                except StopIteration:
+                    break
+                except csv.Error:
+                    error_line = reader.line_num
+                    yield {
+                        "__csv_error__": True,
+                        "__csv_row_number": error_line,
+                    }
+                    if error_line <= previous_error_line:
+                        raise ValueError(
+                            "CSV parser could not continue after a malformed row"
+                        )
+                    previous_error_line = error_line
+                    continue
+
+                if len(row) != len(header):
+                    yield {
+                        "__csv_error__": True,
+                        "__csv_row_number": reader.line_num,
+                    }
+                    continue
+                yield canonical_csv_message(
+                    path,
+                    row,
+                    indexes,
+                    reader.line_num,
+                )
 
     return rows(), {}
 
@@ -614,12 +730,13 @@ def message_fields(
     default_channel_id: int,
     default_channel_name: str,
 ) -> Optional[tuple[str, dt.datetime, int, str, str, int, str]]:
-    message_id = nested(message, "id", "messageId", "message_id")
+    if message.get("__csv_error__"):
+        return None
     timestamp = parse_timestamp(
         nested(message, "timestamp", "date", "createdAt", "sent_at")
     )
     user_id = parse_int(nested(message, "author.id", "user.id", "userId", "user_id"))
-    if message_id in (None, "") or timestamp is None or user_id is None:
+    if timestamp is None or user_id is None:
         return None
     if truthy(nested(message, "author.isBot", "author.bot", "user.isBot", "user.bot")):
         return None
@@ -631,6 +748,19 @@ def message_fields(
     channel_name = nested(
         message, "channel.name", "channelName", "channel_name"
     )
+    resolved_channel_id = (
+        channel_id if channel_id is not None else default_channel_id
+    )
+    message_id = nested(message, "id", "messageId", "message_id")
+    if message_id in (None, ""):
+        csv_filename = message.get("__csv_filename")
+        csv_row_number = message.get("__csv_row_number")
+        if not csv_filename or csv_row_number is None:
+            return None
+        message_id = (
+            f"csv:{csv_filename}:{csv_row_number}:{timestamp.isoformat()}:"
+            f"{user_id}:{resolved_channel_id}"
+        )
     username = nested(
         message,
         "author.username",
@@ -652,7 +782,7 @@ def message_fields(
         user_id,
         str(username or user_id),
         str(display_name or username or user_id),
-        channel_id if channel_id is not None else default_channel_id,
+        resolved_channel_id,
         str(channel_name or default_channel_name),
     )
 
@@ -834,6 +964,7 @@ def process_file(
     batch_id: str,
 ) -> FileResult:
     result = FileResult(filename=str(path))
+    item_label = "rows" if path.suffix.lower() == ".csv" else "messages"
     imported_at = utcnow().isoformat()
     buckets: dict[tuple[int, int, str], dict[str, Any]] = defaultdict(
         lambda: {"count": 0, "channel_name": "", "username": "", "display_name": ""}
@@ -914,7 +1045,7 @@ def process_file(
 
             if result.messages_seen % PROGRESS_INTERVAL == 0:
                 print(
-                    f"  Progress: {result.messages_seen:,} messages seen; "
+                    f"  Progress: {result.messages_seen:,} {item_label} seen; "
                     f"{result.messages_imported:,} ready to import; "
                     f"{result.duplicates_skipped:,} duplicates; "
                     f"{result.messages_skipped:,} skipped",
@@ -970,14 +1101,19 @@ def date_text(value: Optional[dt.datetime]) -> str:
     return value.isoformat() if value else "n/a"
 
 
+def result_item_label(result: FileResult) -> str:
+    return "Rows" if Path(result.filename).suffix.lower() == ".csv" else "Messages"
+
+
 def print_file_result(result: FileResult) -> None:
+    item_label = result_item_label(result)
     print(f"\nFile: {result.filename}")
     print(f"  Status: {result.status}")
     print(f"  Channel: {result.channel_name or 'Unknown'} ({result.channel_id})")
-    print(f"  Messages seen: {result.messages_seen:,}")
+    print(f"  {item_label} seen: {result.messages_seen:,}")
     print(f"  Messages imported: {result.messages_imported:,}")
     print(f"  Duplicates skipped: {result.duplicates_skipped:,}")
-    print(f"  Messages skipped: {result.messages_skipped:,}")
+    print(f"  {item_label} skipped: {result.messages_skipped:,}")
     print(f"  Date range: {date_text(result.earliest)} to {date_text(result.latest)}")
     if result.notes:
         print(f"  Notes: {result.notes}")
