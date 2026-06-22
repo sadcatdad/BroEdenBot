@@ -1,0 +1,29 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{{ page_title or "Login" }} · BroEdenBot</title>
+  <link rel="stylesheet" href="{{ url_for('static', path='styles.css') }}">
+</head>
+<body>
+  {% if authenticated %}
+  <header class="site-header">
+    <a class="brand" href="{{ url_for('home') }}">BroEdenBot</a>
+    <nav aria-label="Dashboard navigation">
+      <a class="{{ 'active' if current_path == '/' else '' }}" href="{{ url_for('home') }}">Overview</a>
+      <a class="{{ 'active' if current_path == '/settings' else '' }}" href="{{ url_for('settings') }}">Settings</a>
+      <a class="{{ 'active' if current_path == '/bank' else '' }}" href="{{ url_for('bank') }}">Bank</a>
+      <a class="{{ 'active' if current_path == '/imports' else '' }}" href="{{ url_for('imports') }}">Imports</a>
+    </nav>
+    <form method="post" action="{{ url_for('logout') }}">
+      <input type="hidden" name="csrf" value="{{ csrf_token }}">
+      <button class="button secondary" type="submit">Log out</button>
+    </form>
+  </header>
+  {% endif %}
+  <main class="{{ 'container' if authenticated else 'login-shell' }}">
+    {% block content %}{% endblock %}
+  </main>
+</body>
+</html>

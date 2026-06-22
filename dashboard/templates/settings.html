@@ -1,0 +1,20 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="page-heading">
+  <div>
+    <p class="eyebrow">Read-only</p>
+    <h1>Settings Viewer</h1>
+  </div>
+</div>
+<section class="card">
+  <p class="muted">This page displays approved operational values only. Settings cannot be edited here.</p>
+  <div class="settings-list">
+    {% for setting in settings %}
+    <div>
+      <code>{{ setting.name }}</code>
+      <span>{{ setting.value }}</span>
+    </div>
+    {% endfor %}
+  </div>
+</section>
+{% endblock %}

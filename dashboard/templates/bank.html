@@ -1,0 +1,56 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="page-heading">
+  <div>
+    <p class="eyebrow">Read-only ledger</p>
+    <h1>Bank Overview</h1>
+  </div>
+  <p class="path">{{ bank.database.path }}</p>
+</div>
+
+{% if bank.error %}
+<div class="alert error">The bank database could not be read: {{ bank.error }}</div>
+{% elif not bank.tables_found %}
+<div class="empty-state">No bank tables found yet.</div>
+{% else %}
+<section class="card-grid three">
+  <article class="card"><p class="label">Balance</p><p class="metric">${{ "%.2f"|format(bank.totals.balance) }}</p></article>
+  <article class="card"><p class="label">Contributions</p><p class="metric">${{ "%.2f"|format(bank.totals.contributions) }}</p></article>
+  <article class="card"><p class="label">Expenses</p><p class="metric">${{ "%.2f"|format(bank.totals.expenses) }}</p></article>
+</section>
+
+<div class="two-column">
+  <section class="card">
+    <h2>Top public donors</h2>
+    {% if bank.donors %}
+    <ol class="leaderboard">
+      {% for donor in bank.donors %}
+      <li><span>{{ donor.donor }}</span><strong>${{ "%.2f"|format(donor.total) }}</strong></li>
+      {% endfor %}
+    </ol>
+    {% else %}<p class="muted">No public contributions recorded yet.</p>{% endif %}
+  </section>
+  <section class="card">
+    <h2>Recent transactions</h2>
+    {% if bank.transactions %}
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th>Type</th><th>Name</th><th>Amount</th><th>Note</th><th>Date</th></tr></thead>
+        <tbody>
+        {% for item in bank.transactions %}
+          <tr>
+            <td>{{ item.type }}</td>
+            <td>{{ item.display_name|default("—", true) }}</td>
+            <td>${{ "%.2f"|format(item.amount) }}</td>
+            <td>{{ item.note|default("—", true) }}</td>
+            <td>{{ item.created_at|default("—", true) }}</td>
+          </tr>
+        {% endfor %}
+        </tbody>
+      </table>
+    </div>
+    {% else %}<p class="muted">No transactions recorded yet.</p>{% endif %}
+  </section>
+</div>
+{% endif %}
+{% endblock %}

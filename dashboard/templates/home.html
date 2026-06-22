@@ -1,0 +1,52 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="page-heading">
+  <div>
+    <p class="eyebrow">Local administration</p>
+    <h1>Overview</h1>
+  </div>
+  <p class="muted">{{ current_time.strftime("%B %d, %Y · %I:%M:%S %p %Z") }}</p>
+</div>
+
+<section class="card-grid">
+  <article class="card">
+    <p class="label">Dashboard</p>
+    <p class="metric good">{{ dashboard_status }}</p>
+    <p class="muted">Available on this local network only.</p>
+  </article>
+  <article class="card">
+    <p class="label">Bot status</p>
+    <p class="metric {{ 'good' if bot_configuration_status == 'Configured' else 'warning-text' }}">{{ bot_configuration_status }}</p>
+    <p class="muted">{{ bot_name }} · Guild ID: {{ guild_id }}</p>
+  </article>
+  <article class="card">
+    <p class="label">Shared database</p>
+    <p class="metric {{ 'good' if database.readable else 'warning-text' }}">
+      {{ "Readable" if database.readable else "Unavailable" }}
+    </p>
+    <p class="path">{{ database.path }}</p>
+  </article>
+  <article class="card">
+    <p class="label">Bank database</p>
+    <p class="metric {{ 'good' if bank_database.readable else 'warning-text' }}">
+      {{ "Readable" if bank_database.readable else "Unavailable" }}
+    </p>
+    <p class="path">{{ bank_database.path }}</p>
+  </article>
+</section>
+
+<section class="card">
+  <div class="section-heading">
+    <div>
+      <p class="eyebrow">Safe configuration check</p>
+      <h2>Service status</h2>
+    </div>
+  </div>
+  <div class="status-list">
+    <div><span>Discord token</span><strong>{{ discord_token_status }}</strong></div>
+    <div><span>Gemini API key</span><strong>{{ gemini_key_status }}</strong></div>
+    <div><span>Gemini model values</span><strong>{{ "configured" if gemini_models_configured else "missing" }}</strong></div>
+    <div><span>Database file</span><strong>{{ "configured" if database.exists else "missing" }}</strong></div>
+  </div>
+</section>
+{% endblock %}

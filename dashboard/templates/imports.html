@@ -1,0 +1,39 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="page-heading">
+  <div>
+    <p class="eyebrow">Read-only history</p>
+    <h1>Import History</h1>
+  </div>
+  <p class="path">{{ history.database.path }}</p>
+</div>
+
+{% if history.error %}
+<div class="alert error">Import history could not be read: {{ history.error }}</div>
+{% elif not history.tables_found or not history.imports %}
+<div class="empty-state">No import history found.</div>
+{% else %}
+<section class="card">
+  <div class="table-wrap">
+    <table>
+      <thead>
+        <tr><th>File</th><th>Status</th><th>Processed</th><th>Imported</th><th>Skipped</th><th>Channel</th><th>Timestamp</th></tr>
+      </thead>
+      <tbody>
+      {% for item in history.imports %}
+        <tr>
+          <td>{{ item.get("filename") or item.get("source_file") or "Unknown file" }}</td>
+          <td><span class="badge">{{ item.get("status") or "unknown" }}</span></td>
+          <td>{{ item.get("messages_seen", 0) or 0 }}</td>
+          <td>{{ item.get("messages_imported", 0) or 0 }}</td>
+          <td>{{ (item.get("messages_skipped", 0) or 0) + (item.get("duplicates_skipped", 0) or 0) }}</td>
+          <td>{{ item.get("channel_name") or "—" }}</td>
+          <td>{{ item.get("imported_at") or "—" }}</td>
+        </tr>
+      {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</section>
+{% endif %}
+{% endblock %}

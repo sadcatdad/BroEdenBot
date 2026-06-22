@@ -1189,6 +1189,14 @@ Create a `.env` file in the project root. Do not commit it.
 | `VCXP_ENABLED` | Enables automatic and manual role pulses when `true`. Defaults to `false`. |
 | `BANK_ALLOWED_ROLE_IDS` | Comma-separated Discord role IDs allowed to use bank commands. |
 | `STATS_ALLOWED_ROLE_IDS` | Comma-separated Discord role IDs allowed to create and refresh stats pages. |
+| `DASHBOARD_ENABLED` | Enables the local dashboard when `true`. |
+| `DASHBOARD_HOST` | Dashboard bind address. Use `0.0.0.0` for access from the local network. |
+| `DASHBOARD_PORT` | Dashboard port. Defaults to `3000`. |
+| `DASHBOARD_USERNAME` | Local dashboard login username. |
+| `DASHBOARD_PASSWORD` | Local dashboard login password. Use a unique password. |
+| `DASHBOARD_SECRET_KEY` | Long random key used to sign dashboard sessions. |
+| `DATABASE_PATH` | Optional shared SQLite path for the dashboard. Defaults to the existing `data.db`, then common local database names. |
+| `BANK_DATABASE_PATH` | Optional bank SQLite path for the dashboard. Defaults to `brobank.db`. |
 
 ## Run locally
 
@@ -1222,6 +1230,48 @@ To test `/ask` in Discord after startup:
 Successful answers, redirects, and errors should be visible only to the member
 who invoked the command. Generated user, role, and everyone mentions must not
 notify anyone.
+
+## Local web dashboard
+
+Phase 1 includes a lightweight, read-only FastAPI dashboard for the Raspberry
+Pi. It provides a safe configuration viewer, shared-database status, bank
+overview, and historical-import status. It does not edit `.env`, modify bank
+records, expose Discord or Gemini secrets, or provide public hosting.
+
+Set these values in the project-root `.env` and replace the placeholder
+password and signing key before using the dashboard:
+
+```dotenv
+DASHBOARD_ENABLED=true
+DASHBOARD_HOST=0.0.0.0
+DASHBOARD_PORT=3000
+DASHBOARD_USERNAME=admin
+DASHBOARD_PASSWORD=change_this_password
+DASHBOARD_SECRET_KEY=change_this_to_a_long_random_string
+```
+
+Generate a signing key with `python3 -c "import secrets; print(secrets.token_urlsafe(48))"`.
+Run the dashboard separately from the Discord bot:
+
+```bash
+python3 -m dashboard.app
+```
+
+Or start it directly with Uvicorn:
+
+```bash
+uvicorn dashboard.app:app --host 0.0.0.0 --port 3000
+```
+
+Open `http://<pi-ip>:3000` or, when local hostname resolution is available,
+`http://broedenbot.local:3000`. Keep port 3000 restricted to the trusted local
+network; Phase 1 does not include a tunnel, reverse proxy, OAuth, or public
+hosting.
+
+An optional separate systemd unit template is provided at
+`broeden-dashboard.service.example`. Adjust its user and `/home/pi/BroEdenBot`
+paths for the Pi, copy it to `/etc/systemd/system/broeden-dashboard.service`,
+then enable it independently from the existing bot service.
 
 ## Deploy on the Raspberry Pi
 
