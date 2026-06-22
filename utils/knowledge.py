@@ -10,6 +10,12 @@ KNOWLEDGE_FILES = {
     "Bro Eden Rules": KNOWLEDGE_DIR / "rules.md",
     "Bro Eden Survival Guide": KNOWLEDGE_DIR / "survival_guide.md",
 }
+STAFF_KNOWLEDGE_DIR = PROJECT_ROOT / "data" / "staff_knowledge"
+STAFF_KNOWLEDGE_FILES = {
+    "Ranger's Handbook (Staff Only)": (
+        STAFF_KNOWLEDGE_DIR / "rangers_handbook.md"
+    ),
+}
 
 COMMUNITY_CONTEXT = """
 Bro Eden is an 18+ Discord community for gay, bi, and queer men.
@@ -37,10 +43,22 @@ def load_server_knowledge() -> Dict[str, str]:
     return dict(load_knowledge())
 
 
-def compact_knowledge_context(max_chars: int = 9_000) -> str:
-    """Return compact local context suitable for a moderation prompt."""
+@lru_cache(maxsize=1)
+def load_staff_knowledge() -> Dict[str, str]:
+    """Load public guidance plus private staff-only operational knowledge."""
+    knowledge = dict(load_knowledge())
+    for label, path in STAFF_KNOWLEDGE_FILES.items():
+        try:
+            knowledge[label] = path.read_text(encoding="utf-8").strip()
+        except (FileNotFoundError, OSError, UnicodeError):
+            knowledge[label] = ""
+    return knowledge
+
+
+def compact_knowledge_context(max_chars: int = 18_000) -> str:
+    """Return public and staff-only context for private moderation prompts."""
     sections = [COMMUNITY_CONTEXT]
-    for label, content in load_knowledge().items():
+    for label, content in load_staff_knowledge().items():
         if content:
             sections.append(f"## {label}\n{content}")
     context = "\n\n".join(sections)
@@ -77,13 +95,48 @@ def search_knowledge(
     max_results: int = 5,
     max_excerpt_chars: int = 700,
 ) -> List[Tuple[str, str, str]]:
-    """Rank Markdown sections with simple keyword matching."""
+    """Search public and staff-only knowledge for private staff tools."""
+    return _search_sources(
+        load_staff_knowledge(),
+        query,
+        max_results,
+        max_excerpt_chars,
+    )
+
+
+def build_staff_knowledge_context(
+    query: str,
+    max_results: int = 6,
+    max_chars: int = 5_000,
+) -> str:
+    """Build relevant private knowledge context for staff-facing AI tools."""
+    results = search_knowledge(
+        query,
+        max_results=max_results,
+        max_excerpt_chars=900,
+    )
+    context = "\n\n".join(
+        f"### {source} — {heading}\n{excerpt}"
+        for source, heading, excerpt in results
+    )
+    if len(context) <= max_chars:
+        return context
+    return context[: max_chars - 1].rstrip() + "…"
+
+
+def _search_sources(
+    sources: Dict[str, str],
+    query: str,
+    max_results: int,
+    max_excerpt_chars: int,
+) -> List[Tuple[str, str, str]]:
+    """Rank Markdown sections from an explicit source set."""
     terms = _query_terms(query)
     if not terms:
         return []
 
     matches = []
-    for source, content in load_knowledge().items():
+    for source, content in sources.items():
         for heading, section in _sections(content):
             haystack = f"{heading} {section}".casefold()
             score = sum(haystack.count(term) for term in terms)
@@ -110,7 +163,12 @@ def search_server_knowledge(
     max_excerpt_chars: int = 700,
 ) -> List[Tuple[str, str, str]]:
     """Search only the public-safe server knowledge."""
-    return search_knowledge(query, max_results, max_excerpt_chars)
+    return _search_sources(
+        load_server_knowledge(),
+        query,
+        max_results,
+        max_excerpt_chars,
+    )
 
 
 def _query_terms(query: str) -> List[str]:

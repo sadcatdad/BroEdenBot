@@ -24,6 +24,8 @@ For a module-by-module architecture and reliability map, see
 | `/ask` | All server members |
 | `/guide search` | All server members |
 | `/bot help`, `/bot status`, `/bot logs`, `/bot restart`, `/bot deploy` | Users listed in `BOT_OWNER_USER_IDS`; administrators only when `BOT_OWNER_ALLOW_ADMINS=true` |
+| `/staffai help`, `/staffai status`, `/staffai ask`, `/staffai search`, `/staffai summarize` | Roles listed in `STAFF_AI_ALLOWED_ROLE_IDS` or users listed in `BOT_OWNER_USER_IDS` |
+| `/context help`, `/context status`, `/context search`, `/context summarize`, `/context timeline`, `/context user`, `/context channel` | Roles listed in `MESSAGE_CONTEXT_ALLOWED_ROLE_IDS` or users listed in `BOT_OWNER_USER_IDS` |
 | ModAI commands and context menus | Administrators or roles listed in `MODAI_ALLOWED_ROLE_IDS` |
 | Staff-note commands | Administrators or roles listed in `STAFF_NOTES_ALLOWED_ROLE_IDS` |
 | `/staffnote delete` | Administrators only |
@@ -63,6 +65,11 @@ feature effectively administrator-only. This does not apply to `/ask` or the
   without Gemini.
 - `/ask <question>` — Answers from public guidance with private follow-up
   buttons.
+- `/staffai help`, `/staffai status`, `/staffai ask`, `/staffai search`,
+  `/staffai summarize` — Private imported and live staff-channel context tools.
+- `/context help`, `/context status`, `/context search`, `/context summarize`,
+  `/context timeline`, `/context user`, `/context channel` — Private
+  full-server message archive, search, and timeline tools.
 - `/vcrewards audit` — Runs a private, read-only VCXP safety audit.
 
 ### `/bot` management group
@@ -178,12 +185,71 @@ the primary model once before trying the fallback model. Provider failures are
 logged using only sanitized metadata such as stage, model, error type, code,
 and status.
 
+## Private staff-context commands
+
+`/staffai` is a separate staff-only context system backed by
+`staff_context.db`. It combines historical CSV rows (`imported_csv`) with
+allowlisted post-deployment messages (`live_discord`). Live tracking defaults
+to disabled. It does not use or modify the historical activity importer or
+activity-statistics tables. Full setup, Message Content Intent, import,
+privacy, and operational instructions are in
+[docs/staff-context.md](docs/staff-context.md).
+
+- `/staffai help` — Private command and Message Content Intent guidance.
+- `/staffai status` — Private tracking, intent, database, source-count, latest
+  message, and FTS status.
+- `/staffai ask <question>` — Locally retrieves relevant imported staff
+  and live messages, sends only capped relevant excerpts to Gemini, and
+  returns a private answer with channel/date/source references.
+- `/staffai search <query> [source] [channel_name] [after] [before]` —
+  Deterministic local keyword search with date, author, channel, source, and
+  short excerpts.
+- `/staffai summarize [channel_name] [after] [before] [topic] [source]` —
+  Summarizes a scoped channel, ISO date range, topic, source, or combination.
+  At least one channel/date/topic scope is required.
+
+All responses are ephemeral. Access requires a role in
+`STAFF_AI_ALLOWED_ROLE_IDS` or a user ID in `BOT_OWNER_USER_IDS`;
+administrator permission alone does not grant access. Public `/ask` never
+opens or searches `staff_context.db`.
+
+## Full-server message context commands
+
+`/context` is a separate, disabled-by-default staff moderation archive backed
+by `message_context.db`. When enabled, an empty channel include list tracks all
+visible guild text, thread, and forum-post messages except explicitly excluded
+channels. A populated include list restricts capture to those channels and
+their threads. It never writes to or reads from the count-only activity stats
+tables, and public `/ask` never uses it.
+
+- `/context help` — Private command and capture-boundary guidance.
+- `/context status` — Tracking mode, intent observation, database/source/date
+  coverage, FTS, retention, edit tracking, and delete tracking.
+- `/context search <query> [channel] [user] [after] [before] [source] [limit]`
+  — Deterministic local search with brief excerpts and jump links.
+- `/context summarize <after> [before] [channel] [topic] [style]
+  [include_links]` — Chunked Gemini summary of a bounded scope.
+- `/context timeline <after> [before] [channel] [topic] [granularity]` —
+  Chronological staff narrative.
+- `/context user <user> [after] [before] [channel] [summarize]` — Neutral
+  member participation review.
+- `/context channel <channel> [after] [before] [summarize]` — Channel recap.
+
+Access requires `MESSAGE_CONTEXT_ALLOWED_ROLE_IDS` or `BOT_OWNER_USER_IDS`.
+All replies are ephemeral. Full privacy, Message Content Intent, retention,
+configuration, import, and test instructions are in
+[docs/message-context.md](docs/message-context.md).
+
 ## ModAI commands
 
 All ModAI responses are private unless an authorized staff member deliberately
 uses the **Send Rule Reminder** button. ModAI provides guidance only. It does
 not warn, timeout, kick, ban, delete messages, or otherwise moderate members
 automatically.
+
+Private ModAI knowledge includes the public Rules and Survival Guide plus the
+staff-only `data/staff_knowledge/rangers_handbook.md`. The Ranger's Handbook is
+not loaded by public `/ask`.
 
 ### `/modai check <text>`
 
@@ -199,8 +265,8 @@ whether more context is needed.
 
 ### `/modai rulesearch <query>`
 
-Performs a local keyword search of the Bro Eden rules and survival guide. This
-does not call Gemini.
+Performs a local keyword search of the Bro Eden rules, survival guide, and
+staff-only Ranger's Handbook. This does not call Gemini.
 
 - `query` — A word or short topic to find, such as `unsolicited DMs`,
   `self-promo`, or `politics`.
@@ -1003,7 +1069,7 @@ Create a `.env` file in the project root. Do not commit it.
 | `DISCORD_TOKEN` | Discord bot token. Required. |
 | `BOT_OWNER_USER_IDS` | Comma-separated Discord user IDs allowed to use `/bot` commands. |
 | `BOT_OWNER_ALLOW_ADMINS` | Allows server administrators to use `/bot` when `true`. Defaults to `false`. |
-| `GEMINI_API_KEY` | Gemini API key used by `/ask` and ModAI. |
+| `GEMINI_API_KEY` | Gemini API key used by `/ask`, `/staffai`, `/context`, and ModAI. |
 | `ASK_MODEL` | Optional primary Gemini model for `/ask`; falls back to `MODAI_MODEL`. |
 | `ASK_FALLBACK_MODEL` | Optional fallback Gemini model for `/ask`; falls back to `MODAI_FALLBACK_MODEL`. |
 | `ASK_ALLOWED_CHANNEL_IDS` | Optional comma- or space-separated channel IDs where `/ask` may be used. Blank allows all channels. |
@@ -1011,6 +1077,24 @@ Create a `.env` file in the project root. Do not commit it.
 | `MODAI_MODEL` | Primary Gemini model. |
 | `MODAI_FALLBACK_MODEL` | Model tried after retryable primary-model failures. |
 | `MODAI_ALLOWED_ROLE_IDS` | Comma-separated Discord role IDs allowed to use ModAI. |
+| `STAFF_AI_ALLOWED_ROLE_IDS` | Comma-separated Discord role IDs allowed to use private `/staffai` commands. Bot owners are also allowed. |
+| `STAFF_AI_MODEL` | Optional primary Gemini model for `/staffai`; falls back to `MODAI_MODEL`. |
+| `STAFF_AI_FALLBACK_MODEL` | Optional fallback Gemini model for `/staffai`; falls back to `MODAI_FALLBACK_MODEL`. |
+| `STAFF_CONTEXT_ENABLED` | Enables allowlisted live staff-message capture when `true`. Defaults to `false`. |
+| `STAFF_CONTEXT_CHANNEL_IDS` | Comma- or space-separated staff channel IDs allowed for live capture. |
+| `STAFF_CONTEXT_DB_PATH` | Optional staff-context database path. Defaults to `staff_context.db`. |
+| `STAFF_CONTEXT_TRACK_DELETES` | Marks stored live messages deleted when Discord reports deletion. Defaults to `true`. |
+| `MESSAGE_CONTEXT_ENABLED` | Enables full-server live message-content capture when `true`. Defaults to `false`. |
+| `MESSAGE_CONTEXT_CHANNEL_IDS` | Optional included channel/parent IDs. Blank tracks all visible guild channels except exclusions. |
+| `MESSAGE_CONTEXT_EXCLUDED_CHANNEL_IDS` | Channel/parent IDs that must never be captured. |
+| `MESSAGE_CONTEXT_ALLOWED_ROLE_IDS` | Staff role IDs allowed to use `/context`. Bot owners are also allowed. |
+| `MESSAGE_CONTEXT_DB_PATH` | Optional archive path. Defaults to `message_context.db`. |
+| `MESSAGE_CONTEXT_TRACK_DELETES` | Marks captured messages deleted when Discord reports deletion. Defaults to `true`. |
+| `MESSAGE_CONTEXT_TRACK_EDITS` | Updates captured rows to the latest message content. Defaults to `true`. |
+| `MESSAGE_CONTEXT_IGNORE_BOTS` | Ignores bot-authored messages. Defaults to `true`. |
+| `MESSAGE_CONTEXT_RETENTION_DAYS` | Optional positive retention period. Blank retains indefinitely. |
+| `MESSAGE_CONTEXT_MODEL` | Optional primary Gemini model for `/context`; falls back to `MODAI_MODEL`. |
+| `MESSAGE_CONTEXT_FALLBACK_MODEL` | Optional fallback Gemini model for `/context`; falls back to `MODAI_FALLBACK_MODEL`. |
 | `STAFF_NOTES_ALLOWED_ROLE_IDS` | Comma-separated Discord role IDs allowed to use staff notes. |
 | `VCSTATS_ALLOWED_ROLE_IDS` | Comma-separated Discord role IDs allowed to use VC stats and reward previews. |
 | `VCREWARDS_ALLOWED_ROLE_IDS` | Optional role IDs allowed to use `/vcrewards audit`. Falls back to `VCSTATS_ALLOWED_ROLE_IDS`. |

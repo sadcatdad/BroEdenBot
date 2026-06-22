@@ -23,6 +23,7 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 intents = discord.Intents.all()
+intents.message_content = True
 
 
 class BroEdenCommandTree(app_commands.CommandTree):

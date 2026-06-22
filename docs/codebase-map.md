@@ -11,6 +11,10 @@ maintenance.
 - `data.db` — Stats, queues, polls, staff notes, moderation metadata, and VC
   tracking.
 - `brobank.db` — Separate bank ledger and public-summary settings.
+- `staff_context.db` — Separate private staff-channel message context used only
+  by `/staffai`.
+- `message_context.db` — Separate full-server staff message archive used only
+  by `/context`.
 
 ## Member-facing tools
 
@@ -26,6 +30,10 @@ maintenance.
 - `cogs/bot_admin.py` — Owner-only private status, logs, restart, and deploy
   controls. Historical imports remain terminal-only.
 - `cogs/mod_ai.py` — Private Gemini-assisted moderation guidance.
+- `cogs/staff_ai.py` — Role/owner-restricted historical/live staff-context
+  capture, status, search, questions, and scoped summaries.
+- `cogs/message_context.py` — Disabled-by-default full-server content capture,
+  staff-only search, summaries, user/channel reviews, and timelines.
 - `cogs/staff_notes.py` — Manual private staff records.
 - `cogs/stats.py` — Live/imported activity reports and roster graphics.
 - `cogs/vc_stats.py` — Voice-session tracking and VC XP accounting.
@@ -33,12 +41,23 @@ maintenance.
 ## Shared helpers
 
 - `utils/ui.py` — Brand colors, status embeds, progress bars, and truncation.
-- `utils/knowledge.py` — Cached public rules and guide search.
+- `utils/knowledge.py` — Separate cached public and private-staff knowledge
+  loaders and search.
+- `data/staff_knowledge/rangers_handbook.md` — Private Ranger operations and
+  moderation guidance used by staff-facing AI only.
 - `utils/member_filter.py` — Current-member filtering safeguards.
 - `utils/compact_roster.py` — Multi-page roster image rendering.
 - `utils/stats_reports.py` — Analytics PNG cards.
 - `scripts/import_discord_history.py` — Streaming metadata-only history import,
   dedupe, batching, and optional archiving.
+- `scripts/import_staff_context.py` — Separate streaming CSV importer for
+  private staff message context. It never writes activity-statistics tables.
+- `utils/staff_context.py` — Staff-context schema, dedupe, date, redaction, and
+  source-reference helpers.
+- `scripts/import_message_context.py` — Streaming DiscordChatExporter CSV
+  importer for the separate full-server archive.
+- `utils/message_context.py` — Archive schema, FTS, access, date, retention,
+  channel inference, and deterministic import-ID helpers.
 
 ## Interaction design
 
@@ -53,7 +72,9 @@ maintenance.
 ## Reliability boundaries
 
 - Message content is not stored by `/ask`, ModAI review metadata, or historical
-  activity imports.
+  activity imports. `staff_context.db` and `message_context.db` are separate
+  private archives with separate restricted command groups. Public `/ask`
+  opens neither database.
 - Poll options are JSON-encoded. Legacy Python-list rows are read with
   `ast.literal_eval`, never `eval`.
 - Network image downloads use timeouts and visual fallbacks.

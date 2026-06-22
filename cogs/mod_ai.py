@@ -1651,7 +1651,7 @@ the final decision. Do not quote sensitive notes unless strictly necessary.
 
     @modai.command(
         name="rulesearch",
-        description="Search Bro Eden rules and survival-guide knowledge",
+        description="Search private Bro Eden rules and staff knowledge",
     )
     @app_commands.describe(query="Words or topic to search for")
     @app_commands.guild_only()
@@ -1666,7 +1666,7 @@ the final decision. Do not quote sensitive notes unless strictly necessary.
         results = search_knowledge(query)
         if not results:
             await interaction.response.send_message(
-                "No matching Bro Eden rule or survival-guide sections were found.",
+                "No matching Bro Eden rule, guide, or staff-handbook sections were found.",
                 ephemeral=True,
             )
             return
@@ -1683,7 +1683,7 @@ the final decision. Do not quote sensitive notes unless strictly necessary.
                 inline=False,
             )
         embed.set_footer(
-            text="Local keyword search only. Staff should check the full rules when needed."
+            text="Private local search. Confirm high-impact decisions with current guidance."
         )
         await interaction.response.send_message(embed=embed, ephemeral=True)
 

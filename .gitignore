@@ -11,6 +11,10 @@ __pycache__/
 /imports/*
 !/imports/README.md
 /imports/discord_history/
+/imports/staff_context/
+/imports/message_context/
+/exports/staff_context/
+/exports/message_context/
 /imports/discord_history/archive/
 /imports/broken_exports/
 /exports/
@@ -22,3 +26,5 @@ __pycache__/
 !/data/channel_categories.json
 *.csv
 *.zip
+staff_context.db
+message_context.db
