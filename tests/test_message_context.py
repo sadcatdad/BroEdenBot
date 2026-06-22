@@ -19,6 +19,8 @@ from utils.message_context import (
     has_message_context_access,
     parse_date_boundary,
     parse_retention_days,
+    safe_discord_jump_url,
+    safe_excerpt,
 )
 
 
@@ -47,6 +49,18 @@ class MessageContextHelperTests(unittest.TestCase):
         second = deterministic_import_id("chat.csv", 2, "123", "abc")
         self.assertEqual(first, second)
         self.assertTrue(first.startswith("imported_csv:chat.csv:2::123:"))
+
+    def test_sensitive_text_and_untrusted_jump_links_are_sanitized(self):
+        excerpt = safe_excerpt(
+            "GEMINI_API_KEY=do-not-store Authorization: Bearer secret"
+        )
+        self.assertNotIn("do-not-store", excerpt)
+        self.assertNotIn("Bearer secret", excerpt)
+        self.assertEqual(
+            safe_discord_jump_url("https://discord.com/channels/1/2/3"),
+            "https://discord.com/channels/1/2/3",
+        )
+        self.assertIsNone(safe_discord_jump_url("https://example.com/phish"))
 
 
 class MessageContextImporterTests(unittest.TestCase):
@@ -123,6 +137,43 @@ class MessageContextImporterTests(unittest.TestCase):
                 2,
             ))
             self.assertIsNotNone(row[7])
+            connection.close()
+
+    def test_import_redacts_obvious_credentials(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            source = root / "general.csv"
+            with source.open("w", encoding="utf-8", newline="") as handle:
+                writer = csv.DictWriter(
+                    handle,
+                    fieldnames=[
+                        "AuthorID",
+                        "Author",
+                        "Date",
+                        "Content",
+                        "Attachments",
+                        "Reactions",
+                    ],
+                )
+                writer.writeheader()
+                writer.writerow(
+                    {
+                        "AuthorID": "123",
+                        "Author": "Alice",
+                        "Date": "2026-06-21 20:00:00",
+                        "Content": "TOKEN=do-not-store",
+                        "Attachments": "",
+                        "Reactions": "",
+                    }
+                )
+            connection = sqlite3.connect(root / "context.db")
+            ensure_schema(connection)
+            process_file(connection, source, self._args(root))
+            content = connection.execute(
+                "SELECT content FROM message_context_messages"
+            ).fetchone()[0]
+            self.assertNotIn("do-not-store", content)
+            self.assertIn("[REDACTED]", content)
             connection.close()
 
     def test_dry_run_does_not_need_a_database(self):
@@ -245,6 +296,22 @@ class MessageContextLiveTrackingTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertEqual((await cursor.fetchone())[0], 0)
         await cursor.close()
+
+    async def test_live_messages_redact_obvious_credentials(self):
+        cog = await self._cog()
+        await cog.on_message(
+            self.FakeMessage(
+                self.channel,
+                content="PASSWORD=do-not-store",
+            )
+        )
+        cursor = await cog.db.execute(
+            "SELECT content FROM message_context_messages"
+        )
+        content = (await cursor.fetchone())[0]
+        await cursor.close()
+        self.assertNotIn("do-not-store", content)
+        self.assertIn("[REDACTED]", content)
 
 
 if __name__ == "__main__":

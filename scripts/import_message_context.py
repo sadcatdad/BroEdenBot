@@ -28,6 +28,7 @@ from utils.message_context import (
     deterministic_import_id,
     infer_channel,
     parse_timestamp,
+    redact_sensitive_text,
     safe_excerpt,
     utcnow_iso,
 )
@@ -307,7 +308,7 @@ def process_file(
             author_id = _value(row, mapping, "author_id")
             author = _value(row, mapping, "author")
             timestamp = parse_timestamp(_value(row, mapping, "date"))
-            content = _value(row, mapping, "content")
+            content = redact_sensitive_text(_value(row, mapping, "content"))
             attachment_names = _attachment_names(
                 _value(row, mapping, "attachments")
             )

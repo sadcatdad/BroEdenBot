@@ -53,6 +53,11 @@ MESSAGE_CONTEXT_RETENTION_DAYS=
 - Leave `MESSAGE_CONTEXT_RETENTION_DAYS` empty for indefinite retention. A
   positive number enables daily pruning of older rows.
 
+New live and CSV-imported content has obvious token, password, API-key, secret,
+and bearer-authorization patterns redacted before storage. Retrieval applies
+the filter again for older rows. Untrusted non-Discord URLs are not rendered as
+jump links or supplied to Gemini as source links.
+
 Optional Gemini model overrides are `MESSAGE_CONTEXT_MODEL` and
 `MESSAGE_CONTEXT_FALLBACK_MODEL`. Otherwise the archive uses the configured
 ModAI models and then its built-in defaults.

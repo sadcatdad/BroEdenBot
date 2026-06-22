@@ -3,6 +3,7 @@ import csv
 import datetime
 import io
 import json
+import logging
 import os
 from collections import defaultdict
 from pathlib import Path
@@ -48,6 +49,7 @@ ACTIVITY_GRAPHIC_REPORTS = {"channels", "quiet", "members", "vc"}
 CHANNEL_CATEGORIES_PATH = (
     Path(__file__).resolve().parent.parent / "data" / "channel_categories.json"
 )
+logger = logging.getLogger(__name__)
 
 
 def load_channel_categories() -> Dict[str, dict]:
@@ -2104,6 +2106,12 @@ class Stats(commands.Cog):
                 await self._refresh_row(row)
         except asyncio.CancelledError:
             raise
+        except Exception:
+            logger.exception(
+                "Debounced role-stat refresh failed guild=%s role=%s",
+                guild_id,
+                role_id,
+            )
         finally:
             current_task = asyncio.current_task()
             if self._refresh_tasks.get(key) is current_task:
@@ -2122,6 +2130,12 @@ class Stats(commands.Cog):
                 await self._refresh_report_row(row)
         except asyncio.CancelledError:
             raise
+        except Exception:
+            logger.exception(
+                "Debounced stats report refresh failed guild=%s report=%s",
+                guild_id,
+                report_id,
+            )
         finally:
             current_task = asyncio.current_task()
             if self._refresh_tasks.get(key) is current_task:
@@ -3266,20 +3280,28 @@ class Stats(commands.Cog):
 
     @tasks.loop(time=datetime.time(hour=12, minute=0, tzinfo=datetime.timezone.utc))
     async def daily_stats_refresh(self) -> None:
-        refresh_groups = (
-            (await self._tracked_rows(), self._refresh_row),
-            (await self._tracked_report_rows(), self._refresh_report_row),
-            (
-                await self._tracked_activity_rows(),
-                self._refresh_activity_report_row,
-            ),
-        )
+        try:
+            refresh_groups = (
+                (await self._tracked_rows(), self._refresh_row),
+                (await self._tracked_report_rows(), self._refresh_report_row),
+                (
+                    await self._tracked_activity_rows(),
+                    self._refresh_activity_report_row,
+                ),
+            )
+        except Exception:
+            logger.exception("Could not load tracked reports for daily refresh")
+            return
         for rows, refresher in refresh_groups:
             for row in rows:
                 try:
                     await refresher(row)
                 except Exception:
-                    pass
+                    logger.exception(
+                        "Daily stats refresh failed refresher=%s row_id=%s",
+                        getattr(refresher, "__name__", type(refresher).__name__),
+                        row[0] if row else "unknown",
+                    )
                 await asyncio.sleep(0.25)
 
     @daily_stats_refresh.before_loop

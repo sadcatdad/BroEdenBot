@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Iterable, Optional
 
 from utils.import_helpers import infer_export_channel
+from utils.privacy import redact_sensitive_text
 
 
 UTC = dt.timezone.utc
@@ -234,10 +235,20 @@ def fts_query(value: str) -> str:
 
 
 def safe_excerpt(value: object, limit: int = 240) -> str:
-    text = re.sub(r"\s+", " ", str(value or "")).strip()
+    text = re.sub(r"\s+", " ", redact_sensitive_text(value)).strip()
     if len(text) <= limit:
         return text
     return text[: limit - 1].rstrip() + "…"
+
+
+def safe_discord_jump_url(value: object) -> Optional[str]:
+    text = str(value or "").strip()
+    allowed_prefixes = (
+        "https://discord.com/channels/",
+        "https://ptb.discord.com/channels/",
+        "https://canary.discord.com/channels/",
+    )
+    return text if text.startswith(allowed_prefixes) else None
 
 
 def infer_channel(path: Path) -> tuple[Optional[str], str]:

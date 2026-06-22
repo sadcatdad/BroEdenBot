@@ -2,6 +2,8 @@ import unittest
 from os import environ
 from unittest.mock import patch
 
+import aiosqlite
+
 from cogs.bot_admin import is_bot_manager, parse_user_ids, sanitize_logs
 from cogs.leaderboards import normalize_leaderboard_name, parse_points
 from cogs.poll import (
@@ -11,6 +13,7 @@ from cogs.poll import (
     serialize_options,
 )
 from utils.ui import progress_bar, truncate
+from utils.sqlite import configure_connection
 
 
 class PollHelperTests(unittest.TestCase):
@@ -103,6 +106,28 @@ class BotAdminHelperTests(unittest.TestCase):
         self.assertNotIn("/srv/main.py", sanitized)
         self.assertIn("[REDACTED]", sanitized)
         self.assertIn("[traceback detail omitted]", sanitized)
+
+
+class SQLiteHelperTests(unittest.IsolatedAsyncioTestCase):
+    async def test_connection_configuration(self):
+        connection = await aiosqlite.connect(":memory:")
+        try:
+            mode = await configure_connection(
+                connection,
+                foreign_keys=True,
+            )
+            cursor = await connection.execute("PRAGMA foreign_keys")
+            foreign_keys = (await cursor.fetchone())[0]
+            await cursor.close()
+            cursor = await connection.execute("PRAGMA busy_timeout")
+            timeout = (await cursor.fetchone())[0]
+            await cursor.close()
+        finally:
+            await connection.close()
+
+        self.assertIn(mode, {"memory", "wal"})
+        self.assertEqual(foreign_keys, 1)
+        self.assertEqual(timeout, 30_000)
 
 
 if __name__ == "__main__":

@@ -308,6 +308,21 @@ class StaffContextLiveTrackingTests(unittest.IsolatedAsyncioTestCase):
         )[0]["count"]
         self.assertEqual(count, 0)
 
+    async def test_configured_parent_channel_tracks_thread_messages(self):
+        parent = self.Dummy(id=200, name="staff-chat")
+        thread = self.Dummy(id=201, name="staff-thread", parent=parent)
+        message = self.message("thread context", message_id=304)
+        message.channel = thread
+
+        await self.cog.on_message(message)
+
+        count = (
+            await self.connection.execute_fetchall(
+                "SELECT COUNT(*) AS count FROM staff_context_messages"
+            )
+        )[0]["count"]
+        self.assertEqual(count, 1)
+
     async def test_search_can_filter_imported_and_live_sources(self):
         await self.cog.on_message(self.message("shared topic", message_id=303))
         await self.connection.execute(

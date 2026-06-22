@@ -55,9 +55,17 @@ STATUS_ENV_VARS = (
     "MESSAGE_CONTEXT_TRACK_EDITS",
     "MESSAGE_CONTEXT_IGNORE_BOTS",
     "MESSAGE_CONTEXT_RETENTION_DAYS",
+    "STAFF_AI_ALLOWED_ROLE_IDS",
+    "STAFF_AI_MODEL",
+    "STAFF_AI_FALLBACK_MODEL",
+    "STAFF_CONTEXT_ENABLED",
+    "STAFF_CONTEXT_CHANNEL_IDS",
+    "STAFF_CONTEXT_DB_PATH",
+    "STAFF_CONTEXT_TRACK_DELETES",
     "STAFF_NOTES_ALLOWED_ROLE_IDS",
     "STATS_ALLOWED_ROLE_IDS",
     "VCSTATS_ALLOWED_ROLE_IDS",
+    "VCREWARDS_ALLOWED_ROLE_IDS",
     "BANK_ALLOWED_ROLE_IDS",
     "VCXP_ENABLED",
     "VCXP_TRIGGER_ROLE_ID",
@@ -495,6 +503,16 @@ class BotAdmin(commands.Cog):
             value=extension_text[:1024],
             inline=False,
         )
+        failed_extensions = getattr(self.bot, "failed_extensions", {})
+        if failed_extensions:
+            runtime.add_field(
+                name=f"Failed cogs ({len(failed_extensions)})",
+                value="\n".join(
+                    f"`{name}` — {error_type}"
+                    for name, error_type in sorted(failed_extensions.items())
+                )[:1024],
+                inline=False,
+            )
 
         storage = branded_embed(
             "💾 Storage & Imports",

@@ -1,6 +1,7 @@
 import datetime
 import math
 import os
+from pathlib import Path
 
 import aiosqlite
 import discord
@@ -8,6 +9,7 @@ from discord import app_commands
 from discord.ext import commands
 
 from config import COLOR
+from utils.sqlite import configure_connection
 from utils.ui import (
     branded_embed,
     error_embed,
@@ -17,7 +19,8 @@ from utils.ui import (
 )
 
 
-DATABASE_PATH = "brobank.db"
+PROJECT_ROOT = Path(__file__).resolve().parent.parent
+DATABASE_PATH = PROJECT_ROOT / "brobank.db"
 SUPPORTED_BY_BANK = (
     "Funds support Bro Eden events, giveaways, bots, server improvements, "
     "and new features."
@@ -52,6 +55,7 @@ class Bank(commands.Cog):
 
     async def cog_load(self):
         self.db = await aiosqlite.connect(DATABASE_PATH)
+        await configure_connection(self.db)
         await self.db.execute(
             """
             CREATE TABLE IF NOT EXISTS bank_transactions (
@@ -82,6 +86,7 @@ class Bank(commands.Cog):
     async def cog_unload(self):
         if self.db:
             await self.db.close()
+            self.db = None
 
     bank = app_commands.Group(name="bank", description="Bro Eden Bank commands")
 

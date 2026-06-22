@@ -54,6 +54,10 @@ maintenance.
   private staff message context. It never writes activity-statistics tables.
 - `utils/staff_context.py` — Staff-context schema, dedupe, date, redaction, and
   source-reference helpers.
+- `utils/privacy.py` — Shared obvious-credential redaction for private context
+  storage, display, and Gemini retrieval.
+- `utils/sqlite.py` — Shared WAL, busy-timeout, synchronization, and optional
+  foreign-key setup for async SQLite connections.
 - `scripts/import_message_context.py` — Streaming DiscordChatExporter CSV
   importer for the separate full-server archive.
 - `scripts/import_full_csv_exports.py` — Imports every full-server CSV into
@@ -70,6 +74,8 @@ maintenance.
 - Private actions return branded success, warning, or error embeds.
 - Generated content cannot ping everyone or roles by default.
 - Destructive and staff-control actions require explicit permissions.
+- Gateway intents and the generated invite use the minimum event and Discord
+  permissions required by the current feature set.
 - Persistent component IDs remain below Discord's 100-character limit and do
   not embed arbitrary member-supplied text.
 
@@ -85,8 +91,10 @@ maintenance.
 - Queue writes are serialized per channel and duplicate membership is blocked
   with a database index. The active dashboard message ID is persisted so a
   restart does not create duplicate dashboards.
-- Failed cogs are logged at startup; unhandled application-command errors get a
-  private user-safe response.
+- Failed cogs are logged and retained for `/bot status`; unhandled
+  application-command errors get a private user-safe response.
+- Shutdown unloads cogs and cancels their background work before the shared
+  SQLite connection is closed.
 
 ## Validation
 

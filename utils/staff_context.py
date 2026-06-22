@@ -8,6 +8,8 @@ import re
 from pathlib import Path
 from typing import Iterable, Optional
 
+from utils.privacy import redact_sensitive_text
+
 
 UTC = dt.timezone.utc
 STAFF_CONTEXT_TABLE_SQL = """
@@ -268,33 +270,6 @@ def short_excerpt(content: str, limit: int = 240) -> str:
     if len(compact) <= limit:
         return compact
     return compact[: limit - 1].rstrip() + "…"
-
-
-def redact_sensitive_text(value: object) -> str:
-    text = str(value or "")
-    patterns = (
-        (
-            re.compile(
-                r"(?im)\b((?:[A-Z][A-Z0-9_]*_)?"
-                r"(?:TOKEN|SECRET|PASSWORD|API_KEY))\s*=\s*([^\s,;]+)"
-            ),
-            r"\1=[REDACTED]",
-        ),
-        (
-            re.compile(r"(?i)\b(authorization\s*:\s*bearer)\s+\S+"),
-            r"\1 [REDACTED]",
-        ),
-        (
-            re.compile(
-                r"\b[A-Za-z0-9_-]{24}\.[A-Za-z0-9_-]{6}"
-                r"\.[A-Za-z0-9_-]{20,}\b"
-            ),
-            "[REDACTED TOKEN]",
-        ),
-    )
-    for pattern, replacement in patterns:
-        text = pattern.sub(replacement, text)
-    return text
 
 
 def source_label(value: object) -> str:

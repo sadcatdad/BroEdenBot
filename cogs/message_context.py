@@ -29,9 +29,12 @@ from utils.message_context import (
     parse_date_boundary,
     parse_id_set,
     parse_retention_days,
+    redact_sensitive_text,
+    safe_discord_jump_url,
     safe_excerpt,
     utcnow_iso,
 )
+from utils.sqlite import configure_connection
 from utils.ui import branded_embed
 
 
@@ -112,8 +115,7 @@ class MessageContext(commands.Cog):
         self.database_path.parent.mkdir(parents=True, exist_ok=True)
         self.db = await aiosqlite.connect(self.database_path)
         self.db.row_factory = aiosqlite.Row
-        await self.db.execute("PRAGMA journal_mode = WAL")
-        await self.db.execute("PRAGMA busy_timeout = 30000")
+        await configure_connection(self.db)
         await self.db.execute(MESSAGE_CONTEXT_TABLE_SQL)
         cursor = await self.db.execute(
             "PRAGMA table_info(message_context_messages)"
@@ -171,7 +173,11 @@ class MessageContext(commands.Cog):
 
     @tasks.loop(hours=24)
     async def retention_task(self) -> None:
-        await self._prune()
+        try:
+            await self._prune()
+        except aiosqlite.Error:
+            await self._rollback_quietly()
+            logger.exception("Message-context retention cycle failed")
 
     @retention_task.before_loop
     async def before_retention_task(self) -> None:
@@ -194,6 +200,14 @@ class MessageContext(commands.Cog):
         if removed:
             logger.info("Pruned %s expired message-context rows", removed)
         return removed
+
+    async def _rollback_quietly(self) -> None:
+        if self.db is None:
+            return
+        try:
+            await self.db.rollback()
+        except aiosqlite.Error:
+            logger.exception("Could not roll back message-context transaction")
 
     def _has_access(self, interaction: discord.Interaction) -> bool:
         role_ids = (
@@ -267,8 +281,8 @@ class MessageContext(commands.Cog):
     async def on_message(self, message: discord.Message) -> None:
         if self.db is None or not self._tracks_message(message):
             return
-        content = message.content or ""
-        if content:
+        raw_content = message.content or ""
+        if raw_content:
             self.observed_message_content = True
         elif not (message.attachments or message.embeds or message.stickers):
             self.observed_message_content = False
@@ -279,6 +293,7 @@ class MessageContext(commands.Cog):
                     "Confirm Message Content Intent is enabled in the Developer "
                     "Portal, then restart or deploy the bot."
                 )
+        content = redact_sensitive_text(raw_content)
         names = self._attachment_names(message)
         channel_data = self._channel_metadata(message)
         try:
@@ -318,6 +333,7 @@ class MessageContext(commands.Cog):
             )
             await self.db.commit()
         except aiosqlite.Error:
+            await self._rollback_quietly()
             logger.exception(
                 "Could not archive Discord message metadata message_id=%s",
                 message.id,
@@ -335,33 +351,41 @@ class MessageContext(commands.Cog):
             or not self._tracks_message(after)
         ):
             return
+        content = redact_sensitive_text(after.content or "")
         names = self._attachment_names(after)
-        await self.db.execute(
-            """
-            UPDATE message_context_messages
-            SET content = ?, content_hash = ?, edited_at = ?,
-                attachment_count = ?, attachment_names = ?, embed_count = ?,
-                sticker_count = ?, is_deleted = 0, deleted_at = NULL
-            WHERE guild_id = ? AND message_id = ? AND source = 'live_discord'
-            """,
-            (
-                after.content or "",
-                content_digest(after.content or ""),
-                (after.edited_at or discord.utils.utcnow()).isoformat(),
-                len(after.attachments),
-                json.dumps(names) if names else None,
-                len(after.embeds),
-                len(after.stickers),
-                str(after.guild.id),
-                str(after.id),
-            ),
-        )
-        await self.db.commit()
+        try:
+            await self.db.execute(
+                """
+                UPDATE message_context_messages
+                SET content = ?, content_hash = ?, edited_at = ?,
+                    attachment_count = ?, attachment_names = ?, embed_count = ?,
+                    sticker_count = ?, is_deleted = 0, deleted_at = NULL
+                WHERE guild_id = ? AND message_id = ? AND source = 'live_discord'
+                """,
+                (
+                    content,
+                    content_digest(content),
+                    (after.edited_at or discord.utils.utcnow()).isoformat(),
+                    len(after.attachments),
+                    json.dumps(names) if names else None,
+                    len(after.embeds),
+                    len(after.stickers),
+                    str(after.guild.id),
+                    str(after.id),
+                ),
+            )
+            await self.db.commit()
+        except aiosqlite.Error:
+            await self._rollback_quietly()
+            logger.exception(
+                "Could not update message-context row message_id=%s",
+                after.id,
+            )
 
     async def _mark_deleted(
         self,
         guild_id: Optional[int],
-        channel_id: int,
+        _channel_id: int,
         message_ids: list[int],
     ) -> None:
         if (
@@ -372,25 +396,28 @@ class MessageContext(commands.Cog):
             or not message_ids
         ):
             return
-        channel = self.bot.get_channel(channel_id)
-        if channel is not None and not self._tracks_channel(channel):
-            return
-        if channel is None:
-            if self.included_channel_ids and channel_id not in self.included_channel_ids:
-                return
-            if channel_id in self.excluded_channel_ids:
-                return
         placeholders = ",".join("?" for _ in message_ids)
-        await self.db.execute(
-            f"""
-            UPDATE message_context_messages
-            SET is_deleted = 1, deleted_at = COALESCE(deleted_at, ?)
-            WHERE guild_id = ? AND message_id IN ({placeholders})
-              AND source = 'live_discord'
-            """,
-            (utcnow_iso(), str(guild_id), *(str(value) for value in message_ids)),
-        )
-        await self.db.commit()
+        try:
+            await self.db.execute(
+                f"""
+                UPDATE message_context_messages
+                SET is_deleted = 1, deleted_at = COALESCE(deleted_at, ?)
+                WHERE guild_id = ? AND message_id IN ({placeholders})
+                  AND source = 'live_discord'
+                """,
+                (
+                    utcnow_iso(),
+                    str(guild_id),
+                    *(str(value) for value in message_ids),
+                ),
+            )
+            await self.db.commit()
+        except aiosqlite.Error:
+            await self._rollback_quietly()
+            logger.exception(
+                "Could not mark message-context rows deleted count=%s",
+                len(message_ids),
+            )
 
     @commands.Cog.listener()
     async def on_raw_message_delete(
@@ -546,11 +573,8 @@ class MessageContext(commands.Cog):
     @staticmethod
     def _row_text(row: aiosqlite.Row, *, include_links: bool) -> str:
         deleted = " | deleted" if row["is_deleted"] else ""
-        link = (
-            f"\nJump: {row['jump_url']}"
-            if include_links and row["jump_url"]
-            else ""
-        )
+        jump_url = safe_discord_jump_url(row["jump_url"])
+        link = f"\nJump: {jump_url}" if include_links and jump_url else ""
         return (
             f"[{row['timestamp']} | #{row['channel_name'] or row['channel_id']} | "
             f"{row['author_display_name'] or row['author_name'] or row['author_id']}"
@@ -844,6 +868,12 @@ final Source coverage section. Do not overclaim.
         except ValueError as exc:
             await interaction.response.send_message(str(exc), ephemeral=True)
             return
+        if after_value and before_value and after_value >= before_value:
+            await interaction.response.send_message(
+                "`after` must be earlier than `before`.",
+                ephemeral=True,
+            )
+            return
         await interaction.response.defer(ephemeral=True, thinking=True)
         rows = await self._search_rows(
             interaction.guild_id,
@@ -860,12 +890,26 @@ final Source coverage section. Do not overclaim.
             return
         lines = []
         for row in rows:
-            link = f" [Jump]({row['jump_url']})" if row["jump_url"] else ""
+            jump_url = safe_discord_jump_url(row["jump_url"])
+            link = f" [Jump]({jump_url})" if jump_url else ""
+            timestamp = discord.utils.escape_markdown(str(row["timestamp"]))
+            channel_name = discord.utils.escape_markdown(
+                str(row["channel_name"] or row["channel_id"])
+            )
+            author_name = discord.utils.escape_markdown(
+                str(
+                    row["author_display_name"]
+                    or row["author_name"]
+                    or row["author_id"]
+                )
+            )
+            excerpt = discord.utils.escape_markdown(
+                safe_excerpt(row["content"], 220)
+            )
+            source_name = discord.utils.escape_markdown(str(row["source"]))
             lines.append(
-                f"**{row['timestamp']} • #{row['channel_name'] or row['channel_id']} "
-                f"• {row['author_display_name'] or row['author_name'] or row['author_id']}**"
-                f"{link}\n{safe_excerpt(row['content'], 220)}\n"
-                f"`{row['source']}`"
+                f"**{timestamp} • #{channel_name} • {author_name}**"
+                f"{link}\n{excerpt}\n`{source_name}`"
             )
         await interaction.followup.send(
             embed=branded_embed(

@@ -1,7 +1,13 @@
 .env
 *.db
+*.db-shm
+*.db-wal
 *.sqlite
+*.sqlite-shm
+*.sqlite-wal
 *.sqlite3
+*.sqlite3-shm
+*.sqlite3-wal
 .venv/
 __pycache__/
 *.pyc

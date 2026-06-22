@@ -13,6 +13,7 @@ from google import genai
 from google.genai import errors, types
 
 from utils.knowledge import build_staff_knowledge_context
+from utils.sqlite import configure_connection
 from utils.staff_context import (
     STAFF_CONTEXT_FTS_SQL,
     STAFF_CONTEXT_FTS_TRIGGER_SQL,
@@ -113,7 +114,7 @@ class StaffAI(commands.Cog):
         self.database_path.parent.mkdir(parents=True, exist_ok=True)
         self.db = await aiosqlite.connect(self.database_path)
         self.db.row_factory = aiosqlite.Row
-        await self.db.execute("PRAGMA busy_timeout = 30000")
+        await configure_connection(self.db)
         await self._migrate_schema()
         await self.db.execute(STAFF_CONTEXT_TABLE_SQL)
         for statement in STAFF_CONTEXT_INDEX_SQL:
@@ -239,6 +240,14 @@ class StaffAI(commands.Cog):
         if self.db is not None:
             await self.db.close()
             self.db = None
+
+    async def _rollback_quietly(self) -> None:
+        if self.db is None:
+            return
+        try:
+            await self.db.rollback()
+        except aiosqlite.Error:
+            logger.exception("Could not roll back staff-context transaction")
 
     def _has_access(self, interaction: discord.Interaction) -> bool:
         if not interaction.guild or not isinstance(interaction.user, discord.Member):
@@ -471,11 +480,18 @@ numbers.
             footer="Private staff context • Verify decisions against official guidance",
         )
 
+    def _is_tracked_channel(self, channel: object) -> bool:
+        channel_id = getattr(channel, "id", None)
+        parent_id = getattr(getattr(channel, "parent", None), "id", None)
+        return bool(
+            {channel_id, parent_id}.intersection(self.tracked_channel_ids)
+        )
+
     def _is_tracked_message(self, message: discord.Message) -> bool:
         return bool(
             self.live_tracking_enabled
             and message.guild is not None
-            and message.channel.id in self.tracked_channel_ids
+            and self._is_tracked_channel(message.channel)
             and not message.author.bot
             and message.webhook_id is None
         )
@@ -534,6 +550,7 @@ numbers.
             )
             await self.db.commit()
         except aiosqlite.Error:
+            await self._rollback_quietly()
             logger.exception(
                 "Could not store live staff context message_id=%s",
                 message.id,
@@ -575,6 +592,7 @@ numbers.
             )
             await self.db.commit()
         except aiosqlite.Error:
+            await self._rollback_quietly()
             logger.exception(
                 "Could not update live staff context message_id=%s",
                 after.id,
@@ -583,7 +601,7 @@ numbers.
     async def _mark_deleted(
         self,
         guild_id: Optional[int],
-        channel_id: int,
+        _channel_id: int,
         message_id: int,
     ) -> None:
         if (
@@ -591,7 +609,6 @@ numbers.
             or not self.live_tracking_enabled
             or not self.track_deletes
             or guild_id is None
-            or channel_id not in self.tracked_channel_ids
         ):
             return
         try:
@@ -606,6 +623,7 @@ numbers.
             )
             await self.db.commit()
         except aiosqlite.Error:
+            await self._rollback_quietly()
             logger.exception(
                 "Could not mark staff context message deleted message_id=%s",
                 message_id,

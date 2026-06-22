@@ -53,7 +53,7 @@ STAFF_AI_ALLOWED_ROLE_IDS=
 - `STAFF_CONTEXT_ENABLED` enables live capture only when `true`. Default:
   `false`.
 - `STAFF_CONTEXT_CHANNEL_IDS` is a comma- or space-separated allowlist of
-  staff channel IDs. Only these channels are captured.
+  staff channel IDs. These channels and their threads are captured.
 - `STAFF_CONTEXT_DB_PATH` sets the private database path. Relative paths are
   resolved from the project root.
 - `STAFF_CONTEXT_TRACK_DELETES` marks stored live messages deleted when Discord

@@ -88,7 +88,8 @@ BOT_OWNER_ALLOW_ADMINS=false
 - `/bot status` reports runtime, systemd, Git, loaded cogs, SQLite files,
   historical import metadata, active/archive import-folder counts,
   configured-or-missing environment status, and VCXP role safety. It never
-  displays environment values or secrets.
+  displays environment values or secrets. Startup cog failures are listed by
+  filename and exception type without exposing stack traces.
 - `/bot logs [lines]` reads 50 recent service lines by default and accepts up
   to 200. Obvious credentials and traceback details are removed. Longer output
   is attached as a private text file.
@@ -200,6 +201,10 @@ activity-statistics tables. Full setup, Message Content Intent, import,
 privacy, and operational instructions are in
 [docs/staff-context.md](docs/staff-context.md).
 
+Configured parent channels also include their Discord threads. Live and
+imported text passes through shared obvious-credential redaction before it is
+stored or sent to Gemini.
+
 - `/staffai help` — Private command and Message Content Intent guidance.
 - `/staffai status` — Private tracking, intent, database, source-count, latest
   message, and FTS status.
@@ -226,6 +231,11 @@ visible guild text, thread, and forum-post messages except explicitly excluded
 channels. A populated include list restricts capture to those channels and
 their threads. It never writes to or reads from the count-only activity stats
 tables, and public `/ask` never uses it.
+
+Obvious token, API-key, password, secret, and bearer-authorization patterns are
+redacted before new live or CSV content is stored. The same redaction runs
+again when older rows are displayed or supplied to Gemini. Search output
+Markdown is escaped, and only Discord message URLs become jump links.
 
 - `/context help` — Private command and capture-boundary guidance.
 - `/context status` — Tracking mode, intent observation, database/source/date
@@ -1137,9 +1147,12 @@ source .venv/bin/activate
 .venv/bin/python main.py
 ```
 
-The bot enables voice-state and member intents in code. Enable **Server Members
-Intent** for the bot in the Discord Developer Portal so startup VC scans and
-member information work correctly.
+The bot requests only guild, guild-message, voice-state, member, and message-
+content gateway events. Enable **Server Members Intent** and **Message Content
+Intent** in the Discord Developer Portal so VC/member tracking, legacy queue
+commands, and the explicitly enabled private context archives work correctly.
+Presence, typing, invite, integration, webhook, and other unrelated intents are
+not requested.
 
 To test `/ask` in Discord after startup:
 

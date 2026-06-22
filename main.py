@@ -2,7 +2,6 @@ import datetime
 import logging
 import os
 from pathlib import Path
-import traceback
 
 import aiosqlite
 import discord
@@ -10,6 +9,7 @@ from discord import app_commands
 from discord.ext import commands
 
 from config import COLOR, TOKEN
+from utils.sqlite import configure_connection
 from utils.ui import error_embed
 
 
@@ -22,8 +22,12 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-intents = discord.Intents.all()
+intents = discord.Intents.none()
+intents.guilds = True
+intents.members = True
+intents.guild_messages = True
 intents.message_content = True
+intents.voice_states = True
 
 
 class BroEdenCommandTree(app_commands.CommandTree):
@@ -67,6 +71,7 @@ class BotClient(commands.Bot):
         )
         self.db = None
         self._ready_logged = False
+        self.failed_extensions: dict[str, str] = {}
 
     async def setup_hook(self):
         await self.load_data()
@@ -84,13 +89,21 @@ class BotClient(commands.Bot):
         except discord.HTTPException:
             logger.warning("Could not update bot presence")
         logger.info("%s is ready in %s guild(s)", self.user, len(self.guilds))
-        permissions = discord.Permissions(administrator=True)
+        permissions = discord.Permissions(
+            view_channel=True,
+            send_messages=True,
+            send_messages_in_threads=True,
+            embed_links=True,
+            attach_files=True,
+            read_message_history=True,
+            manage_roles=True,
+        )
         scopes = ["bot", "applications.commands"]
         invite_url = discord.utils.oauth_url(self.user.id, permissions=permissions, scopes=scopes)
         logger.info("Invite URL: %s", invite_url)
 
     async def load_all_cogs(self):
-        failures = []
+        self.failed_extensions.clear()
         for filename in sorted(os.listdir("cogs")):
             if filename.endswith(".py") and not filename.startswith("_"):
                 try:
@@ -98,26 +111,36 @@ class BotClient(commands.Bot):
                     await self.load_extension(extension)
                     logger.info("Loaded extension: %s", extension)
                 except Exception as exc:
-                    failures.append(filename)
-                    traceback.print_exception(exc)
-                    logger.error(
-                        "Failed to load extension %s: %s",
+                    self.failed_extensions[filename] = type(exc).__name__
+                    logger.exception(
+                        "Failed to load extension %s",
                         filename,
-                        type(exc).__name__,
                     )
-        if failures:
-            logger.warning("Bot started with failed cogs: %s", ", ".join(failures))
+        if self.failed_extensions:
+            logger.warning(
+                "Bot started with failed cogs: %s",
+                ", ".join(sorted(self.failed_extensions)),
+            )
 
     async def load_data(self):
         self.db = await aiosqlite.connect(PROJECT_ROOT / "data.db")
-        await self.db.execute("PRAGMA foreign_keys = ON")
-        await self.db.execute("PRAGMA busy_timeout = 30000")
+        journal_mode = await configure_connection(
+            self.db,
+            foreign_keys=True,
+        )
+        if journal_mode != "wal":
+            logger.warning(
+                "Shared database journal mode is %s instead of WAL",
+                journal_mode,
+            )
 
     async def close(self):
-        if self.db is not None:
-            await self.db.close()
-            self.db = None
-        await super().close()
+        try:
+            await super().close()
+        finally:
+            if self.db is not None:
+                await self.db.close()
+                self.db = None
 
     def get_embed(self):
         embed = discord.Embed(color=COLOR)
