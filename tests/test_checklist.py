@@ -1,0 +1,88 @@
+import os
+import unittest
+from unittest.mock import patch
+
+import aiosqlite
+
+os.environ.setdefault("DISCORD_TOKEN", "test-token")
+
+from cogs.checklist import ChecklistCog, parse_id_set
+
+
+class DummyBot:
+    def __init__(self, database):
+        self.db = database
+
+
+class ChecklistHelperTests(unittest.TestCase):
+    def test_id_parser_ignores_invalid_and_nonpositive_values(self):
+        self.assertEqual(parse_id_set("12, nope 34 -1 0"), {12, 34})
+
+
+class ChecklistDatabaseTests(unittest.IsolatedAsyncioTestCase):
+    async def asyncSetUp(self):
+        self.database = await aiosqlite.connect(":memory:")
+        with patch.dict(
+            os.environ,
+            {
+                "CHECKLIST_ALLOWED_ROLE_IDS": "10,20",
+                "BOT_OWNER_USER_IDS": "30",
+            },
+            clear=False,
+        ):
+            self.cog = ChecklistCog(DummyBot(self.database))
+        await self.cog.cog_load()
+
+    async def asyncTearDown(self):
+        await self.database.close()
+
+    async def test_schema_and_rendering_preserve_backend_state(self):
+        now = "2026-06-22T17:30:00+00:00"
+        cursor = await self.database.execute(
+            """
+            INSERT INTO checklists (
+                guild_id, name, description, created_by_user_id,
+                created_by_name, created_at, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?)
+            """,
+            ("1", "Event Prep", "Internal tasks", "30", "Owner", now, now),
+        )
+        checklist_id = cursor.lastrowid
+        await cursor.close()
+        await self.database.executemany(
+            """
+            INSERT INTO checklist_items (
+                checklist_id, content, status, position,
+                created_at, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?)
+            """,
+            [
+                (checklist_id, "Book venue", "complete", 1, now, now),
+                (checklist_id, "@everyone bring snacks", "open", 2, now, now),
+            ],
+        )
+        await self.database.commit()
+
+        embed = await self.cog.render_checklist(checklist_id)
+        self.assertEqual(embed.title, "Checklist: Event Prep")
+        self.assertIn("1/2 complete", embed.fields[0].value)
+        self.assertIn("☑ ~~Book venue~~", embed.fields[1].value)
+        self.assertIn("☐ @everyone bring snacks", embed.fields[1].value)
+        self.assertLessEqual(len(embed.fields[1].value), 1_024)
+
+        await self.cog.soft_delete_checklist(checklist_id, 30)
+        row = await self.cog.fetch_one(
+            "SELECT status, deleted_by_user_id FROM checklists WHERE id = ?",
+            (checklist_id,),
+        )
+        items = await self.cog.fetch_all(
+            "SELECT status FROM checklist_items WHERE checklist_id = ?",
+            (checklist_id,),
+        )
+        self.assertEqual(row["status"], "deleted")
+        self.assertEqual(row["deleted_by_user_id"], "30")
+        self.assertEqual({item["status"] for item in items}, {"deleted"})
+
+
+if __name__ == "__main__":
+    unittest.main()

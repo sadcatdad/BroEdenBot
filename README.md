@@ -26,6 +26,7 @@ For a module-by-module architecture and reliability map, see
 | `/bot help`, `/bot status`, `/bot logs`, `/bot restart`, `/bot deploy` | Users listed in `BOT_OWNER_USER_IDS`; administrators only when `BOT_OWNER_ALLOW_ADMINS=true` |
 | `/staffai help`, `/staffai status`, `/staffai ask`, `/staffai search`, `/staffai summarize` | Roles listed in `STAFF_AI_ALLOWED_ROLE_IDS` or users listed in `BOT_OWNER_USER_IDS` |
 | `/context help`, `/context status`, `/context search`, `/context summarize`, `/context timeline`, `/context user`, `/context channel` | Roles listed in `MESSAGE_CONTEXT_ALLOWED_ROLE_IDS` or users listed in `BOT_OWNER_USER_IDS` |
+| `/checklist` commands and management controls | Roles listed in `CHECKLIST_ALLOWED_ROLE_IDS` or users listed in `BOT_OWNER_USER_IDS` |
 | ModAI commands and context menus | Administrators or roles listed in `MODAI_ALLOWED_ROLE_IDS` |
 | Staff-note commands | Administrators or roles listed in `STAFF_NOTES_ALLOWED_ROLE_IDS` |
 | `/staffnote delete` | Administrators only |
@@ -45,7 +46,36 @@ For a module-by-module architecture and reliability map, see
 
 For staff-restricted features, an empty role-ID environment variable makes the
 feature effectively administrator-only. This does not apply to `/ask` or the
-`/bot` group. Bot management is owner-only by default.
+`/bot` or `/checklist` groups. Bot management and checklist management are
+owner-only by default when their broader access settings are blank.
+
+## Internal checklist commands
+
+Persistent staff checklists live in `data.db`; posted Discord messages are
+synchronized copies rather than the source of truth. All management responses
+and controls are private. Posted checklist embeds are visible in their channels.
+
+- `/checklist create <name> [description] [post_channel]` — Create a checklist,
+  optionally post it immediately, and open its management panel.
+- `/checklist view [checklist]` — Open an active or archived checklist panel, or
+  choose an active checklist when no input is supplied.
+- `/checklist list [status]` — List active, archived, or deleted checklists with
+  progress and post counts. `status` defaults to `active`.
+- `/checklist post <checklist> <channel> [update_existing]` — Post a synchronized
+  copy; optionally update an existing active copy in that channel.
+- `/checklist delete [checklist]` — Confirm a soft deletion and attempt to remove
+  all active Discord copies.
+- `/checklist rename <checklist> <new_name> [description]` — Rename the
+  checklist and optionally replace its description.
+- `/checklist archive <checklist> [delete_posts]` — Archive it, retaining and
+  updating posts by default.
+- `/checklist restore <checklist>` — Restore an archived checklist.
+- `/checklist export <checklist>` — Privately export all checklist items as CSV.
+
+The panel supports adding, toggling, and soft-deleting items, renaming, posting,
+archiving/restoring, and refreshing. See
+[docs/checklists.md](docs/checklists.md) for storage, synchronization, deletion,
+permission, and Discord-limit details.
 
 ## Bot management and analytics commands
 
@@ -1117,6 +1147,7 @@ Create a `.env` file in the project root. Do not commit it.
 | `DISCORD_TOKEN` | Discord bot token. Required. |
 | `BOT_OWNER_USER_IDS` | Comma-separated Discord user IDs allowed to use `/bot` commands. |
 | `BOT_OWNER_ALLOW_ADMINS` | Allows server administrators to use `/bot` when `true`. Defaults to `false`. |
+| `CHECKLIST_ALLOWED_ROLE_IDS` | Comma-separated Discord role IDs allowed to use `/checklist`; bot owners are also allowed. Blank makes checklist management owner-only. |
 | `GEMINI_API_KEY` | Gemini API key used by `/ask`, `/staffai`, `/context`, and ModAI. |
 | `ASK_MODEL` | Optional primary Gemini model for `/ask`; falls back to `MODAI_MODEL`. |
 | `ASK_FALLBACK_MODEL` | Optional fallback Gemini model for `/ask`; falls back to `MODAI_FALLBACK_MODEL`. |
