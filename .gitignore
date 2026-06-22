@@ -19,8 +19,10 @@ __pycache__/
 /imports/discord_history/
 /imports/staff_context/
 /imports/message_context/
+/imports/vc_logs/
 /exports/staff_context/
 /exports/message_context/
+/exports/vc_logs/
 /imports/discord_history/archive/
 /imports/broken_exports/
 /exports/

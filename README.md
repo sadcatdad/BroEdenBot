@@ -442,10 +442,11 @@ The summary includes the note count, date range, and five newest notes.
 
 ## Voice-channel stats commands
 
-The VC stats module tracks non-bot members while BroEdenBot is online. Tracking
-begins when the module is deployed; Discord does not provide historical VC
-time from before that point. Joining, leaving, and switching voice channels
-creates session records in `data.db`.
+The VC stats module tracks non-bot members while BroEdenBot is online. Joining,
+leaving, and switching voice channels creates live session records in
+`data.db`. Older sessions can be reconstructed separately from a
+DiscordChatExporter JSON export of the VC log channel; see
+[docs/vc-log-imports.md](docs/vc-log-imports.md).
 
 All `/vcstats` and `/vcrewards` responses are ephemeral. The module records all
 completed sessions but separately calculates reward-eligible time for future
@@ -456,15 +457,26 @@ was not in the server's configured AFK channel, alone for the entire session,
 or self-deafened for the entire session. A best-effort heartbeat updates active
 sessions once per minute. Time while the bot is offline is not counted.
 
-### `/vcstats user <user> [days]`
+Historical imports are included by default in tracked-time totals. They are not
+reward eligible and cannot generate VC XP pulses because old logs cannot prove
+AFK, alone, mute, or deafen state.
+
+The `user`, `leaderboard`, `channel`, and `export` commands support:
+
+- `source:all` — Live plus imported sessions. This is the default.
+- `source:live` — Sessions tracked by BroEdenBot while online.
+- `source:imported` — Sessions reconstructed from the historical VC log.
+
+### `/vcstats user <user> [days] [source]`
 
 Shows a member's total tracked time, reward-eligible time, session count, top
 voice channel, and average session length.
 
 - `user` — Member whose VC activity should be displayed.
 - `days` — Optional lookback period from 1 to 3,650 days. Defaults to 30.
+- `source` — Optional `all`, `live`, or `imported` filter. Defaults to `all`.
 
-### `/vcstats leaderboard [days] [limit] [eligible_only] [include_left_members]`
+### `/vcstats leaderboard [days] [limit] [eligible_only] [include_left_members] [source]`
 
 Shows a wide member leaderboard graphic with avatars, medal ranks, duration
 bars, and tracked-time or reward-eligible-time totals.
@@ -477,20 +489,23 @@ Ranks members by tracked or reward-eligible VC time.
   tracked time. Defaults to false.
 - `include_left_members` — Defaults to false, so only members currently cached
   in the server are ranked. Set true to include historical users who left.
+- `source` — Optional `all`, `live`, or `imported` filter. Defaults to `all`.
+  Name-only historical users require `include_left_members:true`.
 
 ### `/vcstats current`
 
 Shows members currently tracked in voice channels, including their channel,
 current session duration, and available mute/deafen status.
 
-### `/vcstats channel [channel] [days]`
+### `/vcstats channel [channel] [days] [source]`
 
 Shows activity for one voice channel or the ten most-used voice channels.
 
 - `channel` — Optional voice channel. Leave blank to show the top channels.
 - `days` — Optional lookback period. Defaults to 30.
+- `source` — Optional `all`, `live`, or `imported` filter. Defaults to `all`.
 
-### `/vcstats export [days] [user] [channel] [include_left_members]`
+### `/vcstats export [days] [user] [channel] [include_left_members] [source]`
 
 Exports completed VC sessions to an ephemeral CSV attachment.
 
@@ -499,15 +514,17 @@ Exports completed VC sessions to an ephemeral CSV attachment.
 - `channel` — Optional voice-channel filter.
 - `include_left_members` — Defaults to false. When true, sessions for users who
   left remain in the CSV and `is_current_member` identifies them.
+- `source` — Optional `all`, `live`, or `imported` filter. Defaults to `all`.
 
 The CSV includes member and channel identifiers, timestamps, tracked and
-counted durations, eligibility, and best-effort mute/deafen/alone flags.
+counted durations, eligibility, best-effort mute/deafen/alone flags, source,
+historical confidence, estimation status, and source filename.
 
 ### `/vcstats reset <confirm>`
 
 Clears completed and active VC sessions for the current server when `confirm`
 is true. This is administrator-only and does not clear future reward snapshot
-tables or VC XP pulse/accounting tables.
+tables, imported historical sessions, or VC XP pulse/accounting tables.
 
 ### `/vcstats settings`
 
@@ -929,6 +946,9 @@ Historical imports: see
 [docs/historical-imports.md](docs/historical-imports.md) for the complete
 DiscordChatExporter workflow, Pi transfer commands, archive handling, aliases,
 and troubleshooting.
+
+Historical VC-log imports use a separate JSON workflow documented in
+[docs/vc-log-imports.md](docs/vc-log-imports.md).
 
 ## Bank commands
 

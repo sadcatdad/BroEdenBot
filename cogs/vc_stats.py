@@ -7,7 +7,7 @@ import re
 import sqlite3
 import time
 from datetime import datetime, timedelta, timezone
-from typing import Dict, Iterable, List, Optional, Tuple
+from typing import Dict, Iterable, List, Literal, Optional, Tuple
 
 import discord
 from discord import app_commands
@@ -20,6 +20,7 @@ from utils.ranked_graphic import (
     RankedGraphicSection,
     render_ranked_graphic,
 )
+from utils.vc_history import ensure_vc_history_schema_async
 
 
 logger = logging.getLogger(__name__)
@@ -144,6 +145,7 @@ class VCStats(commands.Cog):
             )
             """
         )
+        await ensure_vc_history_schema_async(self.bot.db)
         await self.bot.db.execute(
             """
             CREATE TABLE IF NOT EXISTS vc_active_sessions (
@@ -1110,6 +1112,62 @@ class VCStats(commands.Cog):
     def _cutoff(days: int) -> str:
         return (utc_now() - timedelta(days=days)).isoformat()
 
+    @staticmethod
+    def _session_source_sql(source: str) -> str:
+        live_sql = """
+            SELECT
+                guild_id,
+                user_id,
+                username,
+                display_name,
+                channel_id,
+                channel_name,
+                joined_at,
+                left_at,
+                duration_seconds,
+                counted_seconds,
+                reward_eligible,
+                was_alone,
+                was_self_muted,
+                was_self_deafened,
+                was_server_muted,
+                was_server_deafened,
+                'live' AS session_source,
+                'high' AS confidence,
+                0 AS is_estimated,
+                NULL AS source_file
+            FROM vc_sessions
+        """
+        imported_sql = """
+            SELECT
+                guild_id,
+                user_id,
+                user_name AS username,
+                display_name,
+                voice_channel_id AS channel_id,
+                voice_channel_name AS channel_name,
+                joined_at,
+                left_at,
+                duration_seconds,
+                counted_seconds,
+                reward_eligible,
+                0 AS was_alone,
+                0 AS was_self_muted,
+                0 AS was_self_deafened,
+                0 AS was_server_muted,
+                0 AS was_server_deafened,
+                'imported' AS session_source,
+                confidence,
+                is_estimated,
+                source_file
+            FROM vc_imported_sessions
+        """
+        if source == "live":
+            return live_sql
+        if source == "imported":
+            return imported_sql
+        return f"{live_sql} UNION ALL {imported_sql}"
+
     async def _fetchall(self, query: str, parameters: Iterable = ()) -> list:
         cursor = await self.bot.db.execute(query, tuple(parameters))
         rows = await cursor.fetchall()
@@ -1144,35 +1202,44 @@ class VCStats(commands.Cog):
             await interaction.followup.send(page, ephemeral=True)
 
     @vcstats.command(name="user", description="Show VC stats for a member")
-    @app_commands.describe(user="Member to inspect", days="Lookback period in days")
+    @app_commands.describe(
+        user="Member to inspect",
+        days="Lookback period in days",
+        source="Include all, live, or imported VC sessions",
+    )
     @app_commands.guild_only()
     async def user_stats(
         self,
         interaction: discord.Interaction,
         user: discord.Member,
         days: app_commands.Range[int, 1, 3650] = 30,
+        source: Literal["all", "live", "imported"] = "all",
     ) -> None:
         if await self._deny_if_unauthorised(interaction):
             return
         await interaction.response.defer(ephemeral=True, thinking=True)
+        session_sql = self._session_source_sql(source)
         rows = await self._fetchall(
-            """
+            f"""
             SELECT COALESCE(SUM(duration_seconds), 0),
                    COALESCE(SUM(counted_seconds), 0),
                    COUNT(*),
                    COALESCE(AVG(duration_seconds), 0)
-            FROM vc_sessions
+            FROM ({session_sql}) AS sessions
             WHERE guild_id = ? AND user_id = ? AND left_at >= ?
             """,
             (interaction.guild_id, user.id, self._cutoff(days)),
         )
         total, eligible, sessions, average = rows[0]
         top_rows = await self._fetchall(
-            """
+            f"""
             SELECT channel_name, channel_id, SUM(duration_seconds) AS total
-            FROM vc_sessions
+            FROM ({session_sql}) AS sessions
             WHERE guild_id = ? AND user_id = ? AND left_at >= ?
-            GROUP BY channel_id, channel_name
+            GROUP BY CASE
+                WHEN channel_id IS NOT NULL THEN 'id:' || channel_id
+                ELSE 'name:' || LOWER(COALESCE(channel_name, 'unknown'))
+            END
             ORDER BY total DESC
             LIMIT 1
             """,
@@ -1184,7 +1251,8 @@ class VCStats(commands.Cog):
             else "None"
         )
         await interaction.followup.send(
-            f"**VC stats for {user.mention} — last {days} days**\n"
+            f"**VC stats for {user.mention} — last {days} days "
+            f"— source: {source}**\n"
             f"Total tracked: **{format_duration(total)}**\n"
             f"Reward-eligible: **{format_duration(eligible)}**\n"
             f"Sessions: **{sessions}**\n"
@@ -1199,6 +1267,7 @@ class VCStats(commands.Cog):
         limit="Number of members to show",
         eligible_only="Rank using reward-eligible time only",
         include_left_members="Include users who are no longer in the server",
+        source="Include all, live, or imported VC sessions",
     )
     @app_commands.guild_only()
     async def leaderboard(
@@ -1208,18 +1277,23 @@ class VCStats(commands.Cog):
         limit: app_commands.Range[int, 1, 25] = 10,
         eligible_only: bool = False,
         include_left_members: bool = False,
+        source: Literal["all", "live", "imported"] = "all",
     ) -> None:
         if await self._deny_if_unauthorised(interaction):
             return
         await interaction.response.defer(ephemeral=True, thinking=True)
         time_column = "counted_seconds" if eligible_only else "duration_seconds"
+        session_sql = self._session_source_sql(source)
         rows = await self._fetchall(
             f"""
             SELECT user_id, MAX(display_name), MAX(username),
                    SUM({time_column}) AS ranked_seconds
-            FROM vc_sessions
+            FROM ({session_sql}) AS sessions
             WHERE guild_id = ? AND left_at >= ?
-            GROUP BY user_id
+            GROUP BY CASE
+                WHEN user_id IS NOT NULL THEN 'id:' || user_id
+                ELSE 'name:' || LOWER(COALESCE(display_name, username, 'unknown'))
+            END
             HAVING ranked_seconds > 0
             ORDER BY ranked_seconds DESC
             """,
@@ -1227,7 +1301,11 @@ class VCStats(commands.Cog):
         )
         filtered_rows = []
         for user_id, display_name, username, ranked_seconds in rows:
-            member = current_member(interaction.guild, user_id)
+            member = (
+                current_member(interaction.guild, user_id)
+                if user_id is not None
+                else None
+            )
             if member is None and not include_left_members:
                 continue
             filtered_rows.append(
@@ -1251,15 +1329,23 @@ class VCStats(commands.Cog):
         warning = member_filter_warning(self.bot, interaction.guild)
         items = []
         for user_id, display_name, username, ranked_seconds, is_current in filtered_rows:
-            member = current_member(interaction.guild, user_id)
+            member = (
+                current_member(interaction.guild, user_id)
+                if user_id is not None
+                else None
+            )
             items.append(
                 RankedGraphicItem(
-                    label=display_name or username or str(user_id),
+                    label=display_name or username or str(user_id or "Unknown"),
                     value=format_duration(ranked_seconds),
                     subtitle=(
                         f"@{username}"
                         if is_current
-                        else f"@{username or user_id} • Left server"
+                        else (
+                            f"@{username or user_id} • Left server"
+                            if user_id is not None
+                            else f"{username or 'Name only'} • Historical name-only"
+                        )
                     ),
                     avatar_url=(
                         str(member.display_avatar.replace(size=64).url)
@@ -1271,7 +1357,9 @@ class VCStats(commands.Cog):
             )
         png = await render_ranked_graphic(
             title="VC Leaderboard",
-            subtitle=f"Last {days} days • {label} • {scope.lower()}",
+            subtitle=(
+                f"Last {days} days • {label} • {scope.lower()} • source: {source}"
+            ),
             sections=[RankedGraphicSection("Member leaderboard", items)],
             updated_at=utc_now(),
             accent_color=COLOR,
@@ -1339,6 +1427,7 @@ class VCStats(commands.Cog):
     @app_commands.describe(
         channel="Specific voice channel, or leave blank for top channels",
         days="Lookback period in days",
+        source="Include all, live, or imported VC sessions",
     )
     @app_commands.guild_only()
     async def channel_stats(
@@ -1346,25 +1435,32 @@ class VCStats(commands.Cog):
         interaction: discord.Interaction,
         channel: Optional[discord.VoiceChannel] = None,
         days: app_commands.Range[int, 1, 3650] = 30,
+        source: Literal["all", "live", "imported"] = "all",
     ) -> None:
         if await self._deny_if_unauthorised(interaction):
             return
         await interaction.response.defer(ephemeral=True, thinking=True)
         cutoff = self._cutoff(days)
+        session_sql = self._session_source_sql(source)
         if channel:
             rows = await self._fetchall(
-                """
+                f"""
                 SELECT COALESCE(SUM(duration_seconds), 0),
                        COALESCE(SUM(counted_seconds), 0),
-                       COUNT(*), COUNT(DISTINCT user_id)
-                FROM vc_sessions
+                       COUNT(*),
+                       COUNT(DISTINCT CASE
+                           WHEN user_id IS NOT NULL THEN 'id:' || user_id
+                           ELSE 'name:' || LOWER(COALESCE(display_name, username, 'unknown'))
+                       END)
+                FROM ({session_sql}) AS sessions
                 WHERE guild_id = ? AND channel_id = ? AND left_at >= ?
                 """,
                 (interaction.guild_id, channel.id, cutoff),
             )
             total, eligible, sessions, members = rows[0]
             await interaction.followup.send(
-                f"**VC stats for {channel.mention} — last {days} days**\n"
+                f"**VC stats for {channel.mention} — last {days} days "
+                f"— source: {source}**\n"
                 f"Total tracked: **{format_duration(total)}**\n"
                 f"Reward-eligible: **{format_duration(eligible)}**\n"
                 f"Sessions: **{sessions}**\n"
@@ -1374,12 +1470,15 @@ class VCStats(commands.Cog):
             return
 
         rows = await self._fetchall(
-            """
+            f"""
             SELECT channel_id, MAX(channel_name), SUM(duration_seconds) AS total,
                    COUNT(*)
-            FROM vc_sessions
+            FROM ({session_sql}) AS sessions
             WHERE guild_id = ? AND left_at >= ?
-            GROUP BY channel_id
+            GROUP BY CASE
+                WHEN channel_id IS NOT NULL THEN 'id:' || channel_id
+                ELSE 'name:' || LOWER(COALESCE(channel_name, 'unknown'))
+            END
             ORDER BY total DESC
             LIMIT 10
             """,
@@ -1396,7 +1495,9 @@ class VCStats(commands.Cog):
             for index, row in enumerate(rows, 1)
         ]
         await self._send_lines(
-            interaction, f"**Top voice channels — last {days} days**", lines
+            interaction,
+            f"**Top voice channels — last {days} days — source: {source}**",
+            lines,
         )
 
     async def _session_export_rows(
@@ -1405,6 +1506,7 @@ class VCStats(commands.Cog):
         days: int,
         user_id: Optional[int],
         channel_id: Optional[int],
+        source: str,
     ) -> list:
         conditions = ["guild_id = ?", "left_at >= ?"]
         parameters: List[object] = [guild_id, self._cutoff(days)]
@@ -1414,13 +1516,15 @@ class VCStats(commands.Cog):
         if channel_id is not None:
             conditions.append("channel_id = ?")
             parameters.append(channel_id)
+        session_sql = self._session_source_sql(source)
         return await self._fetchall(
             f"""
             SELECT user_id, username, display_name, channel_id, channel_name,
                    joined_at, left_at, duration_seconds, counted_seconds,
                    reward_eligible, was_alone, was_self_muted,
-                   was_self_deafened, was_server_muted, was_server_deafened
-            FROM vc_sessions
+                   was_self_deafened, was_server_muted, was_server_deafened,
+                   session_source, confidence, is_estimated, source_file
+            FROM ({session_sql}) AS sessions
             WHERE {' AND '.join(conditions)}
             ORDER BY joined_at DESC
             """,
@@ -1446,6 +1550,7 @@ class VCStats(commands.Cog):
         user="Optional member filter",
         channel="Optional voice-channel filter",
         include_left_members="Include users who are no longer in the server",
+        source="Include all, live, or imported VC sessions",
     )
     @app_commands.guild_only()
     async def export_sessions(
@@ -1455,6 +1560,7 @@ class VCStats(commands.Cog):
         user: Optional[discord.Member] = None,
         channel: Optional[discord.VoiceChannel] = None,
         include_left_members: bool = False,
+        source: Literal["all", "live", "imported"] = "all",
     ) -> None:
         if await self._deny_if_unauthorised(interaction):
             return
@@ -1464,10 +1570,15 @@ class VCStats(commands.Cog):
             days,
             user.id if user else None,
             channel.id if channel else None,
+            source,
         )
         export_rows = []
         for row in rows:
-            member = current_member(interaction.guild, row[0])
+            member = (
+                current_member(interaction.guild, row[0])
+                if row[0] is not None
+                else None
+            )
             if member is None and not include_left_members:
                 continue
             export_rows.append(
@@ -1502,9 +1613,13 @@ class VCStats(commands.Cog):
             "was_self_deafened",
             "was_server_muted",
             "was_server_deafened",
+            "source",
+            "confidence",
+            "is_estimated",
+            "source_file",
         ]
         file = self._csv_file(
-            f"vc_sessions_{days}d.csv", headers, export_rows
+            f"vc_sessions_{source}_{days}d.csv", headers, export_rows
         )
         if file is None:
             await interaction.followup.send(
@@ -1553,7 +1668,8 @@ class VCStats(commands.Cog):
             await self.bot.db.commit()
         await interaction.response.send_message(
             "VC sessions and active tracking rows were cleared for this server. "
-            "Reward snapshots and VC XP pulse accounting were not changed.",
+            "Imported historical sessions, reward snapshots, and VC XP pulse "
+            "accounting were not changed.",
             ephemeral=True,
         )
 
