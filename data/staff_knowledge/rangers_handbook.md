@@ -20,6 +20,11 @@ roles.
 
 ## Verification
 
+The Gateway is the limited server section visible to Unverified members.
+Members must complete ID verification confirming that they are at least 18
+years old before staff grant access to the rest of Bro Eden. Until approved,
+they should remain limited to the Gateway and its verification resources.
+
 When receiving a verification ticket from an Unverified member:
 
 - Check that both required photos match the current verification example.

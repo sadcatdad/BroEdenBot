@@ -40,6 +40,19 @@ class KnowledgePrivacyTests(unittest.TestCase):
         self.assertIn("Ranger's Handbook", staff_context)
         self.assertIn("Rest Pass", staff_context)
 
+    def test_gateway_verification_guidance_is_available(self):
+        public_context = build_public_ask_context(
+            "What is the Gateway and how do I access the rest of the server?"
+        )
+        staff_context = build_staff_knowledge_context(
+            "Gateway unverified ID verification over 18"
+        )
+
+        self.assertIn("The Gateway", public_context)
+        self.assertIn("ID verification", public_context)
+        self.assertIn("at least 18 years old", public_context)
+        self.assertIn("The Gateway", staff_context)
+
 
 if __name__ == "__main__":
     unittest.main()

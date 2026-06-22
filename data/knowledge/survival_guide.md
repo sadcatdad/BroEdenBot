@@ -7,6 +7,14 @@ focused rather than a hookup server. Members are encouraged to socialize, get
 to know people, read channel context, and respect the rules and quirks of each
 space.
 
+## The Gateway and Verification
+
+The Gateway is the limited section available to Unverified members. To access
+the rest of Bro Eden, a member must complete the server's ID verification
+process confirming that he is at least 18 years old. Until verification is
+approved, the member remains limited to the Gateway and its verification
+resources.
+
 ## Staff and Support Tickets
 
 Members can learn about the staff team in the staff information area. If

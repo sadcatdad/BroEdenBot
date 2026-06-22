@@ -2,7 +2,9 @@
 
 ## 18+ Verification
 
-Bro Eden is an 18+ server. Members must verify to access the complete server.
+Bro Eden is an 18+ server. Unverified members can access only the limited
+Gateway section. Members must complete ID verification confirming that they
+are at least 18 years old before receiving access to the rest of the server.
 Underage users are removed.
 
 ## Respect and Community Conduct
