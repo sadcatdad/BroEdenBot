@@ -73,12 +73,14 @@ class ChecklistModal(discord.ui.Modal):
         *,
         current_name: str = "",
         current_description: str = "",
+        refresh_panel: bool = True,
     ) -> None:
         title = "Add checklist item" if action == "add" else "Rename checklist"
         super().__init__(title=title, timeout=300)
         self.cog = cog
         self.checklist_id = checklist_id
         self.action = action
+        self.refresh_panel = refresh_panel
 
         if action == "add":
             self.primary = discord.ui.TextInput(
@@ -127,6 +129,7 @@ class ChecklistModal(discord.ui.Modal):
                 self.checklist_id,
                 str(self.primary.value),
                 position,
+                refresh_panel=self.refresh_panel,
             )
             return
 
@@ -135,7 +138,15 @@ class ChecklistModal(discord.ui.Modal):
             self.checklist_id,
             str(self.primary.value),
             str(self.secondary.value or ""),
+            refresh_panel=self.refresh_panel,
         )
+
+    async def on_error(
+        self,
+        interaction: discord.Interaction,
+        error: Exception,
+    ) -> None:
+        await self.cog.handle_component_error(interaction, "checklist modal", error)
 
 
 class ChecklistItemSelect(discord.ui.Select):
@@ -154,7 +165,7 @@ class ChecklistItemSelect(discord.ui.Select):
                     f"Item {row['position']} • "
                     f"{'complete' if row['status'] == 'complete' else 'open'}"
                 ),
-                emoji="☑" if row["status"] == "complete" else "☐",
+                emoji="✅" if row["status"] == "complete" else "⬜",
             )
             for row in rows[:SELECT_LIMIT]
         ]
@@ -193,6 +204,18 @@ class ChecklistItemSelectView(discord.ui.View):
         super().__init__(timeout=300)
         self.add_item(ChecklistItemSelect(cog, checklist_id, rows, action))
 
+    async def on_error(
+        self,
+        interaction: discord.Interaction,
+        error: Exception,
+        item: discord.ui.Item,
+    ) -> None:
+        await self.children[0].cog.handle_component_error(
+            interaction,
+            f"checklist item selector ({type(item).__name__})",
+            error,
+        )
+
 
 class ChecklistChannelSelect(discord.ui.ChannelSelect):
     def __init__(self, cog: "ChecklistCog", checklist_id: int) -> None:
@@ -228,6 +251,18 @@ class ChecklistChannelSelectView(discord.ui.View):
     def __init__(self, cog: "ChecklistCog", checklist_id: int) -> None:
         super().__init__(timeout=300)
         self.add_item(ChecklistChannelSelect(cog, checklist_id))
+
+    async def on_error(
+        self,
+        interaction: discord.Interaction,
+        error: Exception,
+        item: discord.ui.Item,
+    ) -> None:
+        await self.children[0].cog.handle_component_error(
+            interaction,
+            f"checklist channel selector ({type(item).__name__})",
+            error,
+        )
 
 
 class ChecklistChoiceSelect(discord.ui.Select):
@@ -278,6 +313,18 @@ class ChecklistChoiceView(discord.ui.View):
         super().__init__(timeout=300)
         self.add_item(ChecklistChoiceSelect(cog, rows, action))
 
+    async def on_error(
+        self,
+        interaction: discord.Interaction,
+        error: Exception,
+        item: discord.ui.Item,
+    ) -> None:
+        await self.children[0].cog.handle_component_error(
+            interaction,
+            f"checklist selector ({type(item).__name__})",
+            error,
+        )
+
 
 class ChecklistDeleteConfirmView(discord.ui.View):
     def __init__(self, cog: "ChecklistCog", checklist_id: int) -> None:
@@ -316,6 +363,18 @@ class ChecklistDeleteConfirmView(discord.ui.View):
             content="Checklist deletion cancelled.",
             embed=None,
             view=None,
+        )
+
+    async def on_error(
+        self,
+        interaction: discord.Interaction,
+        error: Exception,
+        item: discord.ui.Item,
+    ) -> None:
+        await self.cog.handle_component_error(
+            interaction,
+            f"checklist deletion control ({type(item).__name__})",
+            error,
         )
 
 
@@ -414,6 +473,179 @@ class ChecklistPanelView(discord.ui.View):
     ) -> None:
         await self.cog.send_panel(interaction, self.checklist_id, edit=True)
 
+    async def on_error(
+        self,
+        interaction: discord.Interaction,
+        error: Exception,
+        item: discord.ui.Item,
+    ) -> None:
+        await self.cog.handle_component_error(
+            interaction,
+            f"checklist management control ({type(item).__name__})",
+            error,
+        )
+
+
+class PostedChecklistView(discord.ui.View):
+    """Persistent controls attached to public checklist posts."""
+
+    def __init__(self, cog: "ChecklistCog", checklist: dict[str, Any]) -> None:
+        super().__init__(timeout=None)
+        self.cog = cog
+        self.checklist_id = int(checklist["id"])
+        archived = checklist["status"] == "archived"
+        self.archive.label = "Restore" if archived else "Archive"
+        self.archive.style = (
+            discord.ButtonStyle.success if archived else discord.ButtonStyle.secondary
+        )
+
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        return await self.cog.ensure_access(interaction)
+
+    @discord.ui.button(
+        label="Add Item",
+        style=discord.ButtonStyle.primary,
+        row=0,
+        custom_id="checklist:posted:add",
+    )
+    async def add(
+        self,
+        interaction: discord.Interaction,
+        _button: discord.ui.Button,
+    ) -> None:
+        await interaction.response.send_modal(
+            ChecklistModal(
+                self.cog,
+                self.checklist_id,
+                "add",
+                refresh_panel=False,
+            )
+        )
+
+    @discord.ui.button(
+        label="Toggle Complete",
+        style=discord.ButtonStyle.success,
+        row=0,
+        custom_id="checklist:posted:toggle",
+    )
+    async def toggle(
+        self,
+        interaction: discord.Interaction,
+        _button: discord.ui.Button,
+    ) -> None:
+        await self.cog.open_item_selector(interaction, self.checklist_id, "toggle")
+
+    @discord.ui.button(
+        label="Delete Item",
+        style=discord.ButtonStyle.danger,
+        row=0,
+        custom_id="checklist:posted:delete-item",
+    )
+    async def delete_item_button(
+        self,
+        interaction: discord.Interaction,
+        _button: discord.ui.Button,
+    ) -> None:
+        await self.cog.open_item_selector(interaction, self.checklist_id, "delete")
+
+    @discord.ui.button(
+        label="Rename",
+        style=discord.ButtonStyle.secondary,
+        row=1,
+        custom_id="checklist:posted:rename",
+    )
+    async def rename(
+        self,
+        interaction: discord.Interaction,
+        _button: discord.ui.Button,
+    ) -> None:
+        checklist = await self.cog.get_checklist(
+            interaction.guild_id,
+            self.checklist_id,
+            statuses=("active", "archived"),
+        )
+        if not checklist:
+            await interaction.response.send_message(
+                "That checklist is no longer available.",
+                ephemeral=True,
+            )
+            return
+        await interaction.response.send_modal(
+            ChecklistModal(
+                self.cog,
+                self.checklist_id,
+                "rename",
+                current_name=checklist["name"],
+                current_description=checklist["description"] or "",
+                refresh_panel=False,
+            )
+        )
+
+    @discord.ui.button(
+        label="Post",
+        style=discord.ButtonStyle.secondary,
+        row=1,
+        custom_id="checklist:posted:post",
+    )
+    async def post(
+        self,
+        interaction: discord.Interaction,
+        _button: discord.ui.Button,
+    ) -> None:
+        await interaction.response.send_message(
+            "Choose where to post this checklist.",
+            view=ChecklistChannelSelectView(self.cog, self.checklist_id),
+            ephemeral=True,
+        )
+
+    @discord.ui.button(
+        label="Archive",
+        style=discord.ButtonStyle.secondary,
+        row=1,
+        custom_id="checklist:posted:archive",
+    )
+    async def archive(
+        self,
+        interaction: discord.Interaction,
+        _button: discord.ui.Button,
+    ) -> None:
+        await self.cog.toggle_archive(
+            interaction,
+            self.checklist_id,
+            refresh_panel=False,
+        )
+
+    @discord.ui.button(
+        label="Refresh",
+        style=discord.ButtonStyle.secondary,
+        row=1,
+        custom_id="checklist:posted:refresh",
+    )
+    async def refresh(
+        self,
+        interaction: discord.Interaction,
+        _button: discord.ui.Button,
+    ) -> None:
+        await interaction.response.defer(ephemeral=True, thinking=True)
+        summary = await self.cog.sync_checklist_posts(self.checklist_id)
+        await interaction.followup.send(
+            f"Checklist refreshed. Updated {summary['updated']} post(s); "
+            f"missing {summary['missing']}; failed {summary['failed']}.",
+            ephemeral=True,
+        )
+
+    async def on_error(
+        self,
+        interaction: discord.Interaction,
+        error: Exception,
+        item: discord.ui.Item,
+    ) -> None:
+        await self.cog.handle_component_error(
+            interaction,
+            f"posted checklist control ({type(item).__name__})",
+            error,
+        )
+
 
 class ChecklistCog(commands.Cog):
     checklist = app_commands.Group(
@@ -428,6 +660,7 @@ class ChecklistCog(commands.Cog):
         )
         self.owner_user_ids = parse_id_set(os.getenv("BOT_OWNER_USER_IDS", ""))
         self._write_lock = asyncio.Lock()
+        self._posts_upgraded = False
 
     async def cog_load(self) -> None:
         await self.bot.db.executescript(
@@ -488,6 +721,41 @@ class ChecklistCog(commands.Cog):
             """
         )
         await self.bot.db.commit()
+        await self.register_persistent_post_views()
+
+    async def register_persistent_post_views(self) -> None:
+        """Restore component dispatch for posts after a bot restart."""
+        if not hasattr(self.bot, "add_view"):
+            return
+        rows = await self.fetch_all(
+            """
+            SELECT cp.message_id, c.*
+            FROM checklist_posts cp
+            JOIN checklists c ON c.id = cp.checklist_id
+            WHERE cp.status = 'active' AND c.status IN ('active', 'archived')
+            """
+        )
+        for row in rows:
+            self.bot.add_view(
+                PostedChecklistView(self, row),
+                message_id=int(row["message_id"]),
+            )
+
+    @commands.Cog.listener()
+    async def on_ready(self) -> None:
+        """Add controls to posts created before posted controls existed."""
+        if self._posts_upgraded:
+            return
+        self._posts_upgraded = True
+        rows = await self.fetch_all(
+            """
+            SELECT DISTINCT checklist_id
+            FROM checklist_posts
+            WHERE status = 'active'
+            """
+        )
+        for row in rows:
+            await self.sync_checklist_posts(int(row["checklist_id"]))
 
     def has_access(self, interaction: discord.Interaction) -> bool:
         if not interaction.guild or not isinstance(interaction.user, discord.Member):
@@ -507,6 +775,30 @@ class ChecklistCog(commands.Cog):
                 ephemeral=True,
             )
         return False
+
+    async def handle_component_error(
+        self,
+        interaction: discord.Interaction,
+        operation: str,
+        error: Exception,
+    ) -> None:
+        logger.error(
+            "Checklist component failed: operation=%s error_type=%s",
+            operation,
+            type(error).__name__,
+            exc_info=(type(error), error, error.__traceback__),
+        )
+        message = (
+            "That checklist control could not be completed. "
+            "Please try again or reopen it with `/checklist view`."
+        )
+        try:
+            if interaction.response.is_done():
+                await interaction.followup.send(message, ephemeral=True)
+            else:
+                await interaction.response.send_message(message, ephemeral=True)
+        except discord.HTTPException:
+            logger.exception("Could not deliver checklist component error")
 
     async def fetch_one(
         self,
@@ -723,6 +1015,12 @@ class ChecklistCog(commands.Cog):
         embed = await self.render_checklist(checklist_id)
         if not embed:
             return summary
+        checklist = await self.fetch_one(
+            "SELECT * FROM checklists WHERE id = ?",
+            (checklist_id,),
+        )
+        if not checklist or checklist["status"] == "deleted":
+            return summary
         posts = await self.fetch_all(
             """
             SELECT * FROM checklist_posts
@@ -736,7 +1034,11 @@ class ChecklistCog(commands.Cog):
                 if channel is None:
                     channel = await self.bot.fetch_channel(int(post["channel_id"]))
                 message = await channel.fetch_message(int(post["message_id"]))
-                await message.edit(embed=embed, allowed_mentions=ALLOWED_MENTIONS)
+                await message.edit(
+                    embed=embed,
+                    view=PostedChecklistView(self, checklist),
+                    allowed_mentions=ALLOWED_MENTIONS,
+                )
             except (discord.NotFound, discord.Forbidden):
                 await self.bot.db.execute(
                     "UPDATE checklist_posts SET status = 'missing' WHERE id = ?",
@@ -791,7 +1093,11 @@ class ChecklistCog(commands.Cog):
             if existing:
                 try:
                     message = await channel.fetch_message(int(existing["message_id"]))
-                    await message.edit(embed=embed, allowed_mentions=ALLOWED_MENTIONS)
+                    await message.edit(
+                        embed=embed,
+                        view=PostedChecklistView(self, checklist),
+                        allowed_mentions=ALLOWED_MENTIONS,
+                    )
                 except (discord.NotFound, discord.Forbidden):
                     await self.bot.db.execute(
                         "UPDATE checklist_posts SET status = 'missing' WHERE id = ?",
@@ -812,7 +1118,11 @@ class ChecklistCog(commands.Cog):
                     await self.bot.db.commit()
                     return f"Updated the existing checklist post in {channel.mention}."
         try:
-            message = await channel.send(embed=embed, allowed_mentions=ALLOWED_MENTIONS)
+            message = await channel.send(
+                embed=embed,
+                view=PostedChecklistView(self, checklist),
+                allowed_mentions=ALLOWED_MENTIONS,
+            )
         except (discord.Forbidden, discord.HTTPException):
             return "I could not post the checklist in that channel."
         now = utc_now()
@@ -842,6 +1152,8 @@ class ChecklistCog(commands.Cog):
         checklist_id: int,
         content: str,
         position: Optional[int],
+        *,
+        refresh_panel: bool = True,
     ) -> None:
         checklist = await self.get_checklist(
             interaction.guild_id,
@@ -890,7 +1202,13 @@ class ChecklistCog(commands.Cog):
             )
             await self.bot.db.commit()
         await self.sync_checklist_posts(checklist_id)
-        await self.send_panel(interaction, checklist_id, edit=True)
+        if refresh_panel:
+            await self.send_panel(interaction, checklist_id, edit=True)
+        else:
+            await interaction.followup.send(
+                "Item added and all posted checklists were updated.",
+                ephemeral=True,
+            )
 
     async def open_item_selector(
         self,
@@ -898,9 +1216,10 @@ class ChecklistCog(commands.Cog):
         checklist_id: int,
         action: str,
     ) -> None:
+        await interaction.response.defer(ephemeral=True)
         items = await self.active_items(checklist_id)
         if not items:
-            await interaction.response.send_message(
+            await interaction.followup.send(
                 "This checklist has no active items.",
                 ephemeral=True,
             )
@@ -911,7 +1230,7 @@ class ChecklistCog(commands.Cog):
             if len(items) > SELECT_LIMIT
             else ""
         )
-        await interaction.response.send_message(
+        await interaction.followup.send(
             (
                 "Choose an item to toggle."
                 if action == "toggle"
@@ -1035,6 +1354,8 @@ class ChecklistCog(commands.Cog):
         checklist_id: int,
         name: str,
         description: str,
+        *,
+        refresh_panel: bool = True,
     ) -> None:
         checklist = await self.get_checklist(
             interaction.guild_id,
@@ -1059,12 +1380,20 @@ class ChecklistCog(commands.Cog):
         )
         await self.bot.db.commit()
         await self.sync_checklist_posts(checklist_id)
-        await self.send_panel(interaction, checklist_id, edit=True)
+        if refresh_panel:
+            await self.send_panel(interaction, checklist_id, edit=True)
+        else:
+            await interaction.followup.send(
+                "Checklist renamed and all posted copies were updated.",
+                ephemeral=True,
+            )
 
     async def toggle_archive(
         self,
         interaction: discord.Interaction,
         checklist_id: int,
+        *,
+        refresh_panel: bool = True,
     ) -> None:
         checklist = await self.get_checklist(
             interaction.guild_id,
@@ -1085,7 +1414,14 @@ class ChecklistCog(commands.Cog):
         )
         await self.bot.db.commit()
         await self.sync_checklist_posts(checklist_id)
-        await self.send_panel(interaction, checklist_id, edit=True)
+        if refresh_panel:
+            await self.send_panel(interaction, checklist_id, edit=True)
+        else:
+            await interaction.followup.send(
+                f"Checklist {'restored' if status == 'active' else 'archived'} "
+                "and posted copies were updated.",
+                ephemeral=True,
+            )
 
     async def delete_active_posts(self, checklist_id: int) -> dict[str, int]:
         summary = {"deleted": 0, "missing": 0, "failed": 0}
@@ -1534,6 +1870,39 @@ class ChecklistCog(commands.Cog):
             ephemeral=True,
         )
 
+    @checklist.command(
+        name="refresh",
+        description="Refresh posted copies and reattach their controls",
+    )
+    @app_commands.describe(checklist="Active or archived checklist name or ID")
+    @app_commands.guild_only()
+    async def refresh_command(
+        self,
+        interaction: discord.Interaction,
+        checklist: str,
+    ) -> None:
+        if not await self.ensure_access(interaction):
+            return
+        row = await self.resolve_checklist(
+            interaction.guild_id,
+            checklist,
+            ("active", "archived"),
+        )
+        if not row:
+            await interaction.response.send_message(
+                "No matching active or archived checklist was found.",
+                ephemeral=True,
+            )
+            return
+        await interaction.response.defer(ephemeral=True, thinking=True)
+        summary = await self.sync_checklist_posts(row["id"])
+        await interaction.followup.send(
+            f"Refreshed {checklist_reference(row)} and reattached its controls. "
+            f"Updated {summary['updated']} post(s); missing {summary['missing']}; "
+            f"failed {summary['failed']}.",
+            ephemeral=True,
+        )
+
     @checklist.command(name="export", description="Export a checklist as CSV")
     @app_commands.describe(checklist="Checklist name or ID")
     @app_commands.guild_only()
@@ -1595,6 +1964,7 @@ class ChecklistCog(commands.Cog):
     @view.autocomplete("checklist")
     @post_command.autocomplete("checklist")
     @rename_command.autocomplete("checklist")
+    @refresh_command.autocomplete("checklist")
     async def general_autocomplete(
         self,
         interaction: discord.Interaction,

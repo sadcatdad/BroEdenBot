@@ -70,10 +70,14 @@ and controls are private. Posted checklist embeds are visible in their channels.
 - `/checklist archive <checklist> [delete_posts]` — Archive it, retaining and
   updating posts by default.
 - `/checklist restore <checklist>` — Restore an archived checklist.
+- `/checklist refresh <checklist>` — Refresh every active posted copy and
+  reattach persistent controls if Discord retained stale buttons.
 - `/checklist export <checklist>` — Privately export all checklist items as CSV.
 
 The panel supports adding, toggling, and soft-deleting items, renaming, posting,
-archiving/restoring, and refreshing. See
+archiving/restoring, and refreshing. Posted checklists include the same
+persistent controls; each click is permission-checked and management prompts
+remain ephemeral. See
 [docs/checklists.md](docs/checklists.md) for storage, synchronization, deletion,
 permission, and Discord-limit details.
 

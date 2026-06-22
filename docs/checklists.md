@@ -35,6 +35,9 @@ and selector checks permission. Management responses are ephemeral.
 - `/checklist archive <checklist> [delete_posts]` removes a checklist from the
   active list. Posts remain and show archived status unless deletion is chosen.
 - `/checklist restore <checklist>` returns an archived checklist to active.
+- `/checklist refresh <checklist>` refreshes every active posted copy and
+  reattaches its persistent controls. Use this as the recovery path if Discord
+  ever displays stale or nonresponsive buttons after a restart or deployment.
 - `/checklist export <checklist>` privately exports all item rows, including
   deleted items, as CSV.
 
@@ -48,6 +51,14 @@ an item, rename the checklist, post it to a channel, archive or restore it, and
 refresh the panel. Any authorized staff member can use a panel they can access;
 controls are not tied only to the person who opened it.
 
+Posted checklist messages display the same controls. The buttons are visible to
+people who can see the channel, but every click checks
+`CHECKLIST_ALLOWED_ROLE_IDS` and `BOT_OWNER_USER_IDS` again. Unauthorized users
+receive a private denial, while authorized selectors, modals, and confirmations
+are ephemeral. Posted controls are persistent across bot restarts. If Discord
+retains an older component state, `/checklist refresh` re-edits all active posts
+with newly attached controls without changing checklist data.
+
 Completing an item records who completed it and when. Reopening it clears those
 completion fields. Item deletion is soft deletion and active positions are
 compacted afterward.
@@ -56,8 +67,9 @@ compacted afterward.
 
 A checklist can be posted in multiple channels. After an item is added,
 toggled, or deleted, or the checklist is renamed, archived, or restored, the
-bot edits every active posted copy. Checklist text uses no allowed mentions, so
-item text cannot ping users, roles, or everyone.
+bot edits every active posted copy and keeps its controls attached. Checklist
+text uses no allowed mentions, so item text cannot ping users, roles, or
+everyone.
 
 If a post is manually deleted, a raw-message listener marks its database post
 record as `missing`. Sync also detects missing or forbidden messages, marks

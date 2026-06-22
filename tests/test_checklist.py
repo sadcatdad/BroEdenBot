@@ -6,7 +6,12 @@ import aiosqlite
 
 os.environ.setdefault("DISCORD_TOKEN", "test-token")
 
-from cogs.checklist import ChecklistCog, parse_id_set
+from cogs.checklist import (
+    ChecklistCog,
+    ChecklistItemSelectView,
+    PostedChecklistView,
+    parse_id_set,
+)
 
 
 class DummyBot:
@@ -17,6 +22,29 @@ class DummyBot:
 class ChecklistHelperTests(unittest.TestCase):
     def test_id_parser_ignores_invalid_and_nonpositive_values(self):
         self.assertEqual(parse_id_set("12, nope 34 -1 0"), {12, 34})
+
+    def test_item_selector_uses_discord_safe_component_emoji(self):
+        view = ChecklistItemSelectView(
+            None,
+            1,
+            [{"id": 2, "content": "Task", "position": 1, "status": "open"}],
+            "toggle",
+        )
+        option = view.to_components()[0]["components"][0]["options"][0]
+        self.assertEqual(option["emoji"]["name"], "⬜")
+
+    def test_posted_controls_are_persistent(self):
+        view = PostedChecklistView(
+            object(),
+            {"id": 1, "status": "active"},
+        )
+        self.assertTrue(view.is_persistent())
+        self.assertEqual(len(view.children), 7)
+        self.assertTrue(all(item.custom_id for item in view.children))
+
+    def test_refresh_fallback_command_is_registered(self):
+        command_names = {command.name for command in ChecklistCog.checklist.commands}
+        self.assertIn("refresh", command_names)
 
 
 class ChecklistDatabaseTests(unittest.IsolatedAsyncioTestCase):
