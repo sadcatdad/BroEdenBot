@@ -5,9 +5,9 @@ After=network.target
 [Service]
 Type=simple
 User=pi
-WorkingDirectory=/home/pi/BroEdenBot
-EnvironmentFile=/home/pi/BroEdenBot/.env
-ExecStart=/home/pi/BroEdenBot/.venv/bin/uvicorn dashboard.app:app --host 0.0.0.0 --port 3000
+WorkingDirectory=/home/sadcatdad/BroEdenBot
+EnvironmentFile=/home/sadcatdad/BroEdenBot/.env
+ExecStart=/home/sadcatdad/BroEdenBot/.venv/bin/uvicorn dashboard.app:app --host 0.0.0.0 --port 3000
 Restart=on-failure
 RestartSec=5
 
