@@ -196,7 +196,13 @@ def infer_channel(path: Path) -> tuple[Optional[int], str]:
     if match:
         channel_id = int(match.group(1))
         name = name[: match.start()].rstrip()
-    if "headquarters" in name.casefold():
+    normalized_name = name.casefold()
+    normalized_category_name = (
+        normalized_name.replace("’", "'").replace("'", "")
+    )
+    if "hoarders island" in normalized_category_name:
+        return channel_id, "archived"
+    if "headquarters" in normalized_name or "logs" in normalized_name:
         return channel_id, "staff"
     if " - " in name:
         name = name.rsplit(" - ", 1)[-1]

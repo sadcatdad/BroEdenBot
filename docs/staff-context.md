@@ -133,8 +133,15 @@ imports/staff_context/
 The importer skips `archive`, `archived`, `broken`, and `broken_exports`
 folders. Filenames such as
 `Bro Eden - staff-chat [123456789].csv` provide channel name and ID. You can
-override either value. Any import filename containing `headquarters`
-(case-insensitive) is normalized to the channel name `staff`:
+override either value. Any import filename containing `headquarters` or `logs`
+(case-insensitive) is treated as staff-channel material and normalized to the
+channel name `staff`:
+
+Any import filename containing `Hoarders Island`, `Hoarder's Island`, or
+`Hoarder’s Island` is normalized to the channel name `archived`. These channels
+are inactive historical channels, viewable only by Admins, rather than active
+staff workspaces. Their imported messages remain private and searchable by
+authorized `/staffai` users.
 
 ```bash
 python3 scripts/import_staff_context.py \

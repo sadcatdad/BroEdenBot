@@ -142,6 +142,25 @@ class StaffContextImporterTests(unittest.TestCase):
         self.assertEqual(channel_id, 123456)
         self.assertEqual(channel_name, "staff")
 
+    def test_logs_exports_are_normalized_to_staff_channel(self):
+        channel_id, channel_name = infer_channel(
+            Path("Bro Eden - Moderation Logs [654321].csv")
+        )
+        self.assertEqual(channel_id, 654321)
+        self.assertEqual(channel_name, "staff")
+
+    def test_hoarders_island_exports_are_normalized_to_archived_channel(self):
+        filenames = (
+            "Bro Eden - Hoarders Island - old-staff [777888].csv",
+            "Bro Eden - Hoarder's Island - old-staff [777888].csv",
+            "Bro Eden - Hoarder’s Island - old-staff [777888].csv",
+        )
+        for filename in filenames:
+            with self.subTest(filename=filename):
+                channel_id, channel_name = infer_channel(Path(filename))
+                self.assertEqual(channel_id, 777888)
+                self.assertEqual(channel_name, "archived")
+
     def test_search_helpers_drop_question_filler_and_redact_secrets(self):
         self.assertEqual(
             fts_query("What did we decide about verification?"),
