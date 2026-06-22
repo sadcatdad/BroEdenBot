@@ -61,6 +61,49 @@ python scripts/import_discord_history.py \
   --archive-duplicates
 ```
 
+## Full CSV export strategy
+
+Export every channel as CSV and place the files in:
+
+```text
+imports/message_context/
+```
+
+`scripts/import_full_csv_exports.py` uses each CSV in two separate ways:
+
+- Every valid row enters `message_context.db` for staff-only `/context`.
+- Counts-only activity enters `data.db` with source `csv_backfill` only when
+  that channel ID does not already have a completed JSON activity import.
+
+The channel ID comes from a CSV column or the final bracketed number in a
+DiscordChatExporter filename, such as `general [1278260413078700032].csv`.
+JSON coverage is matched by channel ID, never channel name. Unknown-ID CSVs
+still import as context but are skipped for activity unless `--channel-id` is
+provided for a single file.
+
+Dry run:
+
+```bash
+python scripts/import_full_csv_exports.py \
+  --folder imports/message_context \
+  --guild-id 1278253523619807233 \
+  --dry-run
+```
+
+Real import:
+
+```bash
+python scripts/import_full_csv_exports.py \
+  --folder imports/message_context \
+  --guild-id 1278253523619807233 \
+  --archive-completed \
+  --archive-duplicates
+```
+
+Add `--context-only` to omit all activity work. `--force-activity` bypasses
+the JSON safeguard and may duplicate activity totals. Public `/ask` never
+reads `message_context.db`.
+
 ## Import workflow
 
 1. Export channels with DiscordChatExporter CLI as JSON or CSV.
@@ -158,15 +201,15 @@ These examples use the current project paths and guild ID.
 On the Mac:
 
 ```bash
-alias bedsync='rsync -avh --progress ~/Documents/BroEdenBot/imports/discord_history/ pi-user@raspberrypi.local:/home/pi-user/BroEdenBot/imports/discord_history/'
+alias bedsync='rsync -avh --progress ~/Documents/BroEdenBot/imports/message_context/ pi-user@raspberrypi.local:/home/pi-user/BroEdenBot/imports/message_context/'
 alias bedssh='ssh pi-user@raspberrypi.local'
 ```
 
 On the Pi:
 
 ```bash
-alias bedimportdry='cd ~/BroEdenBot && source .venv/bin/activate && python scripts/import_discord_history.py --folder imports/discord_history --guild-id 1278253523619807233 --dry-run --archive-completed --archive-duplicates'
-alias bedimport='cd ~/BroEdenBot && source .venv/bin/activate && python scripts/import_discord_history.py --folder imports/discord_history --guild-id 1278253523619807233 --archive-completed --archive-duplicates'
+alias bedimportdry='cd ~/BroEdenBot && source .venv/bin/activate && python scripts/import_full_csv_exports.py --folder imports/message_context --guild-id 1278253523619807233 --dry-run --archive-completed --archive-duplicates'
+alias bedimport='cd ~/BroEdenBot && source .venv/bin/activate && python scripts/import_full_csv_exports.py --folder imports/message_context --guild-id 1278253523619807233 --archive-completed --archive-duplicates'
 alias beddeploy='cd ~/BroEdenBot && ./deploy.sh'
 alias bedrestart='sudo systemctl restart broedenbot'
 alias bedlogs='journalctl -u broedenbot -f'
@@ -185,3 +228,8 @@ The normal shortcut workflow is:
 bedimportdry
 bedimport
 ```
+
+Existing JSON imports remain available through
+`scripts/import_discord_history.py`. Import preferred JSON activity first; the
+combined CSV workflow will then skip those channel IDs for activity while
+still importing their context.

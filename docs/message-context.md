@@ -135,6 +135,32 @@ export or its filename. `--archive-duplicates` also archives files containing
 only already-imported rows. Failed files stay in place. The importer skips
 `archive`, `local_archive`, `broken`, and `repaired` folders.
 
+### Full CSV export strategy
+
+Use the combined terminal importer for full-server CSV coverage:
+
+```bash
+.venv/bin/python scripts/import_full_csv_exports.py \
+  --folder imports/message_context \
+  --guild-id YOUR_GUILD_ID \
+  --dry-run
+
+.venv/bin/python scripts/import_full_csv_exports.py \
+  --folder imports/message_context \
+  --guild-id YOUR_GUILD_ID \
+  --archive-completed \
+  --archive-duplicates
+```
+
+Every CSV contributes content to private `message_context.db`. The same CSV
+contributes counts-only `csv_backfill` activity only if its channel ID has not
+already been imported successfully from JSON. IDs come from CSV columns or the
+filename’s final `[channel_id]`; unknown-ID files remain context-only.
+
+Use `--context-only` to omit activity. `--force-activity` overrides JSON
+coverage detection and may duplicate totals. Public `/ask` never uses this
+archive.
+
 ## Operational test
 
 Use a test configuration such as:

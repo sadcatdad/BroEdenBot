@@ -465,10 +465,30 @@ class Stats(commands.Cog):
                 earliest_message_at TEXT,
                 latest_message_at TEXT,
                 status TEXT DEFAULT 'completed',
-                notes TEXT
+                notes TEXT,
+                source_file TEXT,
+                source_format TEXT,
+                imported_for_activity INTEGER DEFAULT 1,
+                imported_for_context INTEGER DEFAULT 0
             )
             """
         )
+        cursor = await self.bot.db.execute(
+            "PRAGMA table_info(stats_activity_imports)"
+        )
+        import_columns = {row[1] for row in await cursor.fetchall()}
+        await cursor.close()
+        for name, definition in (
+            ("source_file", "TEXT"),
+            ("source_format", "TEXT"),
+            ("imported_for_activity", "INTEGER DEFAULT 1"),
+            ("imported_for_context", "INTEGER DEFAULT 0"),
+        ):
+            if name not in import_columns:
+                await self.bot.db.execute(
+                    f"ALTER TABLE stats_activity_imports "
+                    f"ADD COLUMN {name} {definition}"
+                )
         await self.bot.db.execute(
             """
             CREATE INDEX IF NOT EXISTS idx_stats_activity_imports_guild_date
@@ -2416,8 +2436,13 @@ class Stats(commands.Cog):
 
     @staticmethod
     def _activity_source_filter(source: str) -> Tuple[str, Tuple[str, ...]]:
-        if source in {"live", "imported"}:
-            return "AND source = ?", (source,)
+        if source == "live":
+            return "AND source = ?", ("live",)
+        if source == "imported":
+            return (
+                "AND source IN (?, ?, ?)",
+                ("imported", "imported_csv", "csv_backfill"),
+            )
         return "", ()
 
     async def _tracking_started_datetime(self):

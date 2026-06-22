@@ -115,6 +115,21 @@ class MessageContext(commands.Cog):
         await self.db.execute("PRAGMA journal_mode = WAL")
         await self.db.execute("PRAGMA busy_timeout = 30000")
         await self.db.execute(MESSAGE_CONTEXT_TABLE_SQL)
+        cursor = await self.db.execute(
+            "PRAGMA table_info(message_context_messages)"
+        )
+        columns = {row[1] for row in await cursor.fetchall()}
+        await cursor.close()
+        for name, definition in (
+            ("source_file", "TEXT"),
+            ("row_number", "INTEGER"),
+            ("imported_at", "TEXT"),
+        ):
+            if name not in columns:
+                await self.db.execute(
+                    f"ALTER TABLE message_context_messages "
+                    f"ADD COLUMN {name} {definition}"
+                )
         for statement in MESSAGE_CONTEXT_INDEX_SQL:
             await self.db.execute(statement)
         try:

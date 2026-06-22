@@ -56,6 +56,10 @@ maintenance.
   source-reference helpers.
 - `scripts/import_message_context.py` — Streaming DiscordChatExporter CSV
   importer for the separate full-server archive.
+- `scripts/import_full_csv_exports.py` — Imports every full-server CSV into
+  private context and backfills counts only for channels not covered by JSON.
+- `utils/import_helpers.py` — Shared filename channel inference and completed
+  JSON activity-channel detection.
 - `utils/message_context.py` — Archive schema, FTS, access, date, retention,
   channel inference, and deterministic import-ID helpers.
 

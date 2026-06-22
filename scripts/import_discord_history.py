@@ -6,6 +6,7 @@ from __future__ import annotations
 import argparse
 import csv
 import datetime as dt
+import hashlib
 import os
 import re
 import shutil
@@ -20,6 +21,12 @@ from pathlib import Path
 from typing import Any, BinaryIO, Iterator, Optional
 
 import ijson
+
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
+
+from utils.import_helpers import infer_export_channel
 
 
 UTC = dt.timezone.utc
@@ -61,6 +68,7 @@ CSV_COLUMN_ALIASES = {
         "userbot",
         "userisbot",
     ),
+    "content": ("content", "message", "text"),
 }
 
 
@@ -317,11 +325,33 @@ def ensure_schema(connection: sqlite3.Connection) -> None:
             earliest_message_at TEXT,
             latest_message_at TEXT,
             status TEXT DEFAULT 'completed',
-            notes TEXT
+            notes TEXT,
+            source_file TEXT,
+            source_format TEXT,
+            imported_for_activity INTEGER DEFAULT 1,
+            imported_for_context INTEGER DEFAULT 0
         )
         """,
         description="creating the activity import log",
     )
+    import_columns = {
+        row[1]
+        for row in connection.execute(
+            "PRAGMA table_info(stats_activity_imports)"
+        ).fetchall()
+    }
+    for name, definition in (
+        ("source_file", "TEXT"),
+        ("source_format", "TEXT"),
+        ("imported_for_activity", "INTEGER DEFAULT 1"),
+        ("imported_for_context", "INTEGER DEFAULT 0"),
+    ):
+        if name not in import_columns:
+            execute_write(
+                connection,
+                f"ALTER TABLE stats_activity_imports ADD COLUMN {name} {definition}",
+                description=f"adding the {name} import-log column",
+            )
     execute_write(
         connection,
         """
@@ -431,12 +461,7 @@ def archive_completed_file(
 
 
 def infer_channel_name(path: Path) -> str:
-    name = path.stem
-    if name.endswith("]") and " [" in name:
-        name = name.rsplit(" [", 1)[0]
-    if " - " in name:
-        name = name.rsplit(" - ", 1)[-1]
-    return name.strip()
+    return infer_export_channel(path)[1]
 
 
 def nested(record: dict[str, Any], *paths: str) -> Any:
@@ -631,6 +656,7 @@ def canonical_csv_message(
     indexes: dict[str, Optional[int]],
     row_number: int,
 ) -> dict[str, Any]:
+    content = csv_row_value(row, indexes, "content") or ""
     author: dict[str, Any] = {
         "id": csv_row_value(row, indexes, "user_id"),
         "name": csv_row_value(row, indexes, "author_name"),
@@ -647,6 +673,9 @@ def canonical_csv_message(
         "channel": channel,
         "__csv_filename": path.name,
         "__csv_row_number": row_number,
+        "__csv_content_hash": hashlib.sha256(
+            content.encode("utf-8")
+        ).hexdigest(),
     }
 
 
@@ -719,9 +748,12 @@ def channel_metadata(
     channel_name = nested(
         metadata, "channel.name", "channelName", "channel_name"
     )
+    inferred_id, inferred_name = infer_export_channel(path)
     return (
-        channel_id if channel_id is not None else (fallback_id or 0),
-        str(channel_name or fallback_name or infer_channel_name(path)),
+        channel_id
+        if channel_id is not None
+        else (fallback_id or parse_int(inferred_id) or 0),
+        str(channel_name or fallback_name or inferred_name),
     )
 
 
@@ -757,9 +789,14 @@ def message_fields(
         csv_row_number = message.get("__csv_row_number")
         if not csv_filename or csv_row_number is None:
             return None
-        message_id = (
+        message["__legacy_activity_message_id"] = (
             f"csv:{csv_filename}:{csv_row_number}:{timestamp.isoformat()}:"
             f"{user_id}:{resolved_channel_id}"
+        )
+        message_id = (
+            f"activity_csv:{resolved_channel_id}:{csv_filename}:"
+            f"{csv_row_number}::{user_id}:"
+            f"{message.get('__csv_content_hash') or hashlib.sha256(b'').hexdigest()}"
         )
     username = nested(
         message,
@@ -837,9 +874,10 @@ def record_import(
             guild_id, import_batch_id, filename, channel_id, channel_name,
             imported_at, messages_seen, messages_imported, messages_skipped,
             duplicates_skipped, earliest_message_at, latest_message_at,
-            status, notes
+            status, notes, source_file, source_format,
+            imported_for_activity, imported_for_context
         )
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, 0)
         """,
         (
             guild_id,
@@ -856,6 +894,8 @@ def record_import(
             result.latest.isoformat() if result.latest else None,
             result.status,
             result.notes,
+            result.filename,
+            Path(result.filename).suffix.casefold().lstrip("."),
         ),
         description="recording the import result",
     )
@@ -1015,19 +1055,46 @@ def process_file(
                         message_id,
                         dedupe_table_exists,
                     )
-                else:
-                    cursor = execute_write(
-                        connection,
-                        """
-                        INSERT OR IGNORE INTO stats_activity_imported_messages (
-                            guild_id, message_id, import_batch_id, imported_at
+                    legacy_id = message.get("__legacy_activity_message_id")
+                    if (
+                        not duplicate
+                        and legacy_id
+                        and dedupe_table_exists
+                    ):
+                        duplicate = bool(
+                            connection.execute(
+                                """
+                                SELECT 1 FROM stats_activity_imported_messages
+                                WHERE guild_id = ? AND message_id = ?
+                                """,
+                                (args.guild_id, legacy_id),
+                            ).fetchone()
                         )
-                        VALUES (?, ?, ?, ?)
-                        """,
-                        (args.guild_id, message_id, batch_id, imported_at),
-                        description="writing imported-message dedupe markers",
+                else:
+                    legacy_id = message.get("__legacy_activity_message_id")
+                    duplicate = bool(
+                        legacy_id
+                        and connection.execute(
+                            """
+                            SELECT 1 FROM stats_activity_imported_messages
+                            WHERE guild_id = ? AND message_id = ?
+                            """,
+                            (args.guild_id, legacy_id),
+                        ).fetchone()
                     )
-                    duplicate = cursor.rowcount == 0
+                    if not duplicate:
+                        cursor = execute_write(
+                            connection,
+                            """
+                            INSERT OR IGNORE INTO stats_activity_imported_messages (
+                                guild_id, message_id, import_batch_id, imported_at
+                            )
+                            VALUES (?, ?, ?, ?)
+                            """,
+                            (args.guild_id, message_id, batch_id, imported_at),
+                            description="writing imported-message dedupe markers",
+                        )
+                        duplicate = cursor.rowcount == 0
 
                 if duplicate:
                     result.duplicates_skipped += 1

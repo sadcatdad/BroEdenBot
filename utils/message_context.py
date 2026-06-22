@@ -8,6 +8,8 @@ import re
 from pathlib import Path
 from typing import Iterable, Optional
 
+from utils.import_helpers import infer_export_channel
+
 
 UTC = dt.timezone.utc
 
@@ -39,6 +41,9 @@ CREATE TABLE IF NOT EXISTS message_context_messages (
     sticker_count INTEGER DEFAULT 0,
     jump_url TEXT,
     source TEXT DEFAULT 'live_discord',
+    source_file TEXT,
+    row_number INTEGER,
+    imported_at TEXT,
     stored_at TEXT NOT NULL
 )
 """
@@ -159,9 +164,11 @@ def deterministic_import_id(
     row_number: int,
     author_id: str,
     content_hash: str,
+    channel_id: Optional[str] = None,
 ) -> str:
+    channel_part = f"{channel_id}:" if channel_id else ""
     return (
-        f"imported_csv:{Path(source_file).name}:{row_number}::"
+        f"imported_csv:{channel_part}{Path(source_file).name}:{row_number}::"
         f"{author_id}:{content_hash}"
     )
 
@@ -234,11 +241,4 @@ def safe_excerpt(value: object, limit: int = 240) -> str:
 
 
 def infer_channel(path: Path) -> tuple[Optional[str], str]:
-    name = path.stem.strip()
-    match = re.search(r"\[(\d+)\]\s*$", name)
-    channel_id = match.group(1) if match else None
-    if match:
-        name = name[: match.start()].rstrip()
-    if " - " in name:
-        name = name.rsplit(" - ", 1)[-1]
-    return channel_id, name or path.stem
+    return infer_export_channel(path)

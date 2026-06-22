@@ -110,6 +110,11 @@ bedimportdry   # Pi: preview imports
 bedimport      # Pi: run imports
 ```
 
+The default full-CSV workflow syncs `imports/message_context/` and runs
+`scripts/import_full_csv_exports.py`. Every CSV feeds private `/context`;
+activity is backfilled only for channel IDs without completed JSON activity
+imports.
+
 ## Member server-help command
 
 ### `/ask <question>`
@@ -896,6 +901,19 @@ Stop `broedenbot` during especially large imports if lock warnings persist.
 
 Archiving remains opt-in with `--archive-completed`; failed or incomplete files
 stay available for repair or re-export.
+
+For full-server CSV coverage, place every channel CSV in
+`imports/message_context/`, then run:
+
+```bash
+python scripts/import_full_csv_exports.py --folder imports/message_context --guild-id SERVER_ID --dry-run
+python scripts/import_full_csv_exports.py --folder imports/message_context --guild-id SERVER_ID --archive-completed --archive-duplicates
+```
+
+All CSV content goes to separate staff-only `message_context.db`. Counts-only
+activity uses source `csv_backfill` and is added only for channel IDs not
+already covered by completed JSON imports. Public `/ask` never uses the private
+archive.
 
 Historical imports: see
 [docs/historical-imports.md](docs/historical-imports.md) for the complete

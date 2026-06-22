@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import csv
+import datetime as dt
 import json
 import os
 import shutil
@@ -61,10 +62,14 @@ COLUMN_ALIASES = {
 @dataclass
 class ImportResult:
     file: Path
+    channel_id: str = "unknown"
+    channel_name: str = ""
     seen: int = 0
     imported: int = 0
     duplicates: int = 0
     skipped: int = 0
+    earliest: Optional[dt.datetime] = None
+    latest: Optional[dt.datetime] = None
     failed: bool = False
 
 
@@ -89,6 +94,22 @@ def ensure_schema(connection: sqlite3.Connection) -> bool:
     connection.execute("PRAGMA journal_mode = WAL")
     connection.execute("PRAGMA busy_timeout = 30000")
     connection.execute(MESSAGE_CONTEXT_TABLE_SQL)
+    columns = {
+        row[1]
+        for row in connection.execute(
+            "PRAGMA table_info(message_context_messages)"
+        ).fetchall()
+    }
+    for name, definition in (
+        ("source_file", "TEXT"),
+        ("row_number", "INTEGER"),
+        ("imported_at", "TEXT"),
+    ):
+        if name not in columns:
+            connection.execute(
+                f"ALTER TABLE message_context_messages "
+                f"ADD COLUMN {name} {definition}"
+            )
     for statement in MESSAGE_CONTEXT_INDEX_SQL:
         connection.execute(statement)
     fts = True
@@ -187,19 +208,76 @@ def process_file(
     path: Path,
     args: argparse.Namespace,
 ) -> ImportResult:
-    result = ImportResult(file=path)
     inferred_id, inferred_name = infer_channel(path)
     fallback_channel_id = str(args.channel_id or inferred_id or "unknown")
     fallback_channel_name = str(args.channel_name or inferred_name)
+    result = ImportResult(
+        file=path,
+        channel_id=fallback_channel_id,
+        channel_name=fallback_channel_name,
+    )
     pending: list[tuple] = []
+    dry_run_seen: set[tuple[str, str, str, str, str]] = set()
 
     def flush() -> None:
         if not pending:
             return
-        if args.dry_run or connection is None:
-            result.imported += len(pending)
+        if args.dry_run:
+            for values in pending:
+                (
+                    guild_id,
+                    channel_id,
+                    _channel_name,
+                    message_id,
+                    author_id,
+                    _author,
+                    _display,
+                    timestamp,
+                    _content,
+                    digest,
+                    *_rest,
+                ) = values
+                identity = (
+                    guild_id,
+                    channel_id,
+                    author_id,
+                    timestamp,
+                    digest,
+                )
+                duplicate = identity in dry_run_seen
+                if not duplicate and connection is not None:
+                    duplicate = connection.execute(
+                        """
+                        SELECT 1 FROM message_context_messages
+                        WHERE message_id = ?
+                           OR (
+                               source = 'imported_csv'
+                               AND guild_id = ?
+                               AND channel_id = ?
+                               AND author_id = ?
+                               AND timestamp = ?
+                               AND content_hash = ?
+                           )
+                        LIMIT 1
+                        """,
+                        (
+                            message_id,
+                            guild_id,
+                            channel_id,
+                            author_id,
+                            timestamp,
+                            digest,
+                        ),
+                    ).fetchone() is not None
+                dry_run_seen.add(identity)
+                if duplicate:
+                    result.duplicates += 1
+                else:
+                    result.imported += 1
             pending.clear()
             return
+        if connection is None:
+            raise RuntimeError("A database connection is required for imports.")
         inserted = 0
         for values in pending:
             cursor = connection.execute(
@@ -209,10 +287,10 @@ def process_file(
                     author_name, author_display_name, timestamp, is_deleted,
                     is_bot, is_webhook, content, content_hash, attachment_count,
                     attachment_names, embed_count, sticker_count, source,
-                    stored_at
+                    source_file, row_number, imported_at, stored_at
                 ) VALUES (
                     ?, ?, ?, ?, ?, ?, ?, ?, 0, 0, 0, ?, ?, ?, ?, 0, 0,
-                    'imported_csv', ?
+                    'imported_csv', ?, ?, ?, ?
                 )
                 """,
                 values,
@@ -237,13 +315,24 @@ def process_file(
                 result.skipped += 1
                 continue
             digest = content_digest(content)
-            message_id = _value(row, mapping, "message_id") or deterministic_import_id(
-                path.name, row_number, author_id, digest
-            )
             channel_id = _value(row, mapping, "channel_id") or fallback_channel_id
             channel_name = (
                 _value(row, mapping, "channel_name") or fallback_channel_name
             )
+            result.channel_id = channel_id
+            result.channel_name = channel_name
+            message_id = _value(row, mapping, "message_id") or deterministic_import_id(
+                path.name,
+                row_number,
+                author_id,
+                digest,
+                channel_id,
+            )
+            if result.earliest is None or timestamp < result.earliest:
+                result.earliest = timestamp
+            if result.latest is None or timestamp > result.latest:
+                result.latest = timestamp
+            imported_at = utcnow_iso()
             pending.append(
                 (
                     str(args.guild_id),
@@ -258,7 +347,10 @@ def process_file(
                     digest,
                     len(attachment_names),
                     json.dumps(attachment_names) if attachment_names else None,
-                    utcnow_iso(),
+                    path.name,
+                    row_number,
+                    imported_at,
+                    imported_at,
                 )
             )
             if len(pending) >= BATCH_SIZE:

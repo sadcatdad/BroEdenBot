@@ -108,14 +108,21 @@ class MessageContextImporterTests(unittest.TestCase):
             self.assertEqual(second.duplicates, 1)
             row = connection.execute(
                 """
-                SELECT guild_id, channel_id, author_id, content, source
+                SELECT guild_id, channel_id, author_id, content, source,
+                       source_file, row_number, imported_at
                 FROM message_context_messages
                 """
             ).fetchone()
-            self.assertEqual(
-                row,
-                ("42", "99", "123", "A stored message", "imported_csv"),
-            )
+            self.assertEqual(row[:7], (
+                "42",
+                "99",
+                "123",
+                "A stored message",
+                "imported_csv",
+                "general.csv",
+                2,
+            ))
+            self.assertIsNotNone(row[7])
             connection.close()
 
     def test_dry_run_does_not_need_a_database(self):

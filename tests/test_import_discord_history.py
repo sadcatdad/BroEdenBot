@@ -44,6 +44,28 @@ def importer_args(
 
 
 class DiscordHistoryCSVTests(unittest.TestCase):
+    def test_filename_channel_id_is_used_when_csv_has_no_channel_column(self):
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            path = (
+                Path(temporary_directory)
+                / "Server - general [300].csv"
+            )
+            path.write_text(
+                "ID,Date,User ID,Author\n"
+                "1,2026-06-20T01:00:00Z,10,First\n",
+                encoding="utf-8",
+            )
+            connection = sqlite3.connect(":memory:")
+            ensure_schema(connection)
+            result = process_file(
+                connection,
+                path,
+                importer_args(Path(temporary_directory) / "data.db"),
+                str(uuid.uuid4()),
+            )
+            self.assertEqual(result.channel_id, 300)
+            connection.close()
+
     def test_csv_aliases_are_normalized_without_retaining_content(self):
         with tempfile.TemporaryDirectory() as temporary_directory:
             path = Path(temporary_directory) / "channel.csv"
@@ -75,7 +97,7 @@ class DiscordHistoryCSVTests(unittest.TestCase):
             )
             self.assertEqual(parsed[1].isoformat(), "2026-06-20T01:02:03+00:00")
 
-    def test_missing_message_id_uses_content_free_deterministic_id(self):
+    def test_missing_message_id_uses_hashed_deterministic_id(self):
         with tempfile.TemporaryDirectory() as temporary_directory:
             path = Path(temporary_directory) / "vent-summit.csv"
             path.write_text(
@@ -90,10 +112,10 @@ class DiscordHistoryCSVTests(unittest.TestCase):
             second = message_fields(message, 300, "vent-summit")
 
             self.assertEqual(first[0], second[0])
-            self.assertEqual(
-                first[0],
-                "csv:vent-summit.csv:2:2026-06-20T02:00:00+00:00:"
-                "200:300",
+            self.assertTrue(
+                first[0].startswith(
+                    "activity_csv:300:vent-summit.csv:2::200:"
+                )
             )
             self.assertNotIn("secret", first[0])
 
