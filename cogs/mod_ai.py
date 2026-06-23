@@ -13,6 +13,7 @@ from google import genai
 from google.genai import errors, types
 
 from utils.knowledge import compact_knowledge_context, search_knowledge
+from utils.settings import get_csv_ids_setting
 
 
 DEFAULT_MODEL = "gemini-2.5-flash"
@@ -830,9 +831,6 @@ class ModAI(commands.Cog):
         )
         api_key = os.getenv("GEMINI_API_KEY")
         self.client = genai.Client(api_key=api_key) if api_key else None
-        self.allowed_role_ids = self._parse_allowed_role_ids(
-            os.getenv("MODAI_ALLOWED_ROLE_IDS", "")
-        )
         self.message_context_menu = app_commands.ContextMenu(
             name="Analyze for Mod Review",
             callback=self.analyze_for_mod_review,
@@ -879,21 +877,14 @@ class ModAI(commands.Cog):
             type=discord.AppCommandType.message,
         )
 
-    @staticmethod
-    def _parse_allowed_role_ids(raw_value: str) -> set:
-        return {
-            int(value)
-            for value in re.split(r"[\s,]+", raw_value.strip())
-            if value.isdigit()
-        }
-
     def _has_access(self, interaction: discord.Interaction) -> bool:
         if not interaction.guild or not isinstance(interaction.user, discord.Member):
             return False
         if interaction.user.guild_permissions.administrator:
             return True
+        allowed_role_ids = set(get_csv_ids_setting("MODAI_ALLOWED_ROLE_IDS"))
         return any(
-            role.id in self.allowed_role_ids for role in interaction.user.roles
+            role.id in allowed_role_ids for role in interaction.user.roles
         )
 
     async def _deny_if_unauthorised(

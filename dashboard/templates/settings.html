@@ -2,19 +2,80 @@
 {% block content %}
 <div class="page-heading">
   <div>
-    <p class="eyebrow">Read-only</p>
-    <h1>Settings Viewer</h1>
+    <p class="eyebrow">Database-backed runtime configuration</p>
+    <h1>Settings</h1>
   </div>
 </div>
-<section class="card">
-  <p class="muted">This page displays approved operational values only. Settings cannot be edited here.</p>
-  <div class="settings-list">
-    {% for setting in settings %}
-    <div>
-      <code>{{ setting.name }}</code>
-      <span>{{ setting.value }}</span>
+<p class="muted">Safe values are stored in SQLite and take priority over `.env`. Secrets and boot-only values are never editable here.</p>
+{% if message %}<div class="alert success">{{ message }}</div>{% endif %}
+{% if error %}<div class="alert error">{{ error }}</div>{% endif %}
+
+{% set section_titles = {
+  "ask": "Ask",
+  "permissions": "Permissions",
+  "vcxp": "VC XP",
+  "models": "Models / Read-only"
+} %}
+{% for section_name in ("ask", "permissions", "vcxp", "models") %}
+<section class="card settings-section">
+  <h2>{{ section_titles[section_name] }}</h2>
+  <div class="editable-settings">
+    {% for setting in sections[section_name] %}
+    <div class="setting-row">
+      <div class="setting-copy">
+        <code>{{ setting.key }}</code>
+        <p>{{ setting.description }}</p>
+        <small>Effective value: <strong>{{ setting.value or "Not configured" }}</strong></small>
+      </div>
+      {% if setting.editable %}
+      <form method="post" action="{{ url_for('update_setting') }}" class="setting-form">
+        <input type="hidden" name="csrf" value="{{ csrf_token }}">
+        <input type="hidden" name="key" value="{{ setting.key }}">
+        {% if setting.value_type == "bool" %}
+        <select name="value" aria-label="{{ setting.key }}">
+          <option value="false" {{ "selected" if setting.value == "false" else "" }}>false</option>
+          <option value="true" {{ "selected" if setting.value == "true" else "" }}>true</option>
+        </select>
+        {% else %}
+        <input
+          name="value"
+          value="{{ setting.value }}"
+          aria-label="{{ setting.key }}"
+          inputmode="{{ 'numeric' if setting.value_type == 'int' else 'text' }}"
+        >
+        {% endif %}
+        <button class="button" type="submit">Save</button>
+      </form>
+      {% else %}
+      <div class="readonly-value">{{ setting.value or "Not configured" }}</div>
+      {% endif %}
     </div>
     {% endfor %}
   </div>
+</section>
+{% endfor %}
+
+<section class="card">
+  <h2>Recent setting changes</h2>
+  {% if recent_changes %}
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>Setting</th><th>Old</th><th>New</th><th>Changed by</th><th>Time</th></tr></thead>
+      <tbody>
+      {% for change in recent_changes %}
+      <tr>
+        <td><code>{{ change.key }}</code></td>
+        <td>{{ change.old_value if change.old_value is not none else "Not set" }}</td>
+        <td>{{ change.new_value or "(blank)" }}</td>
+        <td>{{ change.changed_by }}</td>
+        <td>{{ change.changed_at }}</td>
+      </tr>
+      {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {% else %}
+  <p class="muted">No dashboard setting changes recorded yet.</p>
+  {% endif %}
 </section>
 {% endblock %}

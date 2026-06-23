@@ -3,7 +3,6 @@ import logging
 import os
 import re
 import time
-from typing import Set
 
 import discord
 from discord import app_commands
@@ -12,6 +11,7 @@ from google import genai
 from google.genai import errors, types
 
 from utils.knowledge import build_public_ask_context, search_server_knowledge
+from utils.settings import get_csv_ids_setting, get_int_setting
 from utils.ui import SUCCESS_COLOR, branded_embed
 
 
@@ -94,25 +94,6 @@ SERVER_SCOPE_TERMS = {
     "links",
     "spam",
 }
-
-
-def _parse_channel_ids(raw_value: str) -> Set[int]:
-    channel_ids = set()
-    for value in re.split(r"[\s,]+", raw_value.strip()):
-        if not value:
-            continue
-        try:
-            channel_ids.add(int(value))
-        except ValueError:
-            logger.warning("Ignoring invalid ASK_ALLOWED_CHANNEL_IDS entry.")
-    return channel_ids
-
-
-def _parse_cooldown_seconds(raw_value: str) -> int:
-    try:
-        return max(1, int(raw_value))
-    except (TypeError, ValueError):
-        return DEFAULT_COOLDOWN_SECONDS
 
 
 def _requires_staff(question: str) -> bool:
@@ -258,20 +239,18 @@ class Ask(commands.Cog):
         ).strip()
         api_key = os.getenv("GEMINI_API_KEY", "").strip()
         self.client = genai.Client(api_key=api_key) if api_key else None
-        self.allowed_channel_ids = _parse_channel_ids(
-            os.getenv("ASK_ALLOWED_CHANNEL_IDS", "")
-        )
-        self.cooldown_seconds = _parse_cooldown_seconds(
-            os.getenv("ASK_COOLDOWN_SECONDS", str(DEFAULT_COOLDOWN_SECONDS))
-        )
         self._last_use_by_user = {}
         self._cooldown_lock = asyncio.Lock()
 
     async def _is_rate_limited(self, user_id: int) -> bool:
         now = time.monotonic()
+        cooldown_seconds = get_int_setting(
+            "ASK_COOLDOWN_SECONDS",
+            DEFAULT_COOLDOWN_SECONDS,
+        )
         async with self._cooldown_lock:
             last_use = self._last_use_by_user.get(user_id)
-            if last_use is not None and now - last_use < self.cooldown_seconds:
+            if last_use is not None and now - last_use < cooldown_seconds:
                 return True
             self._last_use_by_user[user_id] = now
             return False
@@ -397,12 +376,10 @@ MEMBER QUESTION:
                 ephemeral=True,
             )
             return
-        if (
-            self.allowed_channel_ids
-            and interaction.channel_id not in self.allowed_channel_ids
-        ):
+        allowed_channel_ids = set(get_csv_ids_setting("ASK_ALLOWED_CHANNEL_IDS"))
+        if allowed_channel_ids and interaction.channel_id not in allowed_channel_ids:
             allowed_channels = " ".join(
-                f"<#{channel_id}>" for channel_id in sorted(self.allowed_channel_ids)
+                f"<#{channel_id}>" for channel_id in sorted(allowed_channel_ids)
             )
             await interaction.response.send_message(
                 f"Please use /ask in {allowed_channels}.",

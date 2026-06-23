@@ -1,5 +1,3 @@
-import os
-import re
 import logging
 from typing import Any, List
 
@@ -7,6 +5,7 @@ import discord
 from discord import app_commands
 from discord.ext import commands
 
+from utils.settings import get_csv_ids_setting
 
 MAX_NOTE_LENGTH = 2_000
 MAX_VIEW_NOTES = 50
@@ -36,9 +35,6 @@ class StaffNotes(commands.Cog):
 
     def __init__(self, bot: commands.Bot):
         self.bot = bot
-        self.allowed_role_ids = self._parse_allowed_role_ids(
-            os.getenv("STAFF_NOTES_ALLOWED_ROLE_IDS", "")
-        )
 
     async def cog_load(self) -> None:
         await self.bot.db.execute(
@@ -66,14 +62,6 @@ class StaffNotes(commands.Cog):
         await self.bot.db.commit()
 
     @staticmethod
-    def _parse_allowed_role_ids(raw_value: str) -> set:
-        return {
-            int(value)
-            for value in re.split(r"[\s,]+", raw_value.strip())
-            if value.isdigit()
-        }
-
-    @staticmethod
     def _is_administrator(interaction: discord.Interaction) -> bool:
         return bool(
             interaction.guild
@@ -86,8 +74,9 @@ class StaffNotes(commands.Cog):
             return False
         if interaction.user.guild_permissions.administrator:
             return True
+        allowed_role_ids = set(get_csv_ids_setting("STAFF_NOTES_ALLOWED_ROLE_IDS"))
         return any(
-            role.id in self.allowed_role_ids for role in interaction.user.roles
+            role.id in allowed_role_ids for role in interaction.user.roles
         )
 
     async def _deny_if_unauthorised(

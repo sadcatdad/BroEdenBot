@@ -1,6 +1,8 @@
 import os
 import re
 import sqlite3
+import subprocess
+import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -8,27 +10,53 @@ from unittest.mock import patch
 
 from fastapi.testclient import TestClient
 
-from dashboard.app import app
+from dashboard.app import app, validate_dashboard_config
 from dashboard.db import bank_overview, import_history
+from utils.settings import get_setting, initialize_settings_from_env
 
 
 class DashboardRouteTests(unittest.TestCase):
     def setUp(self):
+        self.temporary_directory = tempfile.TemporaryDirectory()
+        self.database = Path(self.temporary_directory.name) / "data.db"
         self.environment = patch.dict(
             os.environ,
             {
+                "DATABASE_PATH": str(self.database),
                 "DASHBOARD_ENABLED": "true",
                 "DASHBOARD_USERNAME": "admin",
                 "DASHBOARD_PASSWORD": "test-password",
+                "DASHBOARD_SECRET_KEY": "test-session-signing-key",
+                "STAFF_AI_ALLOWED_ROLE_IDS": "11111111111111111",
+                "MESSAGE_CONTEXT_ALLOWED_ROLE_IDS": "22222222222222222",
+                "BOT_OWNER_USER_IDS": "33333333333333333",
+                "DISCORD_TOKEN": "discord-super-secret-value",
+                "GEMINI_API_KEY": "gemini-super-secret-value",
             },
             clear=False,
         )
         self.environment.start()
+        initialize_settings_from_env()
         self.client = TestClient(app)
 
     def tearDown(self):
         self.client.close()
         self.environment.stop()
+        self.temporary_directory.cleanup()
+
+    def login(self):
+        login_page = self.client.get("/login")
+        match = re.search(r'name="csrf" value="([^"]+)"', login_page.text)
+        self.assertIsNotNone(match)
+        response = self.client.post(
+            "/login",
+            data={
+                "username": "admin",
+                "password": "test-password",
+                "csrf": match.group(1),
+            },
+        )
+        self.assertEqual(response.status_code, 200)
 
     def test_protected_page_redirects_to_login(self):
         response = self.client.get("/", follow_redirects=False)
@@ -36,31 +64,118 @@ class DashboardRouteTests(unittest.TestCase):
         self.assertEqual(response.headers["location"], "http://testserver/login")
 
     def test_login_and_settings_do_not_expose_secrets(self):
-        login_page = self.client.get("/login")
-        csrf = login_page.cookies.get("broeden_dashboard_session")
-        self.assertIsNotNone(csrf)
-
-        match = re.search(r'name="csrf" value="([^"]+)"', login_page.text)
-        self.assertIsNotNone(match)
-        token = match.group(1)
-        response = self.client.post(
-            "/login",
-            data={
-                "username": "admin",
-                "password": "test-password",
-                "csrf": token,
-            },
-        )
-        self.assertEqual(response.status_code, 200)
+        self.login()
         settings = self.client.get("/settings")
         self.assertEqual(settings.status_code, 200)
+        self.assertIn("STAFF_AI_ALLOWED_ROLE_IDS", settings.text)
+        self.assertIn("MESSAGE_CONTEXT_ALLOWED_ROLE_IDS", settings.text)
+        self.assertIn("BOT_OWNER_USER_IDS", settings.text)
+        self.assertIn("11111111111111111", settings.text)
+        self.assertIn("22222222222222222", settings.text)
+        self.assertIn("33333333333333333", settings.text)
         self.assertNotIn("DISCORD_TOKEN", settings.text)
         self.assertNotIn("GEMINI_API_KEY", settings.text)
+        self.assertNotIn("test-password", settings.text)
+        self.assertNotIn("test-session-signing-key", settings.text)
+        self.assertNotIn("discord-super-secret-value", settings.text)
+        self.assertNotIn("gemini-super-secret-value", settings.text)
+        overview = self.client.get("/")
+        self.assertNotIn("test-password", overview.text)
+        self.assertNotIn("test-session-signing-key", overview.text)
+        self.assertNotIn("discord-super-secret-value", overview.text)
+        self.assertNotIn("gemini-super-secret-value", overview.text)
+
+    def test_unauthenticated_user_cannot_update_settings(self):
+        response = self.client.post(
+            "/settings/update",
+            data={"key": "ASK_COOLDOWN_SECONDS", "value": "45", "csrf": "nope"},
+            follow_redirects=False,
+        )
+        self.assertEqual(response.status_code, 303)
+        self.assertEqual(get_setting("ASK_COOLDOWN_SECONDS"), "30")
+
+    def test_authenticated_user_can_update_allowed_setting(self):
+        self.login()
+        settings = self.client.get("/settings")
+        match = re.search(r'name="csrf" value="([^"]+)"', settings.text)
+        self.assertIsNotNone(match)
+        response = self.client.post(
+            "/settings/update",
+            data={
+                "key": "ASK_COOLDOWN_SECONDS",
+                "value": "45",
+                "csrf": match.group(1),
+            },
+            follow_redirects=False,
+        )
+        self.assertEqual(response.status_code, 303)
+        self.assertEqual(get_setting("ASK_COOLDOWN_SECONDS"), "45")
+
+    def test_forbidden_setting_update_is_rejected(self):
+        self.login()
+        settings = self.client.get("/settings")
+        token = re.search(r'name="csrf" value="([^"]+)"', settings.text).group(1)
+        for key in (
+            "DISCORD_TOKEN",
+            "GEMINI_API_KEY",
+            "DASHBOARD_PASSWORD",
+            "DASHBOARD_SECRET_KEY",
+            "CUSTOM_TOKEN_VALUE",
+        ):
+            response = self.client.post(
+                "/settings/update",
+                data={"key": key, "value": "do-not-store", "csrf": token},
+                follow_redirects=False,
+            )
+            self.assertEqual(response.status_code, 400)
 
     def test_health_is_available_without_login(self):
         response = self.client.get("/health")
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.json()["status"], "ok")
+
+
+class DashboardConfigurationTests(unittest.TestCase):
+    def run_dashboard_import(self, environment):
+        process_environment = os.environ.copy()
+        process_environment.update(environment)
+        process_environment["PYTHON_DOTENV_DISABLED"] = "1"
+        return subprocess.run(
+            [sys.executable, "-c", "import dashboard.app"],
+            cwd=Path(__file__).resolve().parent.parent,
+            env=process_environment,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+
+    def test_missing_secret_key_raises_when_enabled(self):
+        environment = {
+            "DASHBOARD_ENABLED": "true",
+            "DASHBOARD_PASSWORD": "test-password",
+        }
+        with patch.dict(os.environ, environment, clear=True):
+            with self.assertRaisesRegex(RuntimeError, "DASHBOARD_SECRET_KEY is required"):
+                validate_dashboard_config()
+        process_environment = dict(environment)
+        process_environment["DASHBOARD_SECRET_KEY"] = ""
+        result = self.run_dashboard_import(process_environment)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("DASHBOARD_SECRET_KEY is required", result.stderr)
+
+    def test_missing_password_raises_when_enabled(self):
+        environment = {
+            "DASHBOARD_ENABLED": "true",
+            "DASHBOARD_SECRET_KEY": "test-session-signing-key",
+        }
+        with patch.dict(os.environ, environment, clear=True):
+            with self.assertRaisesRegex(RuntimeError, "DASHBOARD_PASSWORD is required"):
+                validate_dashboard_config()
+        process_environment = dict(environment)
+        process_environment["DASHBOARD_PASSWORD"] = ""
+        result = self.run_dashboard_import(process_environment)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("DASHBOARD_PASSWORD is required", result.stderr)
 
 
 class DashboardDatabaseTests(unittest.TestCase):

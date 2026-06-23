@@ -15,6 +15,7 @@ import discord
 from discord import app_commands
 from discord.ext import commands
 
+from utils.settings import get_csv_ids_setting
 from utils.ui import INFO_COLOR, MUTED_COLOR, branded_embed
 
 
@@ -658,7 +659,6 @@ class ChecklistCog(commands.Cog):
         self.allowed_role_ids = parse_id_set(
             os.getenv("CHECKLIST_ALLOWED_ROLE_IDS", "")
         )
-        self.owner_user_ids = parse_id_set(os.getenv("BOT_OWNER_USER_IDS", ""))
         self._write_lock = asyncio.Lock()
         self._posts_upgraded = False
 
@@ -760,7 +760,7 @@ class ChecklistCog(commands.Cog):
     def has_access(self, interaction: discord.Interaction) -> bool:
         if not interaction.guild or not isinstance(interaction.user, discord.Member):
             return False
-        if interaction.user.id in self.owner_user_ids:
+        if interaction.user.id in get_csv_ids_setting("BOT_OWNER_USER_IDS"):
             return True
         return any(role.id in self.allowed_role_ids for role in interaction.user.roles)
 

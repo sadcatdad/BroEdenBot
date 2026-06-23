@@ -15,6 +15,12 @@ import discord
 from discord import app_commands
 from discord.ext import commands
 
+from utils.settings import (
+    EDITABLE_SETTING_KEYS,
+    get_bool_setting,
+    get_csv_ids_setting,
+    get_setting,
+)
 from utils.ui import (
     INFO_COLOR,
     branded_embed,
@@ -135,7 +141,7 @@ def env_enabled(name: str, default: bool = False) -> bool:
 
 def is_bot_manager(user: object) -> bool:
     user_id = getattr(user, "id", None)
-    if user_id in parse_user_ids(os.getenv("BOT_OWNER_USER_IDS")):
+    if user_id in get_csv_ids_setting("BOT_OWNER_USER_IDS"):
         return True
     if not env_enabled("BOT_OWNER_ALLOW_ADMINS"):
         return False
@@ -584,7 +590,7 @@ class BotAdmin(commands.Cog):
             footer="Values and secrets are never displayed",
         )
         configured = [
-            f"{'✅' if os.getenv(name, '').strip() else '⚠️'} `{name}`"
+            f"{'✅' if (get_setting(name, '') if name in EDITABLE_SETTING_KEYS else os.getenv(name, '')).strip() else '⚠️'} `{name}`"
             for name in STATUS_ENV_VARS
         ]
         midpoint = (len(configured) + 1) // 2
@@ -599,7 +605,7 @@ class BotAdmin(commands.Cog):
             inline=True,
         )
 
-        trigger_role_text = os.getenv("VCXP_TRIGGER_ROLE_ID", "").strip()
+        trigger_role_text = (get_setting("VCXP_TRIGGER_ROLE_ID", "") or "").strip()
         trigger_role_id = int(trigger_role_text) if trigger_role_text.isdigit() else 0
         trigger_role = guild.get_role(trigger_role_id) if trigger_role_id else None
         bot_member = guild.me
@@ -613,7 +619,7 @@ class BotAdmin(commands.Cog):
         configuration.add_field(
             name="VCXP safety",
             value=(
-                f"Enabled: **{'Yes' if env_enabled('VCXP_ENABLED') else 'No'}**\n"
+                f"Enabled: **{'Yes' if get_bool_setting('VCXP_ENABLED') else 'No'}**\n"
                 f"Trigger role configured: **{'Yes' if trigger_role_id else 'No'}**\n"
                 f"Trigger role found: **{'Yes' if trigger_role else 'No'}**\n"
                 f"Bot can manage role: **{'Yes' if can_manage_role else 'No'}**"

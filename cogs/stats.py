@@ -22,6 +22,7 @@ from utils.ranked_graphic import (
     RankedGraphicSection,
     render_ranked_graphic,
 )
+from utils.settings import get_csv_ids_setting
 from utils.stats_reports import (
     render_missingrole_report,
     render_report_error,
@@ -100,12 +101,7 @@ def safe_channel_display(channel_id: int, channel_name: Optional[str]) -> str:
 
 
 def allowed_stats_role_ids() -> Set[int]:
-    role_ids = set()
-    for value in os.getenv("STATS_ALLOWED_ROLE_IDS", "").split(","):
-        value = value.strip()
-        if value.isdigit():
-            role_ids.add(int(value))
-    return role_ids
+    return set(get_csv_ids_setting("STATS_ALLOWED_ROLE_IDS"))
 
 
 async def has_stats_access(interaction: discord.Interaction) -> bool:

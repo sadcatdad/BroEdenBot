@@ -20,6 +20,11 @@ from utils.ranked_graphic import (
     RankedGraphicSection,
     render_ranked_graphic,
 )
+from utils.settings import (
+    get_bool_setting,
+    get_csv_ids_setting,
+    get_int_setting,
+)
 from utils.vc_history import ensure_vc_history_schema_async
 
 
@@ -59,24 +64,6 @@ def format_duration(seconds: int) -> str:
     return f"{minutes}m"
 
 
-def env_bool(name: str, default: bool = False) -> bool:
-    value = os.getenv(name)
-    if value is None:
-        return default
-    return value.strip().lower() in {"1", "true", "yes", "on"}
-
-
-def env_int(name: str, default: int, minimum: int = 0) -> int:
-    raw_value = os.getenv(name, "").strip()
-    if not raw_value:
-        return default
-    try:
-        return max(minimum, int(raw_value))
-    except ValueError:
-        logger.warning("Invalid integer for %s; using default=%s", name, default)
-        return default
-
-
 class VCStats(commands.Cog):
     vcstats = app_commands.Group(
         name="vcstats",
@@ -89,27 +76,43 @@ class VCStats(commands.Cog):
 
     def __init__(self, bot: commands.Bot):
         self.bot = bot
-        self.allowed_role_ids = self._parse_allowed_role_ids(
-            os.getenv("VCSTATS_ALLOWED_ROLE_IDS", "")
-        )
         rewards_roles = os.getenv("VCREWARDS_ALLOWED_ROLE_IDS", "").strip()
         self.rewards_allowed_role_ids = self._parse_allowed_role_ids(
             rewards_roles
-        ) if rewards_roles else set(self.allowed_role_ids)
-        self.vcxp_enabled = env_bool("VCXP_ENABLED", False)
-        self.vcxp_trigger_role_id = env_int("VCXP_TRIGGER_ROLE_ID", 0)
-        self.vcxp_minutes_per_pulse = env_int(
-            "VCXP_MINUTES_PER_PULSE", 30, minimum=1
-        )
-        self.vcxp_role_remove_delay_seconds = env_int(
-            "VCXP_ROLE_REMOVE_DELAY_SECONDS", 30
-        )
-        self.vcxp_daily_pulse_cap = env_int("VCXP_DAILY_PULSE_CAP", 4)
-        self.vcxp_weekly_pulse_cap = env_int("VCXP_WEEKLY_PULSE_CAP", 20)
+        ) if rewards_roles else set()
         self._tracking_lock = asyncio.Lock()
         self._pulse_state_lock = asyncio.Lock()
         self._pulses_in_progress: set = set()
         self._last_startup_reconcile = 0.0
+
+    @property
+    def allowed_role_ids(self) -> set[int]:
+        return set(get_csv_ids_setting("VCSTATS_ALLOWED_ROLE_IDS"))
+
+    @property
+    def vcxp_enabled(self) -> bool:
+        return get_bool_setting("VCXP_ENABLED", False)
+
+    @property
+    def vcxp_trigger_role_id(self) -> int:
+        values = get_csv_ids_setting("VCXP_TRIGGER_ROLE_ID")
+        return values[0] if values else 0
+
+    @property
+    def vcxp_minutes_per_pulse(self) -> int:
+        return get_int_setting("VCXP_MINUTES_PER_PULSE", 30)
+
+    @property
+    def vcxp_role_remove_delay_seconds(self) -> int:
+        return get_int_setting("VCXP_ROLE_REMOVE_DELAY_SECONDS", 30)
+
+    @property
+    def vcxp_daily_pulse_cap(self) -> int:
+        return get_int_setting("VCXP_DAILY_PULSE_CAP", 4)
+
+    @property
+    def vcxp_weekly_pulse_cap(self) -> int:
+        return get_int_setting("VCXP_WEEKLY_PULSE_CAP", 20)
 
     async def cog_load(self) -> None:
         await self._create_tables()
@@ -319,10 +322,8 @@ class VCStats(commands.Cog):
             return False
         if interaction.user.guild_permissions.administrator:
             return True
-        return any(
-            role.id in self.rewards_allowed_role_ids
-            for role in interaction.user.roles
-        )
+        permitted_roles = self.rewards_allowed_role_ids or self.allowed_role_ids
+        return any(role.id in permitted_roles for role in interaction.user.roles)
 
     async def _deny_if_unauthorised(
         self, interaction: discord.Interaction
@@ -928,9 +929,15 @@ class VCStats(commands.Cog):
                 daily_paid, weekly_paid = await self._pulse_cap_counts(
                     member.guild.id, member.id
                 )
-                if daily_paid >= self.vcxp_daily_pulse_cap:
+                if (
+                    self.vcxp_daily_pulse_cap
+                    and daily_paid >= self.vcxp_daily_pulse_cap
+                ):
                     return False, "The member has reached the daily pulse cap."
-                if weekly_paid >= self.vcxp_weekly_pulse_cap:
+                if (
+                    self.vcxp_weekly_pulse_cap
+                    and weekly_paid >= self.vcxp_weekly_pulse_cap
+                ):
                     return False, "The member has reached the weekly pulse cap."
 
             pulse_number = pulses_paid + 1

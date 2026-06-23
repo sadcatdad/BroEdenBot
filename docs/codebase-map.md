@@ -62,6 +62,8 @@ maintenance.
   storage, display, and Gemini retrieval.
 - `utils/sqlite.py` — Shared WAL, busy-timeout, synchronization, and optional
   foreign-key setup for async SQLite connections.
+- `utils/settings.py` — Allowlisted, validated runtime settings stored in
+  `data.db`, with environment fallback and a non-secret dashboard audit trail.
 - `scripts/import_message_context.py` — Streaming DiscordChatExporter CSV
   importer for the separate full-server archive.
 - `scripts/import_full_csv_exports.py` — Imports every full-server CSV into

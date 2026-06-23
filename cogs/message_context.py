@@ -35,6 +35,7 @@ from utils.message_context import (
     utcnow_iso,
 )
 from utils.sqlite import configure_connection
+from utils.settings import get_csv_ids_setting
 from utils.ui import branded_embed
 
 
@@ -79,10 +80,6 @@ class MessageContext(commands.Cog):
         self.excluded_channel_ids = parse_id_set(
             os.getenv("MESSAGE_CONTEXT_EXCLUDED_CHANNEL_IDS")
         )
-        self.allowed_role_ids = parse_id_set(
-            os.getenv("MESSAGE_CONTEXT_ALLOWED_ROLE_IDS")
-        )
-        self.owner_user_ids = parse_id_set(os.getenv("BOT_OWNER_USER_IDS"))
         self.track_deletes = parse_bool(
             os.getenv("MESSAGE_CONTEXT_TRACK_DELETES"), default=True
         )
@@ -210,6 +207,10 @@ class MessageContext(commands.Cog):
             logger.exception("Could not roll back message-context transaction")
 
     def _has_access(self, interaction: discord.Interaction) -> bool:
+        allowed_role_ids = set(
+            get_csv_ids_setting("MESSAGE_CONTEXT_ALLOWED_ROLE_IDS")
+        )
+        owner_user_ids = set(get_csv_ids_setting("BOT_OWNER_USER_IDS"))
         role_ids = (
             (role.id for role in interaction.user.roles)
             if isinstance(interaction.user, discord.Member)
@@ -218,8 +219,8 @@ class MessageContext(commands.Cog):
         return has_message_context_access(
             interaction.user.id,
             role_ids,
-            self.allowed_role_ids,
-            self.owner_user_ids,
+            allowed_role_ids,
+            owner_user_ids,
         )
 
     async def _deny(self, interaction: discord.Interaction) -> bool:

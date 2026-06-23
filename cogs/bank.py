@@ -1,6 +1,5 @@
 import datetime
 import math
-import os
 from pathlib import Path
 
 import aiosqlite
@@ -9,6 +8,7 @@ from discord import app_commands
 from discord.ext import commands
 
 from config import COLOR
+from utils.settings import get_csv_ids_setting
 from utils.sqlite import configure_connection
 from utils.ui import (
     branded_embed,
@@ -28,12 +28,7 @@ SUPPORTED_BY_BANK = (
 
 
 def allowed_role_ids():
-    role_ids = set()
-    for value in os.getenv("BANK_ALLOWED_ROLE_IDS", "").split(","):
-        value = value.strip()
-        if value.isdigit():
-            role_ids.add(int(value))
-    return role_ids
+    return set(get_csv_ids_setting("BANK_ALLOWED_ROLE_IDS"))
 
 
 async def has_bank_access(interaction: discord.Interaction):

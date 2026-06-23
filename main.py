@@ -9,6 +9,7 @@ from discord import app_commands
 from discord.ext import commands
 
 from config import COLOR, TOKEN
+from utils.settings import initialize_settings_from_env, settings_database_path
 from utils.sqlite import configure_connection
 from utils.ui import error_embed
 
@@ -123,7 +124,8 @@ class BotClient(commands.Bot):
             )
 
     async def load_data(self):
-        self.db = await aiosqlite.connect(PROJECT_ROOT / "data.db")
+        initialize_settings_from_env()
+        self.db = await aiosqlite.connect(settings_database_path())
         journal_mode = await configure_connection(
             self.db,
             foreign_keys=True,

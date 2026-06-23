@@ -1146,6 +1146,11 @@ These message commands use the bot prefix `!`.
 
 Create a `.env` file in the project root. Do not commit it.
 
+Secrets and boot-only values remain environment-backed. Phase 1.5 safe runtime
+settings are seeded from `.env` into `data.db` only when a database value does
+not already exist. After seeding, the database value takes priority and can be
+updated from the authenticated local dashboard without rewriting `.env`.
+
 | Variable | Purpose |
 | --- | --- |
 | `DISCORD_TOKEN` | Discord bot token. Required. |
@@ -1233,13 +1238,15 @@ notify anyone.
 
 ## Local web dashboard
 
-Phase 1 includes a lightweight, read-only FastAPI dashboard for the Raspberry
-Pi. It provides a safe configuration viewer, shared-database status, bank
-overview, and historical-import status. It does not edit `.env`, modify bank
-records, expose Discord or Gemini secrets, or provide public hosting.
+The local FastAPI dashboard provides shared-database status, bank overview,
+historical-import status, and database-backed editing for an explicit allowlist
+of safe runtime settings. It does not edit `.env`, modify bank records, expose
+Discord or Gemini secrets, or provide public hosting.
 
 Set these values in the project-root `.env` and replace the placeholder
-password and signing key before using the dashboard:
+password and signing key before using the dashboard. When
+`DASHBOARD_ENABLED=true`, startup fails clearly if either
+`DASHBOARD_PASSWORD` or `DASHBOARD_SECRET_KEY` is blank or missing.
 
 ```dotenv
 DASHBOARD_ENABLED=true
@@ -1268,10 +1275,48 @@ Open `http://<pi-ip>:3000` or, when local hostname resolution is available,
 network; Phase 1 does not include a tunnel, reverse proxy, OAuth, or public
 hosting.
 
+### Phase 1.5 runtime settings
+
+The Settings page groups editable values under Ask, Permissions, and VC XP.
+Updates are validated, stored as text in the shared `data.db` `bot_settings`
+table, and recorded in `bot_settings_audit` when the value changes. Existing
+database values are never overwritten during environment seeding. The bot
+reads these safe values from SQLite first and falls back to `.env` only when a
+database row is missing.
+
+Editable settings include `/ask` channels and cooldown, staff/owner permission
+IDs, and VC XP role-pulse controls. Discord ID lists accept blank values or
+comma-separated 17-20 digit IDs and remove spaces when saved. Integer and
+boolean values are range-checked. Changes take effect through runtime setting
+lookups; the dashboard does not automatically restart the bot.
+
+`GUILD_ID`, `MODAI_MODEL`, `MODAI_FALLBACK_MODEL`, `ASK_MODEL`, and
+`ASK_FALLBACK_MODEL` remain read-only displays. `DISCORD_TOKEN`,
+`GEMINI_API_KEY`, `DASHBOARD_PASSWORD`, `DASHBOARD_SECRET_KEY`, and every key
+containing `TOKEN`, `API_KEY`, `PASSWORD`, or `SECRET` are forbidden from the
+settings database and edit route.
+
 An optional separate systemd unit template is provided at
-`broeden-dashboard.service.example`. Adjust its user and `/home/pi/BroEdenBot`
-paths for the Pi, copy it to `/etc/systemd/system/broeden-dashboard.service`,
-then enable it independently from the existing bot service.
+`broeden-dashboard.service.example`. It uses the current
+`sadcatdad` account and `/home/sadcatdad/BroEdenBot` project path. Copy it to
+`/etc/systemd/system/broeden-dashboard.service`, then enable it independently
+from the existing bot service.
+
+To create a shareable source archive from the directory containing the project,
+use this command. It excludes local credentials, virtual environments, Git
+metadata, runtime databases and logs, existing archives, and bundled font
+files:
+
+```bash
+zip -r BroEdenBot-safe.zip BroEdenBot \
+  -x '*/.env' '*/.env.*' \
+     '*/.venv/*' '*/.git/*' \
+     '*.db' '*.db-*' \
+     '*.sqlite' '*.sqlite-*' \
+     '*.sqlite3' '*.sqlite3-*' \
+     '*.log' '*.zip' \
+     '*/assets/*.ttf'
+```
 
 ## Deploy on the Raspberry Pi
 

@@ -2,14 +2,13 @@ from __future__ import annotations
 
 import os
 import re
-import secrets
 from datetime import datetime
 from pathlib import Path
 from typing import Any
 
 import uvicorn
 from dotenv import load_dotenv
-from fastapi import FastAPI, Form, Request, status
+from fastapi import FastAPI, Form, HTTPException, Request, status
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
@@ -30,32 +29,20 @@ from dashboard.db import (
     find_database_path,
     import_history,
 )
+from utils.settings import (
+    EDITABLE_SETTING_KEYS,
+    initialize_settings_from_env,
+    is_forbidden_key,
+    recent_setting_changes,
+    set_setting,
+    settings_for_dashboard,
+)
 
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 DASHBOARD_DIR = Path(__file__).resolve().parent
 load_dotenv(PROJECT_ROOT / ".env")
 
-SAFE_SETTING_NAMES = (
-    "GUILD_ID",
-    "MODAI_MODEL",
-    "MODAI_FALLBACK_MODEL",
-    "ASK_MODEL",
-    "ASK_FALLBACK_MODEL",
-    "ASK_ALLOWED_CHANNEL_IDS",
-    "ASK_COOLDOWN_SECONDS",
-    "MODAI_ALLOWED_ROLE_IDS",
-    "STAFF_NOTES_ALLOWED_ROLE_IDS",
-    "STATS_ALLOWED_ROLE_IDS",
-    "VCSTATS_ALLOWED_ROLE_IDS",
-    "BANK_ALLOWED_ROLE_IDS",
-    "VCXP_ENABLED",
-    "VCXP_TRIGGER_ROLE_ID",
-    "VCXP_MINUTES_PER_PULSE",
-    "VCXP_ROLE_REMOVE_DELAY_SECONDS",
-    "VCXP_DAILY_PULSE_CAP",
-    "VCXP_WEEKLY_PULSE_CAP",
-)
 SECRET_MARKERS = ("TOKEN", "SECRET", "PASSWORD", "API_KEY", "PRIVATE_KEY")
 
 
@@ -84,6 +71,21 @@ def dashboard_enabled() -> bool:
     return env_flag("DASHBOARD_ENABLED", default=False)
 
 
+def validate_dashboard_config() -> None:
+    if not dashboard_enabled():
+        return
+    for name in ("DASHBOARD_SECRET_KEY", "DASHBOARD_PASSWORD"):
+        if not os.getenv(name, "").strip():
+            raise RuntimeError(
+                f"{name} is required when DASHBOARD_ENABLED=true. "
+                "Set it in the project .env file before starting the dashboard."
+            )
+
+
+validate_dashboard_config()
+if dashboard_enabled():
+    initialize_settings_from_env()
+
 app = FastAPI(
     title="BroEdenBot Local Dashboard",
     docs_url=None,
@@ -93,7 +95,7 @@ app = FastAPI(
 app.add_middleware(
     SessionMiddleware,
     secret_key=os.getenv("DASHBOARD_SECRET_KEY", "").strip()
-    or secrets.token_urlsafe(48),
+    or "dashboard-disabled",
     session_cookie="broeden_dashboard_session",
     max_age=60 * 60 * 12,
     same_site="strict",
@@ -222,11 +224,46 @@ async def home(request: Request) -> HTMLResponse:
 async def settings(request: Request) -> HTMLResponse:
     if redirect := login_redirect(request):
         return redirect
-    values = [{"name": name, "value": safe_setting(name)} for name in SAFE_SETTING_NAMES]
+    message = request.session.pop("settings_message", None)
+    error = request.session.pop("settings_error", None)
     return templates.TemplateResponse(
         request=request,
         name="settings.html",
-        context=template_context(request, page_title="Settings Viewer", settings=values),
+        context=template_context(
+            request,
+            page_title="Settings",
+            sections=settings_for_dashboard(),
+            recent_changes=recent_setting_changes(),
+            message=message,
+            error=error,
+        ),
+    )
+
+
+@app.post("/settings/update", name="update_setting")
+async def update_setting(request: Request) -> RedirectResponse:
+    if redirect := login_redirect(request):
+        return redirect
+    form = await request.form()
+    if not csrf_is_valid(request, str(form.get("csrf", ""))):
+        raise HTTPException(status_code=400, detail="Invalid CSRF token.")
+    key = str(form.get("key", "")).strip()
+    value = str(form.get("value", ""))
+    if is_forbidden_key(key) or key not in EDITABLE_SETTING_KEYS:
+        raise HTTPException(status_code=400, detail="This setting is not editable.")
+    try:
+        normalized = set_setting(
+            key,
+            value,
+            changed_by=str(request.session.get("dashboard_user", "dashboard")),
+        )
+    except ValueError as exc:
+        request.session["settings_error"] = f"{key or 'Setting'}: {exc}"
+    else:
+        request.session["settings_message"] = f"{key} saved as {normalized or '(blank)'}."
+    return RedirectResponse(
+        url=request.url_for("settings"),
+        status_code=status.HTTP_303_SEE_OTHER,
     )
 
 

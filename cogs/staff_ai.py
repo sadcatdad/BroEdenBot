@@ -13,6 +13,7 @@ from google import genai
 from google.genai import errors, types
 
 from utils.knowledge import build_staff_knowledge_context
+from utils.settings import get_csv_ids_setting
 from utils.sqlite import configure_connection
 from utils.staff_context import (
     STAFF_CONTEXT_FTS_SQL,
@@ -90,12 +91,6 @@ class StaffAI(commands.Cog):
         self.track_deletes = parse_bool(
             os.getenv("STAFF_CONTEXT_TRACK_DELETES"),
             default=True,
-        )
-        self.allowed_role_ids = parse_id_set(
-            os.getenv("STAFF_AI_ALLOWED_ROLE_IDS", "")
-        )
-        self.owner_user_ids = parse_id_set(
-            os.getenv("BOT_OWNER_USER_IDS", "")
         )
         self.model = (
             os.getenv("STAFF_AI_MODEL")
@@ -250,13 +245,15 @@ class StaffAI(commands.Cog):
             logger.exception("Could not roll back staff-context transaction")
 
     def _has_access(self, interaction: discord.Interaction) -> bool:
+        allowed_role_ids = set(get_csv_ids_setting("STAFF_AI_ALLOWED_ROLE_IDS"))
+        owner_user_ids = set(get_csv_ids_setting("BOT_OWNER_USER_IDS"))
         if not interaction.guild or not isinstance(interaction.user, discord.Member):
-            return interaction.user.id in self.owner_user_ids
+            return interaction.user.id in owner_user_ids
         return has_staff_ai_access(
             interaction.user.id,
             (role.id for role in interaction.user.roles),
-            self.allowed_role_ids,
-            self.owner_user_ids,
+            allowed_role_ids,
+            owner_user_ids,
         )
 
     async def _deny_if_unauthorised(
