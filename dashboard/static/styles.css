@@ -254,6 +254,50 @@ details summary { color: var(--muted); cursor: pointer; }
 .visibility-internal { color: var(--muted); background: var(--panel-soft); }
 .status-found { color: var(--good); }
 .status-empty, .status-unreadable { color: var(--warning); background: #322817; }
+.subnav, .range-links, .limit-links {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: .45rem;
+  margin-bottom: 1rem;
+}
+.subnav {
+  padding-bottom: .8rem;
+  border-bottom: 1px solid var(--border);
+}
+.subnav a, .limit-links a {
+  padding: .4rem .6rem;
+  color: var(--muted);
+  border-radius: .45rem;
+  text-decoration: none;
+}
+.subnav a:hover, .subnav a.active, .limit-links a:hover, .limit-links a.active {
+  color: var(--text);
+  background: var(--panel-soft);
+}
+.analytics-summary-grid { margin-top: 1rem; }
+.bar-chart { display: grid; gap: .55rem; max-height: 42rem; overflow: auto; }
+.bar-row {
+  display: grid;
+  grid-template-columns: minmax(6.5rem, auto) minmax(8rem, 1fr) minmax(4.5rem, auto);
+  gap: .7rem;
+  align-items: center;
+  font-size: .82rem;
+}
+.bar-row strong { text-align: right; }
+.bar-track { height: .75rem; overflow: hidden; background: var(--panel-soft); border-radius: 99px; }
+.bar-track span { display: block; height: 100%; background: var(--accent); border-radius: inherit; }
+.heatmap-wrap { overflow-x: auto; }
+.heatmap-table { min-width: 1050px; font-size: .72rem; }
+.heatmap-table th, .heatmap-table td { padding: .32rem; text-align: center; }
+.heatmap-table td { color: transparent; border: 2px solid var(--panel); }
+.heatmap-table td span { font-size: 0; }
+.heat-0 { background: #14151b; }
+.heat-1 { background: #35152a; }
+.heat-2 { background: #5c1740; }
+.heat-3 { background: #8a1e5d; }
+.heat-4 { background: #bd267d; }
+.heat-5 { background: var(--accent); }
 
 @media (max-width: 850px) {
   .site-header { align-items: flex-start; flex-wrap: wrap; }
@@ -274,4 +318,5 @@ details summary { color: var(--muted); cursor: pointer; }
   .setting-row { grid-template-columns: 1fr; }
   .detail-grid { grid-template-columns: 1fr; }
   .knowledge-filters { grid-template-columns: 1fr; }
+  .bar-row { grid-template-columns: 5.8rem minmax(5rem, 1fr) 4rem; gap: .4rem; }
 }

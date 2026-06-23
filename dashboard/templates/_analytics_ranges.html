@@ -1,0 +1,7 @@
+<div class="range-links" aria-label="Analytics range">
+  {% for key, definition in ranges.items() %}
+    {% if not heatmap_only or key != "7d" %}
+    <a class="button small {{ '' if key == range_key else 'secondary' }}" href="{{ current_path }}?range={{ key }}{% if show_limit %}&limit={{ limit }}{% endif %}">{{ definition[0] }}</a>
+    {% endif %}
+  {% endfor %}
+</div>

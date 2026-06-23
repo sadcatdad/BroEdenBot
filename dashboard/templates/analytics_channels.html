@@ -1,0 +1,20 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="page-heading">
+  <div><p class="eyebrow">Aggregated text activity</p><h1>Channels</h1></div>
+  <a class="button secondary" href="{{ url_for('analytics_export') }}?range={{ range_key }}&type=channels">Export CSV</a>
+</div>
+{% include "_analytics_nav.html" %}
+{% set show_limit = true %}{% include "_analytics_ranges.html" %}
+<div class="limit-links">Rows: {% for value in limits %}<a class="{{ 'active' if value == limit else '' }}" href="?range={{ range_key }}&limit={{ value }}">{{ value }}</a>{% endfor %}</div>
+{% if channels %}
+<section class="card"><div class="table-wrap"><table>
+  <thead><tr><th>Channel</th><th>ID</th><th>Category</th><th>Messages</th><th>Users</th><th>First seen</th><th>Last seen</th><th>Share</th></tr></thead>
+  <tbody>{% for channel in channels %}<tr>
+    <td>#{{ channel.channel_name or "unknown" }}</td><td><code>{{ channel.channel_id }}</code></td><td>{{ channel.category or "—" }}</td>
+    <td>{{ "{:,}".format(channel.message_count) }}</td><td>{{ "{:,}".format(channel.unique_users) }}</td>
+    <td>{{ channel.first_seen }}</td><td>{{ channel.last_seen }}</td><td>{{ "%.2f%%"|format(channel.percent) }}</td>
+  </tr>{% endfor %}</tbody>
+</table></div></section>
+{% else %}<div class="empty-state">No channel activity was found for this range.</div>{% endif %}
+{% endblock %}

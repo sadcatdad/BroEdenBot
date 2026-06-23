@@ -1,0 +1,29 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="page-heading">
+  <div><p class="eyebrow">Completed VC sessions</p><h1>Voice</h1></div>
+  <a class="button secondary" href="{{ url_for('analytics_export') }}?range={{ range_key }}&type=voice">Export CSV</a>
+</div>
+{% include "_analytics_nav.html" %}
+{% set show_limit = true %}{% include "_analytics_ranges.html" %}
+<div class="limit-links">Rows: {% for value in limits %}<a class="{{ 'active' if value == limit else '' }}" href="?range={{ range_key }}&limit={{ value }}">{{ value }}</a>{% endfor %}</div>
+{% if voice.available %}
+<section class="card-grid three">
+  <article class="card"><p class="label">Completed sessions</p><p class="metric">{{ "{:,}".format(voice.sessions) }}</p></article>
+  <article class="card"><p class="label">Tracked time</p><p class="metric">{{ "{:,.1f}".format(voice.hours) }}h</p></article>
+  <article class="card"><p class="label">Unique users</p><p class="metric">{{ "{:,}".format(voice.unique_users) }}</p></article>
+</section>
+<section class="two-column">
+  <article class="card"><h2>Top VC users</h2><div class="status-list">{% for row in voice.top_users %}<div><span>{{ row.display_name or row.username or row.user_id }}</span><strong>{{ "{:,.1f}h".format(row.seconds / 3600) }}</strong></div>{% else %}<p class="muted">No users found.</p>{% endfor %}</div></article>
+  <article class="card"><h2>Top VC channels</h2><div class="status-list">{% for row in voice.top_channels %}<div><span>#{{ row.channel_name or row.channel_id }}</span><strong>{{ "{:,.1f}h".format(row.seconds / 3600) }}</strong></div>{% else %}<p class="muted">No channels found.</p>{% endfor %}</div></article>
+</section>
+<section class="card">
+  <h2>Voice activity by day</h2>
+  <div class="bar-chart">{% for row in voice.daily %}<div class="bar-row"><span>{{ row.period }}</span><div class="bar-track"><span style="width: {{ (row.seconds / voice.max_daily * 100) if voice.max_daily else 0 }}%"></span></div><strong>{{ "{:,.1f}h".format(row.seconds / 3600) }}</strong></div>{% endfor %}</div>
+</section>
+<section class="card"><h2>Recent completed sessions</h2><div class="table-wrap"><table>
+  <thead><tr><th>User</th><th>Channel</th><th>Joined</th><th>Left</th><th>Duration</th><th>Source</th></tr></thead>
+  <tbody>{% for row in voice.recent %}<tr><td>{{ row.display_name or row.username or row.user_id }}</td><td>#{{ row.channel_name or row.channel_id }}</td><td>{{ row.joined_at }}</td><td>{{ row.left_at }}</td><td>{{ "{:,.1f}h".format(row.duration_seconds / 3600) }}</td><td>{{ row.source }}</td></tr>{% endfor %}</tbody>
+</table></div></section>
+{% else %}<div class="empty-state">No VC history tables were found. Voice analytics will appear after the existing bot tracking or terminal import workflows store sessions.</div>{% endif %}
+{% endblock %}

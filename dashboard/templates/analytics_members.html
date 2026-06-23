@@ -1,0 +1,21 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="page-heading">
+  <div><p class="eyebrow">Stored activity identities</p><h1>Members</h1></div>
+  <a class="button secondary" href="{{ url_for('analytics_export') }}?range={{ range_key }}&type=members">Export CSV</a>
+</div>
+{% include "_analytics_nav.html" %}
+{% set show_limit = true %}{% include "_analytics_ranges.html" %}
+<div class="alert warning">Bots are excluded when activity is collected. Current-server membership cannot be verified from the separate dashboard process, so these are stored activity identities and may include departed members.</div>
+<div class="limit-links">Rows: {% for value in limits %}<a class="{{ 'active' if value == limit else '' }}" href="?range={{ range_key }}&limit={{ value }}">{{ value }}</a>{% endfor %}</div>
+{% if members %}
+<section class="card"><div class="table-wrap"><table>
+  <thead><tr><th>Member</th><th>User ID</th><th>Messages</th><th>Active days</th><th>First seen</th><th>Last seen</th><th>Top channel</th></tr></thead>
+  <tbody>{% for member in members %}<tr>
+    <td>{{ member.display_name or member.username or "Unknown" }}{% if member.username and member.display_name %}<br><small class="muted">{{ member.username }}</small>{% endif %}</td>
+    <td><code>{{ member.user_id }}</code></td><td>{{ "{:,}".format(member.message_count) }}</td><td>{{ member.active_days }}</td>
+    <td>{{ member.first_seen }}</td><td>{{ member.last_seen }}</td><td>#{{ member.top_channel_name or member.top_channel_id or "—" }}</td>
+  </tr>{% endfor %}</tbody>
+</table></div></section>
+{% else %}<div class="empty-state">No member activity was found for this range.</div>{% endif %}
+{% endblock %}

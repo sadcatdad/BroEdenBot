@@ -1,0 +1,38 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="page-heading">
+  <div><p class="eyebrow">Message volume</p><h1>Activity</h1></div>
+  <a class="button secondary" href="{{ url_for('analytics_export') }}?range={{ range_key }}&type=activity">Export CSV</a>
+</div>
+{% include "_analytics_nav.html" %}
+{% include "_analytics_ranges.html" %}
+{% if activity.available %}
+<section class="card-grid three">
+  <article class="card"><p class="label">Selected total</p><p class="metric">{{ "{:,}".format(activity.selected_total) }}</p></article>
+  <article class="card"><p class="label">All-time total</p><p class="metric">{{ "{:,}".format(activity.all_time_total) }}</p></article>
+  <article class="card"><p class="label">Recent delta</p><p class="metric">{{ "{:+.1f}%".format(activity.delta_percent) if activity.delta_percent is not none else "—" }}</p></article>
+</section>
+<section class="card">
+  <h2>Daily messages</h2>
+  <div class="bar-chart">
+    {% for row in activity.daily %}
+    <div class="bar-row">
+      <span>{{ row.period }}</span>
+      <div class="bar-track"><span style="width: {{ (row.message_count / activity.max_daily * 100) if activity.max_daily else 0 }}%"></span></div>
+      <strong>{{ "{:,}".format(row.message_count) }}</strong>
+    </div>
+    {% endfor %}
+  </div>
+</section>
+<section class="two-column">
+  <article class="card">
+    <h2>Weekly totals</h2>
+    <div class="status-list">{% for row in activity.weekly %}<div><span>{{ row.period }}</span><strong>{{ "{:,}".format(row.message_count) }}</strong></div>{% endfor %}</div>
+  </article>
+  <article class="card">
+    <h2>Monthly totals</h2>
+    <div class="status-list">{% for row in activity.monthly %}<div><span>{{ row.period }}</span><strong>{{ "{:,}".format(row.message_count) }}</strong></div>{% endfor %}</div>
+  </article>
+</section>
+{% else %}<div class="empty-state">No stored message activity is available for this view.</div>{% endif %}
+{% endblock %}

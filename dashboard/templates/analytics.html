@@ -1,0 +1,85 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="page-heading">
+  <div>
+    <p class="eyebrow">Aggregated server activity</p>
+    <h1>Server Analytics</h1>
+  </div>
+  <a class="button secondary" href="{{ url_for('analytics_export') }}?range={{ range_key }}&type=overview">Export overview CSV</a>
+</div>
+{% include "_analytics_nav.html" %}
+{% include "_analytics_ranges.html" %}
+<div class="alert warning">Analytics are aggregated from stored server activity data. Message contents are not shown here.</div>
+
+{% if analytics.available %}
+<section class="card-grid">
+  <article class="card"><p class="label">All-time messages</p><p class="metric">{{ "{:,}".format(analytics.total_messages) }}</p><p class="muted">{{ analytics.first_date or "—" }} to {{ analytics.last_date or "—" }}</p></article>
+  <article class="card"><p class="label">Stored active users</p><p class="metric">{{ "{:,}".format(analytics.unique_users) }}</p><p class="muted">Distinct IDs in aggregated activity.</p></article>
+  <article class="card"><p class="label">Stored channels</p><p class="metric">{{ "{:,}".format(analytics.channels) }}</p><p class="muted">Distinct text-channel IDs.</p></article>
+  <article class="card"><p class="label">{{ analytics.range_label }}</p><p class="metric">{{ "{:,}".format(analytics.selected_messages) }}</p><p class="muted">Messages in selected range.</p></article>
+</section>
+
+<section class="card-grid three">
+  <article class="card"><p class="label">Last 7 days</p><p class="metric">{{ "{:,}".format(analytics.messages_7d) }}</p></article>
+  <article class="card"><p class="label">Last 30 days</p><p class="metric">{{ "{:,}".format(analytics.messages_30d) }}</p></article>
+  <article class="card">
+    <p class="label">Recent change</p>
+    <p class="metric">{{ "{:+.1f}%".format(analytics.activity.delta_percent) if analytics.activity.delta_percent is not none else "—" }}</p>
+    <p class="muted">Compared with the preceding equal-length period.</p>
+  </article>
+</section>
+
+<section class="two-column">
+  <article class="card">
+    <div class="section-heading"><h2>Most active channels</h2><a href="{{ url_for('analytics_channels') }}?range={{ range_key }}">View all</a></div>
+    <div class="status-list">
+      {% for channel in analytics.top_channels %}
+      <div><span>#{{ channel.channel_name or channel.channel_id }}</span><strong>{{ "{:,}".format(channel.message_count) }}</strong></div>
+      {% else %}<p class="muted">No channel activity in this range.</p>{% endfor %}
+    </div>
+  </article>
+  <article class="card">
+    <div class="section-heading"><h2>Most active stored members</h2><a href="{{ url_for('analytics_members') }}?range={{ range_key }}">View all</a></div>
+    <div class="status-list">
+      {% for member in analytics.top_members %}
+      <div><span>{{ member.display_name or member.username or member.user_id }}</span><strong>{{ "{:,}".format(member.message_count) }}</strong></div>
+      {% else %}<p class="muted">No member activity in this range.</p>{% endfor %}
+    </div>
+  </article>
+</section>
+
+<section class="card-grid three analytics-summary-grid">
+  <article class="card">
+    <p class="eyebrow">Trend</p>
+    <h2>{{ "{:+.1f}%".format(analytics.activity.delta_percent) if analytics.activity.delta_percent is not none else "Not enough comparison data" }}</h2>
+    <p class="muted">Message volume versus the previous matching period.</p>
+  </article>
+  <article class="card">
+    <p class="eyebrow">Heatmap peak</p>
+    {% if analytics.heatmap.busiest %}
+    <h2>{{ analytics.heatmap.busiest.day }} at {{ "%02d:00"|format(analytics.heatmap.busiest.hour) }}</h2>
+    <p class="muted">{{ "{:,}".format(analytics.heatmap.busiest.count) }} aggregated messages.</p>
+    {% else %}<h2>No heatmap data</h2>{% endif %}
+  </article>
+  <article class="card">
+    <p class="eyebrow">Voice</p>
+    {% if analytics.voice.available %}
+    <h2>{{ "{:,.1f}".format(analytics.voice.hours) }} hours</h2>
+    <p class="muted">{{ "{:,}".format(analytics.voice.sessions) }} completed sessions.</p>
+    {% else %}<h2>No VC history</h2><p class="muted">Voice tracking data is not available yet.</p>{% endif %}
+  </article>
+</section>
+
+<section class="card">
+  <h2>Data freshness</h2>
+  <div class="detail-grid">
+    <div><span>Latest stored activity</span><strong>{{ analytics.freshness.latest_activity or "Unavailable" }}</strong></div>
+    <div><span>Latest activity import</span><strong>{{ analytics.freshness.latest_import or "No import timestamp" }}</strong></div>
+    <div><span>Live tracking started</span><strong>{{ analytics.freshness.tracking_started or "Unavailable" }}</strong></div>
+    <div><span>Data source</span><strong>Aggregated activity counts only</strong></div>
+  </div>
+</section>
+{% else %}
+<div class="empty-state">No stored message activity was found. The dashboard does not run imports; use the existing terminal workflows when historical data needs to be loaded.</div>
+{% endif %}
+{% endblock %}

@@ -1439,6 +1439,48 @@ login session. Every edit and reindex POST requires CSRF protection. This phase
 is a document manager, not an AI prompt-testing console, import manager, bank
 manager, checklist manager, terminal, or public knowledge portal.
 
+### Server Analytics Dashboard
+
+The authenticated Analytics section is a read-only view of existing aggregate
+server activity. It uses `stats_message_activity` for text analytics and the
+existing `vc_sessions` and `vc_imported_sessions` tables for voice analytics
+when those tables contain data. It does not read or display message bodies from
+`message_context.db` or `staff_context.db`, and it does not expose deleted or
+NSFW message snippets.
+
+The Overview page shows all-time messages, distinct stored user and channel
+IDs, covered dates, 7-day and 30-day totals, selected-range volume, top
+channels and stored member identities, trend comparison, peak heatmap cell,
+voice summary, and data freshness. Separate pages provide:
+
+- Daily, weekly, and monthly message totals.
+- Channel counts, unique posters, first/last activity, configured category,
+  and percent of tracked activity.
+- Stored member message totals, active days, first/last activity, and top
+  channel. Bots are excluded by the existing live tracker and historical
+  importer. The dashboard cannot verify current guild membership because it
+  intentionally has no Discord client, so departed users may remain in stored
+  aggregate history.
+- Live and imported completed VC-session totals, top users/channels, daily and
+  weekly summaries, and recent session metadata.
+- A server-rendered UTC day-of-week/hour heatmap with no JavaScript chart
+  dependency.
+
+Allowed text ranges are 7 days, 30 days, 90 days, 1 year, and all time. The
+heatmap supports 30 days, 90 days, 1 year, and all time. Leaderboards accept
+only 10, 25, 50, or 100 rows. These values are fixed allowlists; routes do not
+accept SQL fragments, table names, or arbitrary date clauses.
+
+CSV exports are available for overview, activity, channels, members, voice,
+and heatmap views. Exports contain aggregated counts and stored IDs/names only,
+never message content or secrets. Missing tables and empty datasets render
+friendly empty states instead of creating replacement schemas.
+
+Analytics remain local-only behind the signed dashboard login. Phase 3C adds no
+POST actions, imports, uploads, cache rebuilds, AI testing, shell commands, or
+public access. Historical imports continue to use the existing terminal-only
+workflows.
+
 An optional separate systemd unit template is provided at
 `broeden-dashboard.service.example`. It uses the current
 `sadcatdad` account and `/home/sadcatdad/BroEdenBot` project path. Copy it to

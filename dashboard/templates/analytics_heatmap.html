@@ -1,0 +1,21 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="page-heading">
+  <div><p class="eyebrow">Day and hour aggregation</p><h1>Activity Heatmap</h1></div>
+  <a class="button secondary" href="{{ url_for('analytics_export') }}?range={{ range_key }}&type=heatmap">Export CSV</a>
+</div>
+{% include "_analytics_nav.html" %}
+{% set heatmap_only = true %}{% include "_analytics_ranges.html" %}
+{% if heatmap.available %}
+{% if heatmap.busiest %}<p class="muted">Peak cell: {{ heatmap.busiest.day }} at {{ "%02d:00"|format(heatmap.busiest.hour) }} with {{ "{:,}".format(heatmap.busiest.count) }} messages.</p>{% endif %}
+<section class="card">
+  <div class="heatmap-wrap">
+    <table class="heatmap-table">
+      <thead><tr><th>Day</th>{% for hour in range(24) %}<th>{{ "%02d"|format(hour) }}</th>{% endfor %}</tr></thead>
+      <tbody>{% for day in heatmap.days %}<tr><th>{{ day.name[:3] }}</th>{% for cell in day.cells %}<td class="heat-{{ cell.level }}" title="{{ day.name }} {{ '%02d:00'|format(cell.hour) }}: {{ cell.count }} messages"><span>{{ cell.count }}</span></td>{% endfor %}</tr>{% endfor %}</tbody>
+    </table>
+  </div>
+  <p class="muted">Hours are based on the UTC timestamps stored by the bot and importers. Darker cells represent more messages.</p>
+</section>
+{% else %}<div class="empty-state">No stored activity is available for the heatmap.</div>{% endif %}
+{% endblock %}

@@ -46,6 +46,20 @@ from utils.knowledge_manager import (
     recent_knowledge_audit,
     save_document,
 )
+from utils.analytics import (
+    LIMITS,
+    RANGES,
+    export_analytics_csv,
+    get_activity_series,
+    get_analytics_overview,
+    get_channel_leaderboard,
+    get_heatmap,
+    get_member_leaderboard,
+    get_voice_overview,
+    validate_export_type,
+    validate_limit,
+    validate_range,
+)
 from utils.settings import (
     EDITABLE_SETTING_KEYS,
     initialize_settings_from_env,
@@ -366,6 +380,206 @@ def knowledge_document_or_error(doc_key: str) -> dict[str, Any]:
         ) from exc
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+def analytics_parameters(
+    range_key: str,
+    limit: int | str = 25,
+    *,
+    heatmap: bool = False,
+) -> tuple[str, int]:
+    try:
+        return validate_range(range_key, heatmap=heatmap), validate_limit(limit)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+def analytics_context(
+    request: Request,
+    *,
+    range_key: str,
+    limit: int = 25,
+    **values: Any,
+) -> dict[str, Any]:
+    return template_context(
+        request,
+        range_key=range_key,
+        range_label=RANGES[range_key][0],
+        ranges=RANGES,
+        limit=limit,
+        limits=sorted(LIMITS),
+        **values,
+    )
+
+
+@app.get("/analytics", response_class=HTMLResponse, name="analytics_page")
+async def analytics_page(
+    request: Request,
+    range: str = "30d",
+) -> HTMLResponse:
+    if redirect := login_redirect(request):
+        return redirect
+    range_key, limit = analytics_parameters(range, 25)
+    return templates.TemplateResponse(
+        request=request,
+        name="analytics.html",
+        context=analytics_context(
+            request,
+            page_title="Server Analytics",
+            range_key=range_key,
+            limit=limit,
+            analytics=get_analytics_overview(range_key),
+        ),
+    )
+
+
+@app.get(
+    "/analytics/activity",
+    response_class=HTMLResponse,
+    name="analytics_activity",
+)
+async def analytics_activity(
+    request: Request,
+    range: str = "30d",
+) -> HTMLResponse:
+    if redirect := login_redirect(request):
+        return redirect
+    range_key, limit = analytics_parameters(range, 25)
+    return templates.TemplateResponse(
+        request=request,
+        name="analytics_activity.html",
+        context=analytics_context(
+            request,
+            page_title="Message Activity",
+            range_key=range_key,
+            limit=limit,
+            activity=get_activity_series(range_key),
+        ),
+    )
+
+
+@app.get(
+    "/analytics/channels",
+    response_class=HTMLResponse,
+    name="analytics_channels",
+)
+async def analytics_channels(
+    request: Request,
+    range: str = "30d",
+    limit: int = 25,
+) -> HTMLResponse:
+    if redirect := login_redirect(request):
+        return redirect
+    range_key, safe_limit = analytics_parameters(range, limit)
+    return templates.TemplateResponse(
+        request=request,
+        name="analytics_channels.html",
+        context=analytics_context(
+            request,
+            page_title="Channel Analytics",
+            range_key=range_key,
+            limit=safe_limit,
+            channels=get_channel_leaderboard(range_key, safe_limit),
+        ),
+    )
+
+
+@app.get(
+    "/analytics/members",
+    response_class=HTMLResponse,
+    name="analytics_members",
+)
+async def analytics_members(
+    request: Request,
+    range: str = "30d",
+    limit: int = 25,
+) -> HTMLResponse:
+    if redirect := login_redirect(request):
+        return redirect
+    range_key, safe_limit = analytics_parameters(range, limit)
+    return templates.TemplateResponse(
+        request=request,
+        name="analytics_members.html",
+        context=analytics_context(
+            request,
+            page_title="Member Analytics",
+            range_key=range_key,
+            limit=safe_limit,
+            members=get_member_leaderboard(range_key, safe_limit),
+        ),
+    )
+
+
+@app.get(
+    "/analytics/voice",
+    response_class=HTMLResponse,
+    name="analytics_voice",
+)
+async def analytics_voice(
+    request: Request,
+    range: str = "30d",
+    limit: int = 25,
+) -> HTMLResponse:
+    if redirect := login_redirect(request):
+        return redirect
+    range_key, safe_limit = analytics_parameters(range, limit)
+    return templates.TemplateResponse(
+        request=request,
+        name="analytics_voice.html",
+        context=analytics_context(
+            request,
+            page_title="Voice Analytics",
+            range_key=range_key,
+            limit=safe_limit,
+            voice=get_voice_overview(range_key, safe_limit),
+        ),
+    )
+
+
+@app.get(
+    "/analytics/heatmap",
+    response_class=HTMLResponse,
+    name="analytics_heatmap",
+)
+async def analytics_heatmap(
+    request: Request,
+    range: str = "30d",
+) -> HTMLResponse:
+    if redirect := login_redirect(request):
+        return redirect
+    range_key, limit = analytics_parameters(range, 25, heatmap=True)
+    return templates.TemplateResponse(
+        request=request,
+        name="analytics_heatmap.html",
+        context=analytics_context(
+            request,
+            page_title="Activity Heatmap",
+            range_key=range_key,
+            limit=limit,
+            heatmap=get_heatmap(range_key),
+        ),
+    )
+
+
+@app.get("/analytics/export.csv", name="analytics_export")
+async def analytics_export(
+    request: Request,
+    range: str = "30d",
+    type: str = "overview",
+) -> Response:
+    if redirect := login_redirect(request):
+        return redirect
+    try:
+        export_type = validate_export_type(type)
+        range_key = validate_range(range, heatmap=export_type == "heatmap")
+        filename, data = export_analytics_csv(range_key, export_type)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return Response(
+        content=data,
+        media_type="text/csv; charset=utf-8",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
 
 
 @app.get("/knowledge", response_class=HTMLResponse, name="knowledge_page")
