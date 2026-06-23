@@ -1200,6 +1200,13 @@ updated from the authenticated local dashboard without rewriting `.env`.
 | `DASHBOARD_USERNAME` | Local dashboard login username. |
 | `DASHBOARD_PASSWORD` | Local dashboard login password. Use a unique password. |
 | `DASHBOARD_SECRET_KEY` | Long random key used to sign dashboard sessions. |
+| `DASHBOARD_AUTH_MODE` | Set to `discord` to enable Discord OAuth while retaining password fallback. |
+| `DISCORD_OAUTH_CLIENT_ID` | Discord application OAuth2 client ID. |
+| `DISCORD_OAUTH_CLIENT_SECRET` | Discord application OAuth2 client secret. Keep only in `.env`. |
+| `DISCORD_OAUTH_REDIRECT_URI` | Exact OAuth callback URL, such as `https://dashboard.broeden.com/auth/discord/callback`. |
+| `DASHBOARD_DISCORD_ALLOWED_USER_IDS` | Comma- or space-separated Discord user IDs approved for dashboard login. |
+| `DASHBOARD_DISCORD_ALLOWED_ROLE_IDS` | Reserved for future guild-role approval; not used by this first implementation. |
+| `DASHBOARD_DISCORD_DEFAULT_ROLE` | Role assigned to new approved Discord users: `admin` or `viewer`. |
 | `DATABASE_PATH` | Optional shared SQLite path for the dashboard. Defaults to the existing `data.db`, then common local database names. |
 | `BANK_DATABASE_PATH` | Optional bank SQLite path for the dashboard. Defaults to `brobank.db`. |
 
@@ -1256,6 +1263,13 @@ DASHBOARD_PORT=3000
 DASHBOARD_USERNAME=admin
 DASHBOARD_PASSWORD=change_this_password
 DASHBOARD_SECRET_KEY=change_this_to_a_long_random_string
+DASHBOARD_AUTH_MODE=discord
+DISCORD_OAUTH_CLIENT_ID=
+DISCORD_OAUTH_CLIENT_SECRET=
+DISCORD_OAUTH_REDIRECT_URI=https://dashboard.broeden.com/auth/discord/callback
+DASHBOARD_DISCORD_ALLOWED_USER_IDS=
+DASHBOARD_DISCORD_ALLOWED_ROLE_IDS=
+DASHBOARD_DISCORD_DEFAULT_ROLE=admin
 ```
 
 Generate a signing key with `python3 -c "import secrets; print(secrets.token_urlsafe(48))"`.
@@ -1272,9 +1286,52 @@ uvicorn dashboard.app:app --host 0.0.0.0 --port 3000
 ```
 
 Open `http://<pi-ip>:3000` or, when local hostname resolution is available,
-`http://broedenbot.local:3000`. Keep port 3000 restricted to the trusted local
-network; Phase 1 does not include a tunnel, reverse proxy, OAuth, or public
-hosting.
+`http://broedenbot.local:3000`. The deployed
+`https://dashboard.broeden.com` endpoint may remain behind the existing
+Cloudflare Tunnel/Access outer gate; the dashboard does not create or configure
+that tunnel.
+
+### Discord dashboard login
+
+The login page supports Discord OAuth with the `identify` scope while keeping
+the existing owner username/password as a fallback. Discord login is shown only
+when `DASHBOARD_AUTH_MODE=discord` and the client ID, client secret, and
+redirect URI are configured. OAuth state is stored in the signed session and
+consumed once during callback validation. Access tokens exist only in memory
+long enough to fetch the Discord identity; they are not logged, rendered, or
+stored in SQLite.
+
+Configure the Discord application:
+
+1. Open the Discord Developer Portal and select the BroEdenBot application.
+2. Open **OAuth2**.
+3. Add the exact redirect URI
+   `https://dashboard.broeden.com/auth/discord/callback`.
+4. Copy the OAuth2 Client ID and Client Secret into `.env`.
+5. Enable Discord Developer Mode, right-click each approved user, choose
+   **Copy User ID**, and add the IDs to
+   `DASHBOARD_DISCORD_ALLOWED_USER_IDS`.
+
+The dashboard creates `dashboard_users` in the shared database. On a fresh
+installation, the existing `DASHBOARD_USERNAME` and `DASHBOARD_PASSWORD` are
+seeded as a password-authenticated `owner`; only a salted PBKDF2 password hash
+is stored. Discord users are admitted only when already linked to an active row
+or explicitly listed in `DASHBOARD_DISCORD_ALLOWED_USER_IDS`. Newly approved
+Discord users receive `admin` or `viewer` according to
+`DASHBOARD_DISCORD_DEFAULT_ROLE`; OAuth never auto-creates an `owner`. Disabled
+linked users are denied.
+
+Owners and admins retain existing dashboard write actions. Viewers can read
+dashboard pages and exports, but the shared action guard rejects settings,
+operations, stats, and knowledge POST actions. The minimal Users page lists
+provider, Discord identity, role, status, and last login for owners/admins.
+Role-based admission through `DASHBOARD_DISCORD_ALLOWED_ROLE_IDS` is deferred;
+this version does not require bot-token guild-member lookups and never starts a
+second Discord client.
+
+Keep Cloudflare Access enabled as the outer gate, keep password login until
+Discord login is confirmed working, and never share
+`DISCORD_OAUTH_CLIENT_SECRET`.
 
 ### Phase 1.5 runtime settings
 
@@ -1392,10 +1449,10 @@ available, snapshot category, capture time, and export time. If no snapshot is
 available, the dashboard shows a friendly message and suggests queueing a
 refresh. Member previews are limited to the first 100 rows on the detail page.
 
-The Stats Graphics Manager remains local-only and requires dashboard login.
+The Stats Graphics Manager requires dashboard login.
 Every edit, refresh, and archive POST requires the existing session CSRF token.
-It adds no public access, OAuth, bank manager, checklist manager, terminal, or
-arbitrary command/SQL surface.
+It adds no bank manager, checklist manager, terminal, or arbitrary command/SQL
+surface.
 
 ### Knowledge Base / Guide Manager
 
@@ -1434,10 +1491,10 @@ fixed payload, clears and reloads the existing public/staff knowledge caches,
 then marks the action completed or failed. The dashboard never creates a
 second Discord client and does not build a duplicate knowledge index.
 
-The Knowledge Manager remains local-only and requires the existing signed
-login session. Every edit and reindex POST requires CSRF protection. This phase
-is a document manager, not an AI prompt-testing console, import manager, bank
-manager, checklist manager, terminal, or public knowledge portal.
+The Knowledge Manager requires the existing signed login session. Every edit
+and reindex POST requires CSRF protection. This phase is a document manager,
+not an AI prompt-testing console, import manager, bank manager, checklist
+manager, terminal, or public knowledge portal.
 
 ### Server Analytics Dashboard
 
@@ -1476,10 +1533,10 @@ and heatmap views. Exports contain aggregated counts and stored IDs/names only,
 never message content or secrets. Missing tables and empty datasets render
 friendly empty states instead of creating replacement schemas.
 
-Analytics remain local-only behind the signed dashboard login. Phase 3C adds no
-POST actions, imports, uploads, cache rebuilds, AI testing, shell commands, or
-public access. Historical imports continue to use the existing terminal-only
-workflows.
+Analytics remain behind the signed dashboard login and existing Cloudflare
+outer gate. Phase 3C adds no POST actions, imports, uploads, cache rebuilds, AI
+testing, or shell commands. Historical imports continue to use the existing
+terminal-only workflows.
 
 An optional separate systemd unit template is provided at
 `broeden-dashboard.service.example`. It uses the current

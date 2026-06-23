@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>{{ page_title or "Login" }} · BroEdenBot</title>
-  <link rel="stylesheet" href="{{ url_for('static', path='styles.css') }}">
+  <link rel="stylesheet" href="{{ url_for('static', path='styles.css') }}?v=oauth1">
 </head>
 <body>
   {% if authenticated %}
@@ -19,7 +19,14 @@
       <a class="{{ 'active' if current_path.startswith('/analytics') else '' }}" href="{{ url_for('analytics_page') }}">Analytics</a>
       <a class="{{ 'active' if current_path == '/bank' else '' }}" href="{{ url_for('bank') }}">Bank</a>
       <a class="{{ 'active' if current_path == '/imports' else '' }}" href="{{ url_for('imports') }}">Imports</a>
+      {% if can_manage_users %}<a class="{{ 'active' if current_path == '/users' else '' }}" href="{{ url_for('users_page') }}">Users</a>{% endif %}
     </nav>
+    {% if current_user %}
+    <div class="session-user">
+      <strong>{{ current_user.username }}</strong>
+      <span>{{ current_user.role }} · {{ current_user.auth_provider }}</span>
+    </div>
+    {% endif %}
     <form method="post" action="{{ url_for('logout') }}">
       <input type="hidden" name="csrf" value="{{ csrf_token }}">
       <button class="button secondary" type="submit">Log out</button>

@@ -1,12 +1,16 @@
 {% extends "base.html" %}
 {% block content %}
 <section class="login-card">
-  <p class="eyebrow">Local network dashboard</p>
+  <p class="eyebrow">Protected dashboard</p>
   <h1>BroEdenBot</h1>
-  <p class="muted">Sign in with the dashboard credentials configured on the Pi.</p>
+  <p class="muted">Sign in with an approved Discord account or use the owner password fallback.</p>
   {% if error %}<div class="alert error">{{ error }}</div>{% endif %}
   {% if not dashboard_enabled %}
   <div class="alert warning">The dashboard is currently disabled.</div>
+  {% endif %}
+  {% if discord_oauth_enabled %}
+  <a class="button discord-button" href="{{ url_for('discord_login') }}">Log in with Discord</a>
+  <div class="login-divider"><span>or use password fallback</span></div>
   {% endif %}
   <form method="post" action="{{ url_for('login') }}" class="stack">
     <input type="hidden" name="csrf" value="{{ csrf_token }}">
@@ -18,7 +22,7 @@
       Password
       <input name="password" type="password" autocomplete="current-password" required>
     </label>
-    <button class="button" type="submit">Sign in</button>
+    <button class="button" type="submit">Sign in with password</button>
   </form>
 </section>
 {% endblock %}

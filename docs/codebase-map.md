@@ -15,10 +15,16 @@ maintenance.
   by `/staffai`.
 - `message_context.db` — Separate full-server staff message archive used only
   by `/context`.
-- `dashboard/` — Separate local-network FastAPI dashboard with signed login
-  sessions, safe configuration, read-only data views, fixed service controls,
-  redacted logs, system status, SQLite backups, stats management, and an
-  allowlisted Knowledge Manager plus read-only aggregate server analytics.
+- `dashboard/` — FastAPI dashboard with signed sessions, password-owner
+  bootstrap, allowlisted Discord OAuth identities, role-aware write
+  protection, safe configuration, fixed service controls, redacted logs,
+  SQLite backups, stats management, an allowlisted Knowledge Manager, and
+  aggregate server analytics.
+- `dashboard/users.py` — Dashboard user schema, PBKDF2 password bootstrap,
+  Discord identity linking, active/disabled status, and owner/admin/viewer
+  roles.
+- `dashboard/oauth.py` — Fixed Discord OAuth2 `identify` authorization, token
+  exchange, and identity fetch; access tokens are never persisted.
 - `broeden-dashboard.service.example` — Optional standalone systemd unit
   template for the dashboard; it does not replace the bot service.
 

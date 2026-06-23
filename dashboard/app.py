@@ -2,10 +2,11 @@ from __future__ import annotations
 
 import os
 import re
+import secrets
 import sqlite3
 from datetime import datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, Optional
 
 import uvicorn
 from dotenv import load_dotenv
@@ -16,12 +17,21 @@ from fastapi.templating import Jinja2Templates
 from starlette.middleware.sessions import SessionMiddleware
 
 from dashboard.auth import (
-    credentials_are_valid,
+    OAUTH_STATE_KEY,
     csrf_is_valid,
     csrf_token,
+    current_user,
+    has_write_access,
+    is_admin,
     is_authenticated,
     login_user,
     logout_user,
+)
+from dashboard.oauth import (
+    DiscordOAuthError,
+    discord_authorize_url,
+    discord_oauth_configured,
+    fetch_discord_identity,
 )
 from dashboard.db import (
     bank_overview,
@@ -37,6 +47,12 @@ from dashboard.operations import (
     service_logs,
     service_status,
     system_status,
+)
+from dashboard.users import (
+    authenticate_password,
+    initialize_dashboard_users,
+    list_dashboard_users,
+    upsert_discord_user,
 )
 from utils.knowledge_manager import (
     document_details,
@@ -127,6 +143,7 @@ if dashboard_enabled():
     initialize_settings_from_env()
     initialize_stats_manager_schema()
     initialize_knowledge_schema()
+    initialize_dashboard_users()
 
 app = FastAPI(
     title="BroEdenBot Local Dashboard",
@@ -140,7 +157,7 @@ app.add_middleware(
     or "dashboard-disabled",
     session_cookie="broeden_dashboard_session",
     max_age=60 * 60 * 12,
-    same_site="strict",
+    same_site="lax",
     https_only=False,
 )
 app.mount("/static", StaticFiles(directory=DASHBOARD_DIR / "static"), name="static")
@@ -152,6 +169,9 @@ def template_context(request: Request, **values: Any) -> dict[str, Any]:
         "request": request,
         "current_path": request.url.path,
         "authenticated": is_authenticated(request),
+        "current_user": current_user(request) if is_authenticated(request) else None,
+        "can_write": has_write_access(request),
+        "can_manage_users": is_admin(request),
         "csrf_token": csrf_token(request),
         **values,
     }
@@ -170,6 +190,30 @@ async def require_action_csrf(request: Request) -> None:
     form = await request.form()
     if not csrf_is_valid(request, str(form.get("csrf", ""))):
         raise HTTPException(status_code=400, detail="Invalid CSRF token.")
+    if not has_write_access(request):
+        raise HTTPException(
+            status_code=403,
+            detail="Viewer accounts cannot perform dashboard actions.",
+        )
+
+
+def login_response(
+    request: Request,
+    *,
+    error: str | None = None,
+    status_code: int = status.HTTP_200_OK,
+) -> HTMLResponse:
+    return templates.TemplateResponse(
+        request=request,
+        name="login.html",
+        context=template_context(
+            request,
+            error=error,
+            dashboard_enabled=dashboard_enabled(),
+            discord_oauth_enabled=discord_oauth_configured(),
+        ),
+        status_code=status_code,
+    )
 
 
 @app.get("/login", response_class=HTMLResponse, name="login_page")
@@ -179,15 +223,7 @@ async def login_page(request: Request) -> HTMLResponse:
             url=request.url_for("home"),
             status_code=status.HTTP_303_SEE_OTHER,
         )
-    return templates.TemplateResponse(
-        request=request,
-        name="login.html",
-        context=template_context(
-            request,
-            error=None,
-            dashboard_enabled=dashboard_enabled(),
-        ),
-    )
+    return login_response(request)
 
 
 @app.post("/login", response_class=HTMLResponse)
@@ -201,23 +237,100 @@ async def login(
         error = "The dashboard is disabled. Set DASHBOARD_ENABLED=true to use it."
     elif not csrf_is_valid(request, csrf):
         error = "Your login session expired. Please try again."
-    elif credentials_are_valid(username, password):
-        login_user(request)
+    else:
+        user = authenticate_password(username, password)
+        if user is not None:
+            login_user(request, user, auth_provider="password")
+            return RedirectResponse(
+                url=request.url_for("home"),
+                status_code=status.HTTP_303_SEE_OTHER,
+            )
+        error = "Invalid username or password."
+    return login_response(
+        request,
+        error=error,
+        status_code=status.HTTP_401_UNAUTHORIZED,
+    )
+
+
+@app.get("/auth/discord/login", name="discord_login")
+async def discord_login(request: Request) -> Response:
+    if not dashboard_enabled():
         return RedirectResponse(
-            url=request.url_for("home"),
+            url=request.url_for("login_page"),
             status_code=status.HTTP_303_SEE_OTHER,
         )
-    else:
-        error = "Invalid username or password."
-    return templates.TemplateResponse(
-        request=request,
-        name="login.html",
-        context=template_context(
+    if not discord_oauth_configured():
+        return login_response(
             request,
-            error=error,
-            dashboard_enabled=dashboard_enabled(),
-        ),
-        status_code=status.HTTP_401_UNAUTHORIZED,
+            error="Discord login is not configured.",
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+        )
+    state_token = secrets.token_urlsafe(32)
+    request.session[OAUTH_STATE_KEY] = state_token
+    return RedirectResponse(
+        url=discord_authorize_url(state_token),
+        status_code=status.HTTP_302_FOUND,
+    )
+
+
+@app.get("/auth/discord/callback", name="discord_callback")
+async def discord_callback(
+    request: Request,
+    code: Optional[str] = None,
+    state: Optional[str] = None,
+    error: Optional[str] = None,
+) -> Response:
+    expected_state = str(request.session.pop(OAUTH_STATE_KEY, ""))
+    if error:
+        return login_response(
+            request,
+            error="Discord login was canceled.",
+            status_code=status.HTTP_401_UNAUTHORIZED,
+        )
+    if not expected_state or not state:
+        return login_response(
+            request,
+            error="Discord login session is missing or expired.",
+            status_code=status.HTTP_400_BAD_REQUEST,
+        )
+    if not secrets.compare_digest(expected_state, state):
+        return login_response(
+            request,
+            error="Discord login session could not be verified.",
+            status_code=status.HTTP_400_BAD_REQUEST,
+        )
+    if not code:
+        return login_response(
+            request,
+            error="Discord did not return an authorization code.",
+            status_code=status.HTTP_400_BAD_REQUEST,
+        )
+    try:
+        identity = await fetch_discord_identity(code)
+        user = upsert_discord_user(identity)
+    except DiscordOAuthError:
+        return login_response(
+            request,
+            error="Discord login could not be completed. Please try again.",
+            status_code=status.HTTP_502_BAD_GATEWAY,
+        )
+    except PermissionError as exc:
+        return login_response(
+            request,
+            error=str(exc),
+            status_code=status.HTTP_403_FORBIDDEN,
+        )
+    except ValueError:
+        return login_response(
+            request,
+            error="Discord identity could not be verified.",
+            status_code=status.HTTP_502_BAD_GATEWAY,
+        )
+    login_user(request, user, auth_provider="discord")
+    return RedirectResponse(
+        url=request.url_for("home"),
+        status_code=status.HTTP_303_SEE_OTHER,
     )
 
 
@@ -228,6 +341,26 @@ async def logout(request: Request, csrf: str = Form(...)) -> RedirectResponse:
     return RedirectResponse(
         url=request.url_for("login_page"),
         status_code=status.HTTP_303_SEE_OTHER,
+    )
+
+
+@app.get("/users", response_class=HTMLResponse, name="users_page")
+async def users_page(request: Request) -> HTMLResponse:
+    if redirect := login_redirect(request):
+        return redirect
+    if not is_admin(request):
+        raise HTTPException(
+            status_code=403,
+            detail="Admin or owner access is required.",
+        )
+    return templates.TemplateResponse(
+        request=request,
+        name="users.html",
+        context=template_context(
+            request,
+            page_title="Dashboard Users",
+            users=list_dashboard_users(),
+        ),
     )
 
 

@@ -1,0 +1,31 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="page-heading">
+  <div>
+    <p class="eyebrow">Dashboard authentication</p>
+    <h1>Dashboard Users</h1>
+  </div>
+</div>
+<p class="muted">Users are created only through the owner password bootstrap or an explicitly approved Discord user ID. Owner access is never auto-granted through Discord OAuth.</p>
+<section class="card">
+  <div class="table-wrap">
+    <table>
+      <thead>
+        <tr><th>User</th><th>Discord</th><th>Provider</th><th>Role</th><th>Status</th><th>Last login</th></tr>
+      </thead>
+      <tbody>
+      {% for user in users %}
+      <tr>
+        <td>{{ user.discord_global_name or user.username or "—" }}<br><small class="muted">{{ user.discord_username or "" }}</small></td>
+        <td><code>{{ user.discord_user_id or "Not linked" }}</code></td>
+        <td>{{ user.auth_provider }}</td>
+        <td><span class="badge">{{ user.role }}</span></td>
+        <td><span class="badge status-{{ user.status }}">{{ user.status }}</span></td>
+        <td>{{ user.last_login_at or "Never" }}</td>
+      </tr>
+      {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</section>
+{% endblock %}

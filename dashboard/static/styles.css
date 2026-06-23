@@ -57,6 +57,34 @@ nav a:hover, nav a.active { color: var(--text); background: var(--panel-soft); }
   border-radius: 1rem;
   box-shadow: 0 24px 80px rgba(0, 0, 0, .35);
 }
+.button.discord-button {
+  display: block;
+  margin-top: 1.25rem;
+  text-align: center;
+  text-decoration: none;
+  background: #5865f2;
+}
+.login-divider {
+  display: flex;
+  align-items: center;
+  gap: .75rem;
+  margin: 1.25rem 0 0;
+  color: var(--muted);
+  font-size: .78rem;
+}
+.login-divider::before, .login-divider::after {
+  content: "";
+  flex: 1;
+  height: 1px;
+  background: var(--border);
+}
+.session-user {
+  display: grid;
+  min-width: max-content;
+  font-size: .78rem;
+  text-align: right;
+}
+.session-user span { color: var(--muted); text-transform: capitalize; }
 .eyebrow, .label {
   margin-bottom: .45rem;
   color: var(--accent);
@@ -303,6 +331,7 @@ details summary { color: var(--muted); cursor: pointer; }
   .site-header { align-items: flex-start; flex-wrap: wrap; }
   nav { order: 3; flex: 0 0 100%; width: 100%; overflow-x: auto; }
   .site-header form { margin-left: auto; }
+  .session-user { margin-left: auto; }
   .card-grid, .card-grid.three { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .two-column { grid-template-columns: 1fr; }
   .operation-actions { align-items: flex-start; flex-direction: column; }
