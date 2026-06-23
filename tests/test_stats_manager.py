@@ -7,6 +7,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
+import aiosqlite
 from fastapi.testclient import TestClient
 
 from dashboard.app import app
@@ -120,20 +121,12 @@ class StatsManagerDatabaseTests(unittest.TestCase):
             stat_id,
             title="Updated title",
             body="Updated body",
-            image_url="https://example.com/banner.png",
         )
         record = get_stat(stat_id)
         self.assertEqual(record["title"], "Updated title")
         self.assertEqual(record["channel_id"], 2)
         with self.assertRaisesRegex(ValueError, "Title is required"):
-            update_stat(stat_id, title="", body="", image_url="")
-        with self.assertRaisesRegex(ValueError, "http"):
-            update_stat(
-                stat_id,
-                title="Okay",
-                body="",
-                image_url="/etc/passwd",
-            )
+            update_stat(stat_id, title="", body="")
 
     def test_refresh_creates_pending_action_and_rejects_invalid_ids(self):
         stat_id = self.insert_roster()
@@ -295,6 +288,7 @@ class StatsManagerRouteTests(unittest.TestCase):
         self.assertEqual(record["title"], "Updated")
         self.assertEqual(record["channel_id"], 2)
         self.assertEqual(record["message_id"], 3)
+        self.assertIsNone(record["image_url"])
 
     def test_refresh_queues_action(self):
         stat_id = self.insert_roster()
@@ -366,6 +360,35 @@ class StatsCogCompatibilityTests(unittest.TestCase):
         from cogs.stats import Stats
 
         self.assertTrue(hasattr(Stats, "dashboard_action_worker"))
+
+
+class StatsCogSchemaCompatibilityTests(unittest.IsolatedAsyncioTestCase):
+    async def test_cog_async_migration_adds_manager_columns(self):
+        from cogs.stats import Stats
+
+        database = await aiosqlite.connect(":memory:")
+        for table in (
+            "role_stat_embeds",
+            "tracked_stats_reports",
+            "tracked_activity_reports",
+        ):
+            await database.execute(
+                f'CREATE TABLE "{table}" (id INTEGER PRIMARY KEY)'
+            )
+        bot = type("Bot", (), {"db": database})()
+        cog = Stats(bot)
+        await cog._ensure_dashboard_manager_columns()
+        for table in (
+            "role_stat_embeds",
+            "tracked_stats_reports",
+            "tracked_activity_reports",
+        ):
+            cursor = await database.execute(f'PRAGMA table_info("{table}")')
+            columns = {row[1] for row in await cursor.fetchall()}
+            await cursor.close()
+            self.assertIn("status", columns)
+            self.assertIn("last_error", columns)
+        await database.close()
 
 
 if __name__ == "__main__":

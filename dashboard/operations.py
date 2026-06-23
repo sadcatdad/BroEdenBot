@@ -13,6 +13,7 @@ from pathlib import Path
 from typing import Any, Sequence
 
 from dashboard.db import find_bank_database_path, find_database_path, table_names
+from utils.sqlite import configure_sync_connection
 
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
@@ -240,8 +241,7 @@ def _database_counts(path: Path, preferred: set[str]) -> dict[str, Any]:
             uri=True,
             timeout=5,
         )
-        connection.row_factory = sqlite3.Row
-        connection.execute("PRAGMA query_only = ON")
+        configure_sync_connection(connection, readonly=True)
         available = table_names(connection)
         candidates = preferred | {
             name

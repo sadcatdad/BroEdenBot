@@ -535,6 +535,7 @@ class Stats(commands.Cog):
             ON tracked_activity_reports (guild_id, message_id)
             """
         )
+        await self._ensure_dashboard_manager_columns()
         await self.bot.db.commit()
         initialize_stats_manager_schema()
         self.bot.add_view(self._export_view)
@@ -549,6 +550,27 @@ class Stats(commands.Cog):
         for task in self._refresh_tasks.values():
             task.cancel()
         self._refresh_tasks.clear()
+
+    async def _ensure_dashboard_manager_columns(self) -> None:
+        for table in (
+            "role_stat_embeds",
+            "tracked_stats_reports",
+            "tracked_activity_reports",
+        ):
+            cursor = await self.bot.db.execute(f'PRAGMA table_info("{table}")')
+            columns = {row[1] for row in await cursor.fetchall()}
+            await cursor.close()
+            if "status" not in columns:
+                await self.bot.db.execute(
+                    f"""
+                    ALTER TABLE "{table}"
+                    ADD COLUMN status TEXT NOT NULL DEFAULT 'active'
+                    """
+                )
+            if "last_error" not in columns:
+                await self.bot.db.execute(
+                    f'ALTER TABLE "{table}" ADD COLUMN last_error TEXT'
+                )
 
     @stats.command(name="role", description="Create a live role roster graphic")
     @app_commands.describe(
@@ -3329,9 +3351,10 @@ class Stats(commands.Cog):
 
     @tasks.loop(seconds=5)
     async def dashboard_action_worker(self) -> None:
-        for action in pending_refresh_actions(limit=10):
+        actions = await asyncio.to_thread(pending_refresh_actions, 10)
+        for action in actions:
             action_id = int(action["id"])
-            if not mark_action_processing(action_id):
+            if not await asyncio.to_thread(mark_action_processing, action_id):
                 continue
             try:
                 payload = json.loads(action["payload_json"])
@@ -3346,7 +3369,12 @@ class Stats(commands.Cog):
                 )
                 success = False
                 message = f"Refresh failed: {type(exc).__name__}"
-            complete_action(action_id, success, message)
+            await asyncio.to_thread(
+                complete_action,
+                action_id,
+                success,
+                message,
+            )
 
     @dashboard_action_worker.before_loop
     async def before_dashboard_action_worker(self) -> None:
@@ -3357,7 +3385,7 @@ class Stats(commands.Cog):
         stat_id: str,
     ) -> tuple[bool, str]:
         source, record_id = parse_stat_id(stat_id)
-        record = get_stat(stat_id)
+        record = await asyncio.to_thread(get_stat, stat_id)
         if record is None:
             return False, "Stat was not found."
         if record["status"] != "active":
@@ -3377,14 +3405,29 @@ class Stats(commands.Cog):
             refresher = self._refresh_activity_report_row
 
         if row is None:
-            update_stat_result(stat_id, False, "Active stat record was not found.")
+            await asyncio.to_thread(
+                update_stat_result,
+                stat_id,
+                False,
+                "Active stat record was not found.",
+            )
             return False, "Active stat record was not found."
         success = await refresher(row)
         if success:
             await self._snapshot_dashboard_stat_members(stat_id, record)
-            update_stat_result(stat_id, True, "Refreshed successfully.")
+            await asyncio.to_thread(
+                update_stat_result,
+                stat_id,
+                True,
+                "Refreshed successfully.",
+            )
             return True, f"{stat_id} refreshed successfully."
-        update_stat_result(stat_id, False, "Discord message refresh failed.")
+        await asyncio.to_thread(
+            update_stat_result,
+            stat_id,
+            False,
+            "Discord message refresh failed.",
+        )
         return False, f"{stat_id} could not be refreshed."
 
     async def _snapshot_dashboard_stat_members(
@@ -3394,7 +3437,7 @@ class Stats(commands.Cog):
     ) -> None:
         guild = self.bot.get_guild(record["guild_id"])
         if guild is None:
-            replace_member_snapshot(stat_id, [])
+            await asyncio.to_thread(replace_member_snapshot, stat_id, [])
             return
         members = []
         if record["source"] == "roster":
@@ -3407,7 +3450,7 @@ class Stats(commands.Cog):
         elif record["source"] == "report":
             rows = await self._tracked_report_rows(report_id=record["id"])
             if not rows:
-                replace_member_snapshot(stat_id, [])
+                await asyncio.to_thread(replace_member_snapshot, stat_id, [])
                 return
             row = rows[0]
             report_type = row[4]
@@ -3443,7 +3486,7 @@ class Stats(commands.Cog):
                         )
                         for member in data["members"]
                     ]
-        replace_member_snapshot(stat_id, members)
+        await asyncio.to_thread(replace_member_snapshot, stat_id, members)
 
     @staticmethod
     def _dashboard_member_row(

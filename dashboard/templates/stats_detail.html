@@ -22,12 +22,7 @@
     <div><span>Stored members</span><strong>{{ stat.member_count }}</strong></div>
   </div>
   {% if stat.config_json %}<pre class="log-output compact">{{ stat.config_json }}</pre>{% endif %}
-  {% if stat.image_url %}
-  <div class="stat-preview">
-    <p class="muted">Configured banner preview</p>
-    <img src="{{ stat.image_url }}" alt="Configured stats banner">
-  </div>
-  {% endif %}
+  {% if stat.image_url %}<p class="muted">Banner source is stored and managed by the Discord attachment workflow.</p>{% endif %}
 </section>
 
 <section class="card operation-actions">

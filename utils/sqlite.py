@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import sqlite3
+
 import aiosqlite
 
 
@@ -25,3 +27,16 @@ async def configure_connection(
         await cursor.close()
     await connection.execute("PRAGMA synchronous = NORMAL")
     return str(row[0]).casefold() if row else "unknown"
+
+
+def configure_sync_connection(
+    connection: sqlite3.Connection,
+    *,
+    readonly: bool = False,
+) -> sqlite3.Connection:
+    """Apply the shared timeout/query settings to sqlite3 connections."""
+    connection.row_factory = sqlite3.Row
+    connection.execute("PRAGMA busy_timeout = 30000")
+    if readonly:
+        connection.execute("PRAGMA query_only = ON")
+    return connection

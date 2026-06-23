@@ -413,7 +413,6 @@ async def stats_update(request: Request, stat_id: str) -> RedirectResponse:
             stat_id,
             title=str(form.get("title", "")),
             body=str(form.get("body", "")),
-            image_url=str(form.get("image_url", "")),
         )
     except ValueError as exc:
         request.session["stats_error"] = str(exc)

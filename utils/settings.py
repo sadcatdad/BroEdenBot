@@ -10,6 +10,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
 
+from utils.sqlite import configure_sync_connection
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 FORBIDDEN_KEY_PARTS = ("TOKEN", "API_KEY", "PASSWORD", "SECRET")
@@ -179,11 +180,7 @@ def _connect(*, readonly: bool = False) -> sqlite3.Connection:
     else:
         path.parent.mkdir(parents=True, exist_ok=True)
         connection = sqlite3.connect(path, timeout=30)
-    connection.row_factory = sqlite3.Row
-    connection.execute("PRAGMA busy_timeout = 30000")
-    if readonly:
-        connection.execute("PRAGMA query_only = ON")
-    return connection
+    return configure_sync_connection(connection, readonly=readonly)
 
 
 def initialize_settings_from_env() -> None:

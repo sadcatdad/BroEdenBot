@@ -18,13 +18,7 @@
       Body / description
       <textarea name="body" maxlength="500" rows="6">{{ stat.body }}</textarea>
     </label>
-    {% if stat.source == "roster" %}
-    <label>
-      Optional image URL
-      <input name="image_url" maxlength="2000" value="{{ stat.image_url or '' }}" placeholder="https://...">
-    </label>
-    {% endif %}
-    <p class="muted">Channel, message, guild, role IDs, SQL, and secrets cannot be edited here.</p>
+    <p class="muted">Banner images remain managed by the existing Discord attachment workflow because graphics render from stored image bytes. Channel, message, guild, role IDs, SQL, and secrets cannot be edited here.</p>
     <div class="action-buttons">
       <button class="button" type="submit">Save configuration</button>
       <a class="button secondary" href="{{ url_for('stats_detail', stat_id=stat.stat_id) }}">Cancel</a>

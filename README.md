@@ -1368,9 +1368,10 @@ reuses `role_stat_embeds`, `tracked_stats_reports`, and
 Tracked items use dashboard IDs such as `roster-12`, `report-4`, and
 `activity-8`. The list and detail pages show their safe configuration, Discord
 channel/message IDs, update time, archive/error state, and locally stored
-member-snapshot count. Role rosters and role reports allow edits to title,
-description, and—where already supported—the optional roster image URL.
-Guild, role, channel, and message IDs are read-only.
+member-snapshot count. Role rosters and role reports allow edits to title and
+description. Banner images remain managed through the existing Discord
+attachment workflow because the roster renderer uses persisted image bytes,
+not an editable URL. Guild, role, channel, and message IDs are read-only.
 
 The dashboard and Discord bot run as separate processes. Clicking Refresh
 therefore inserts a fixed `refresh_stat` entry into `dashboard_actions`; it

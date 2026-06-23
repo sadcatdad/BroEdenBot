@@ -5,15 +5,10 @@ import sqlite3
 from pathlib import Path
 from typing import Any
 
+from utils.settings import settings_database_path
+from utils.sqlite import configure_sync_connection
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
-SHARED_DATABASE_CANDIDATES = (
-    Path("data.db"),
-    Path("data/broeden.sqlite"),
-    Path("data/bot.sqlite"),
-    Path("bot.db"),
-    Path("broeden.sqlite"),
-)
 BANK_DATABASE_CANDIDATES = (Path("brobank.db"),)
 
 
@@ -25,14 +20,7 @@ def _resolve_path(value: str | Path) -> Path:
 
 
 def find_database_path() -> Path:
-    configured = os.getenv("DATABASE_PATH", "").strip()
-    if configured:
-        return _resolve_path(configured)
-    for candidate in SHARED_DATABASE_CANDIDATES:
-        path = _resolve_path(candidate)
-        if path.is_file():
-            return path
-    return _resolve_path(SHARED_DATABASE_CANDIDATES[0])
+    return settings_database_path()
 
 
 def find_bank_database_path() -> Path:
@@ -72,10 +60,7 @@ def readonly_connection(path: Path) -> sqlite3.Connection:
         uri=True,
         timeout=5,
     )
-    connection.row_factory = sqlite3.Row
-    connection.execute("PRAGMA query_only = ON")
-    connection.execute("PRAGMA busy_timeout = 5000")
-    return connection
+    return configure_sync_connection(connection, readonly=True)
 
 
 def table_names(connection: sqlite3.Connection) -> set[str]:

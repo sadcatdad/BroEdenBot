@@ -7,10 +7,10 @@ import io
 import json
 import sqlite3
 from datetime import datetime, timezone
-from pathlib import Path
 from typing import Any, Optional
 
 from utils.settings import settings_database_path
+from utils.sqlite import configure_sync_connection
 
 
 STAT_TABLES = {
@@ -21,7 +21,6 @@ STAT_TABLES = {
 EDITABLE_SOURCES = {"roster", "report"}
 MAX_TITLE_LENGTH = 100
 MAX_BODY_LENGTH = 500
-MAX_IMAGE_URL_LENGTH = 2_000
 
 
 def parse_stat_id(stat_id: str) -> tuple[str, int]:
@@ -39,9 +38,7 @@ def _connect() -> sqlite3.Connection:
     path = settings_database_path()
     path.parent.mkdir(parents=True, exist_ok=True)
     connection = sqlite3.connect(path, timeout=30)
-    connection.row_factory = sqlite3.Row
-    connection.execute("PRAGMA busy_timeout = 30000")
-    return connection
+    return configure_sync_connection(connection)
 
 
 def _table_exists(connection: sqlite3.Connection, table: str) -> bool:
@@ -262,25 +259,18 @@ def update_stat(
     *,
     title: str,
     body: str,
-    image_url: str = "",
 ) -> None:
     source, record_id = parse_stat_id(stat_id)
     if source not in EDITABLE_SOURCES:
         raise ValueError("This stat type does not support dashboard editing.")
     clean_title = str(title or "").strip()
     clean_body = str(body or "").strip()
-    clean_image_url = str(image_url or "").strip()
     if not clean_title:
         raise ValueError("Title is required.")
     if len(clean_title) > MAX_TITLE_LENGTH:
         raise ValueError(f"Title must be {MAX_TITLE_LENGTH} characters or fewer.")
     if len(clean_body) > MAX_BODY_LENGTH:
         raise ValueError(f"Body must be {MAX_BODY_LENGTH} characters or fewer.")
-    if len(clean_image_url) > MAX_IMAGE_URL_LENGTH:
-        raise ValueError("Image URL is too long.")
-    if clean_image_url and not clean_image_url.startswith(("https://", "http://")):
-        raise ValueError("Image URL must start with http:// or https://.")
-
     initialize_stats_manager_schema()
     table = STAT_TABLES[source]
     with _connect() as connection:
@@ -289,9 +279,6 @@ def update_stat(
             raise ValueError("Stats table is not available.")
         assignments = ["title = ?", "body = ?"]
         values: list[Any] = [clean_title, clean_body]
-        if source == "roster" and "image_url" in columns:
-            assignments.append("image_url = ?")
-            values.append(clean_image_url or None)
         values.append(record_id)
         cursor = connection.execute(
             f'UPDATE "{table}" SET {", ".join(assignments)} WHERE id = ?',
