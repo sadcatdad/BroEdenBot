@@ -216,6 +216,20 @@ python scripts/cleanup_vc_bots.py --dry-run --excluded-user-cache data/excluded_
 python scripts/cleanup_vc_bots.py --excluded-user-cache data/excluded_bot_role_members.json --vacuum --yes
 ```
 
+For dashboard analytics, `EXCLUDED_VOICE_CHANNEL_IDS` excludes lobby/generator
+channels and `VC_EXCLUDED_USER_IDS` excludes known bot users. Use
+`scripts/cleanup_voice_sessions.py` when rows should be marked ignored rather
+than deleted:
+
+```bash
+python scripts/cleanup_voice_sessions.py --dry-run
+python scripts/cleanup_voice_sessions.py --apply
+```
+
+Apply mode adds `ignored_at` and `ignored_reason` columns when needed, then marks
+matched rows ignored. Long sessions are only marked when
+`--include-long-sessions` is supplied.
+
 Role-based historical exclusion uses current server membership. If a historical
 session only has a user name, it is not role-excluded by name; prefer resolved
 Discord user IDs or add known users to `VC_EXCLUDED_USER_IDS`. Cleanup can

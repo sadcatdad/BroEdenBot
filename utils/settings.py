@@ -104,6 +104,12 @@ SETTING_DEFINITIONS = (
         "Users excluded from VC stats and rewards.",
     ),
     SettingDefinition(
+        "EXCLUDED_VOICE_CHANNEL_IDS",
+        "permissions",
+        "csv_ids",
+        "Voice channel IDs excluded from dashboard voice analytics.",
+    ),
+    SettingDefinition(
         "BANK_ALLOWED_ROLE_IDS",
         "permissions",
         "csv_ids",

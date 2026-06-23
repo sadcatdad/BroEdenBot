@@ -100,6 +100,39 @@ def _guild_filter(column: str = "guild_id") -> tuple[str, list[Any]]:
     return "1 = 1", []
 
 
+def _csv_ids(name: str) -> set[int]:
+    values: set[int] = set()
+    for item in os.getenv(name, "").replace("\n", ",").split(","):
+        text = item.strip()
+        if not text:
+            continue
+        try:
+            parsed = int(text)
+        except ValueError:
+            continue
+        if parsed > 0:
+            values.add(parsed)
+    return values
+
+
+def _excluded_voice_user_ids() -> set[int]:
+    return _csv_ids("VC_EXCLUDED_USER_IDS")
+
+
+def _excluded_voice_channel_ids() -> set[int]:
+    return _csv_ids("EXCLUDED_VOICE_CHANNEL_IDS")
+
+
+def _not_in_sql(column: str, values: set[int]) -> tuple[str, list[Any]]:
+    if not values:
+        return "", []
+    placeholders = ", ".join("?" for _ in values)
+    return (
+        f" AND ({column} IS NULL OR {column} NOT IN ({placeholders}))",
+        list(sorted(values)),
+    )
+
+
 def _date_filter(
     range_key: str,
     *,
@@ -459,25 +492,55 @@ def _voice_selects(connection: sqlite3.Connection) -> list[str]:
     selects = []
     live = _columns(connection, "vc_sessions")
     if {"guild_id", "user_id", "left_at", "duration_seconds"}.issubset(live):
+        ignored_at = "ignored_at" if "ignored_at" in live else "NULL"
+        ignored_reason = "ignored_reason" if "ignored_reason" in live else "NULL"
         selects.append(
-            """
+            f"""
             SELECT guild_id, user_id, username, display_name, channel_id,
-                   channel_name, joined_at, left_at, duration_seconds, 'live' AS source
+                   channel_name, joined_at, left_at, duration_seconds,
+                   {ignored_at} AS ignored_at,
+                   {ignored_reason} AS ignored_reason,
+                   'live' AS source
             FROM vc_sessions
             """
         )
     imported = _columns(connection, "vc_imported_sessions")
     if {"guild_id", "user_id", "left_at", "duration_seconds"}.issubset(imported):
+        ignored_at = "ignored_at" if "ignored_at" in imported else "NULL"
+        ignored_reason = "ignored_reason" if "ignored_reason" in imported else "NULL"
         selects.append(
-            """
+            f"""
             SELECT guild_id, user_id, user_name AS username, display_name,
                    voice_channel_id AS channel_id,
                    voice_channel_name AS channel_name, joined_at, left_at,
-                   duration_seconds, 'imported' AS source
+                   duration_seconds,
+                   {ignored_at} AS ignored_at,
+                   {ignored_reason} AS ignored_reason,
+                   'imported' AS source
             FROM vc_imported_sessions
             """
         )
     return selects
+
+
+def _voice_where(range_key: str) -> tuple[str, list[Any]]:
+    where, parameters = _where(
+        range_key,
+        guild_column="guild_id",
+        date_column="left_at",
+    )
+    user_sql, user_parameters = _not_in_sql(
+        "user_id",
+        _excluded_voice_user_ids(),
+    )
+    channel_sql, channel_parameters = _not_in_sql(
+        "channel_id",
+        _excluded_voice_channel_ids(),
+    )
+    return (
+        f"{where} AND ignored_at IS NULL{user_sql}{channel_sql}",
+        [*parameters, *user_parameters, *channel_parameters],
+    )
 
 
 def get_voice_overview(
@@ -510,11 +573,7 @@ def get_voice_overview(
         if not selects:
             return result
         union = " UNION ALL ".join(selects)
-        where, parameters = _where(
-            range_key,
-            guild_column="guild_id",
-            date_column="left_at",
-        )
+        where, parameters = _voice_where(range_key)
         total = connection.execute(
             f"""
             SELECT COUNT(*) AS sessions,
@@ -535,7 +594,10 @@ def get_voice_overview(
                        SUM(duration_seconds) AS seconds
                 FROM ({union}) AS sessions
                 WHERE {where}
-                GROUP BY user_id
+                GROUP BY CASE
+                    WHEN user_id IS NOT NULL THEN 'id:' || user_id
+                    ELSE 'name:' || LOWER(COALESCE(display_name, username, 'unknown'))
+                END
                 ORDER BY seconds DESC, user_id
                 LIMIT ?
                 """,
@@ -551,8 +613,11 @@ def get_voice_overview(
                        SUM(duration_seconds) AS seconds
                 FROM ({union}) AS sessions
                 WHERE {where}
-                GROUP BY channel_id
-                ORDER BY seconds DESC, channel_id
+                GROUP BY CASE
+                    WHEN channel_id IS NOT NULL THEN 'id:' || channel_id
+                    ELSE 'name:' || LOWER(COALESCE(channel_name, 'unknown'))
+                END
+                ORDER BY seconds DESC, channel_id, channel_name
                 LIMIT ?
                 """,
                 (*parameters, limit),

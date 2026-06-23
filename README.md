@@ -936,12 +936,16 @@ their shared Discord role:
 ```dotenv
 ACTIVITY_EXCLUDED_ROLE_IDS=1282775339566895239
 VC_EXCLUDED_ROLE_IDS=1282775339566895239
+EXCLUDED_VOICE_CHANNEL_IDS=
+VC_EXCLUDED_USER_IDS=983091180885643326,716390085896962058
 ```
 
 Live message activity ignores bot-authored messages, `ACTIVITY_EXCLUDED_USER_IDS`,
 and members with any `ACTIVITY_EXCLUDED_ROLE_IDS`. Live VC tracking ignores bots,
 `VC_EXCLUDED_USER_IDS`, and members with any `VC_EXCLUDED_ROLE_IDS`; excluded
-members do not receive VC rewards or automatic VC XP pulses.
+members do not receive VC rewards or automatic VC XP pulses. The Voice dashboard
+also ignores `VC_EXCLUDED_USER_IDS`, `EXCLUDED_VOICE_CHANNEL_IDS`, and rows
+marked with `ignored_at`.
 
 Historical exports usually do not contain role membership. Generate a current
 role-member cache before importing or cleaning historical data:
@@ -964,6 +968,20 @@ Real cleanup requires `--yes`; add `--vacuum` after backing up `data.db`.
 Cleanup can also resolve members live with `--guild-id` plus configured or
 passed role IDs when `DISCORD_TOKEN` is available. It removes rows from stats
 tables only and never touches `message_context.db`.
+
+For dashboard-specific VC cleanup, use the non-deleting marker script:
+
+```bash
+python scripts/cleanup_voice_sessions.py --dry-run
+python scripts/cleanup_voice_sessions.py --apply
+```
+
+The script adds `ignored_at` / `ignored_reason` columns when applying and marks
+matched rows ignored instead of deleting them. It reports duplicate rows,
+invalid/impossible rows, excluded voice channels, excluded bot/user IDs, total
+hours affected, and top affected channels/users. Long sessions over the audit
+threshold are reported by default; pass `--include-long-sessions` only when you
+intentionally want to mark those sessions ignored.
 
 ### Historical Discord activity imports
 
@@ -1228,6 +1246,7 @@ updated from the authenticated local dashboard without rewriting `.env`.
 | `ACTIVITY_EXCLUDED_USER_IDS` | Comma-separated user IDs excluded from message activity stats as a fallback. |
 | `VC_EXCLUDED_ROLE_IDS` | Comma-separated role IDs excluded from VC stats, VC leaderboards, and VC rewards. Recommended bot/stat exclusion role: `1282775339566895239`. |
 | `VC_EXCLUDED_USER_IDS` | Comma-separated user IDs excluded from VC stats and rewards as a fallback. |
+| `EXCLUDED_VOICE_CHANNEL_IDS` | Comma-separated voice channel IDs excluded from dashboard voice analytics and cleanup marking. |
 | `VCREWARDS_ALLOWED_ROLE_IDS` | Optional role IDs allowed to use `/vcrewards audit`. Falls back to `VCSTATS_ALLOWED_ROLE_IDS`. |
 | `VCXP_TRIGGER_ROLE_ID` | Discord role ID temporarily added for each VC XP pulse. |
 | `VCXP_MINUTES_PER_PULSE` | Eligible VC minutes required per pulse. Defaults to `30`. |
