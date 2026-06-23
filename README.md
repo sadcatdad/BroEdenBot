@@ -1296,6 +1296,68 @@ lookups; the dashboard does not automatically restart the bot.
 containing `TOKEN`, `API_KEY`, `PASSWORD`, or `SECRET` are forbidden from the
 settings database and edit route.
 
+### Phase 2 bot operations
+
+The authenticated Operations page adds local visibility and three fixed
+actions:
+
+- Status and the latest 100 journal lines for `broedenbot` and
+  `broeden-dashboard`.
+- Hostname, uptime, disk and memory usage, Python version, and current Git
+  commit/branch when available.
+- Shared and bank SQLite paths, sizes, and rough counts for known settings,
+  audit, import, bank, and donation tables.
+- Fixed restart buttons for the two services.
+- A consistent SQLite backup of the active shared database into `backups/`
+  using a timestamped `broeden-backup-YYYYMMDD-HHMMSS.sqlite` filename.
+
+The page has no terminal, arbitrary unit input, deploy/pull action, environment
+editor, or backup download route. Logs are redacted for obvious token,
+password, API-key, secret, authorization, bearer-token, and Discord-token
+patterns. Read-only `systemctl status` and `journalctl` commands run without
+`sudo` where the host permits it. Missing systemd, journal, or Git metadata is
+shown as unavailable instead of crashing the page.
+
+The restart actions execute only:
+
+```text
+sudo systemctl restart broedenbot
+sudo systemctl restart broeden-dashboard
+```
+
+To permit those commands without giving the dashboard general root access,
+first find the executable path on the Pi:
+
+```bash
+command -v systemctl
+command -v journalctl
+```
+
+Then create a dedicated sudoers file:
+
+```bash
+sudo visudo -f /etc/sudoers.d/broeden-dashboard
+```
+
+If `command -v systemctl` returns `/bin/systemctl`, add:
+
+```sudoers
+sadcatdad ALL=NOPASSWD: /bin/systemctl restart broedenbot, /bin/systemctl restart broeden-dashboard
+```
+
+Use `/usr/bin/systemctl` instead when that is the path reported by the Pi.
+Status and log reads normally need no sudoers entries. If the local system
+policy requires privileged reads, allow only these exact additional commands,
+using the paths returned by `command -v`:
+
+```sudoers
+sadcatdad ALL=NOPASSWD: /bin/systemctl status broedenbot --no-pager, /bin/systemctl status broeden-dashboard --no-pager, /bin/journalctl -u broedenbot -n 100 --no-pager, /bin/journalctl -u broeden-dashboard -n 100 --no-pager
+```
+
+The current implementation intentionally does not invoke `sudo` for status or
+log reads; these optional entries are only a reference if local policy is
+tightened and the fixed read commands are updated accordingly.
+
 An optional separate systemd unit template is provided at
 `broeden-dashboard.service.example`. It uses the current
 `sadcatdad` account and `/home/sadcatdad/BroEdenBot` project path. Copy it to

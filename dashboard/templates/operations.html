@@ -1,0 +1,103 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="page-heading">
+  <div>
+    <p class="eyebrow">Fixed local controls</p>
+    <h1>Bot Operations</h1>
+  </div>
+</div>
+<p class="muted">Only predefined service operations are available. There is no terminal, deploy, pull, or arbitrary command input.</p>
+{% if message %}<div class="alert success">{{ message }}</div>{% endif %}
+{% if error %}<div class="alert error">{{ error }}</div>{% endif %}
+
+<section class="card-grid">
+  {% for service in services %}
+  <article class="card">
+    <p class="label">{{ service.name }}</p>
+    <p class="metric {{ 'good' if service.state == 'active' else 'warning-text' }}">{{ service.state }}</p>
+    <details>
+      <summary>Status details</summary>
+      <pre class="log-output compact">{{ service.detail }}</pre>
+    </details>
+  </article>
+  {% endfor %}
+</section>
+
+<section class="card operation-actions">
+  <div>
+    <p class="eyebrow">Safe actions</p>
+    <h2>Service controls</h2>
+    <p class="muted">Restarts use fixed systemd unit names and may briefly interrupt the selected service.</p>
+  </div>
+  <div class="action-buttons">
+    <form method="post" action="{{ url_for('restart_bot') }}">
+      <input type="hidden" name="csrf" value="{{ csrf_token }}">
+      <button class="button danger" type="submit">Restart bot service</button>
+    </form>
+    <form method="post" action="{{ url_for('restart_dashboard') }}">
+      <input type="hidden" name="csrf" value="{{ csrf_token }}">
+      <button class="button danger" type="submit">Restart dashboard service</button>
+    </form>
+    <form method="post" action="{{ url_for('backup_active_database') }}">
+      <input type="hidden" name="csrf" value="{{ csrf_token }}">
+      <button class="button" type="submit">Back up database</button>
+    </form>
+  </div>
+</section>
+
+<section class="card">
+  <p class="eyebrow">Host</p>
+  <h2>System status</h2>
+  <div class="status-list">
+    <div><span>Hostname</span><strong>{{ system.hostname }}</strong></div>
+    <div><span>Uptime</span><strong>{{ system.uptime }}</strong></div>
+    <div><span>Disk usage</span><strong>{{ system.disk }}</strong></div>
+    <div><span>Memory usage</span><strong>{{ system.memory }}</strong></div>
+    <div><span>Python</span><strong>{{ system.python }}</strong></div>
+    <div><span>Git commit</span><strong>{{ system.git_commit }}</strong></div>
+    <div><span>Git branch</span><strong>{{ system.git_branch }}</strong></div>
+  </div>
+</section>
+
+<section class="two-column operations-columns">
+  <article class="card">
+    <p class="eyebrow">Shared SQLite</p>
+    <h2>Database status</h2>
+    <p class="path">{{ databases.shared.path }}</p>
+    <p class="muted">Size: {{ databases.shared.size }} · bot_settings: {{ "present" if databases.shared.bot_settings_exists else "missing" }}</p>
+    {% if databases.shared.error %}<div class="alert error">{{ databases.shared.error }}</div>{% endif %}
+    <div class="status-list">
+      {% for table, count in databases.shared.tables.items() %}
+      <div><code>{{ table }}</code><strong>{{ count }}</strong></div>
+      {% else %}
+      <p class="muted">No tracked tables found.</p>
+      {% endfor %}
+    </div>
+  </article>
+  <article class="card">
+    <p class="eyebrow">Bank SQLite</p>
+    <h2>Bank database</h2>
+    <p class="path">{{ databases.bank.path }}</p>
+    <p class="muted">Size: {{ databases.bank.size }}</p>
+    {% if databases.bank.error %}<div class="alert error">{{ databases.bank.error }}</div>{% endif %}
+    <div class="status-list">
+      {% for table, count in databases.bank.tables.items() %}
+      <div><code>{{ table }}</code><strong>{{ count }}</strong></div>
+      {% else %}
+      <p class="muted">No bank or donation tables found.</p>
+      {% endfor %}
+    </div>
+  </article>
+</section>
+
+<section class="card">
+  <p class="eyebrow">Recent output</p>
+  <h2>Service logs</h2>
+  {% for log in logs %}
+  <details class="log-panel" {{ "open" if loop.first else "" }}>
+    <summary>{{ log.name }}</summary>
+    <pre class="log-output">{{ log.output }}</pre>
+  </details>
+  {% endfor %}
+</section>
+{% endblock %}

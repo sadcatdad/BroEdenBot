@@ -13,6 +13,7 @@
     <nav aria-label="Dashboard navigation">
       <a class="{{ 'active' if current_path == '/' else '' }}" href="{{ url_for('home') }}">Overview</a>
       <a class="{{ 'active' if current_path == '/settings' else '' }}" href="{{ url_for('settings') }}">Settings</a>
+      <a class="{{ 'active' if current_path.startswith('/operations') else '' }}" href="{{ url_for('operations_page') }}">Operations</a>
       <a class="{{ 'active' if current_path == '/bank' else '' }}" href="{{ url_for('bank') }}">Bank</a>
       <a class="{{ 'active' if current_path == '/imports' else '' }}" href="{{ url_for('imports') }}">Imports</a>
     </nav>

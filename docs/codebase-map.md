@@ -16,7 +16,8 @@ maintenance.
 - `message_context.db` — Separate full-server staff message archive used only
   by `/context`.
 - `dashboard/` — Separate local-network FastAPI dashboard with signed login
-  sessions, safe configuration status, and read-only SQLite views.
+  sessions, safe configuration, read-only data views, fixed service controls,
+  redacted logs, system status, and SQLite backups.
 - `broeden-dashboard.service.example` — Optional standalone systemd unit
   template for the dashboard; it does not replace the bot service.
 

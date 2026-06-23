@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 import re
+import sqlite3
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -28,6 +29,14 @@ from dashboard.db import (
     find_bank_database_path,
     find_database_path,
     import_history,
+)
+from dashboard.operations import (
+    backup_database,
+    operations_database_status,
+    restart_service,
+    service_logs,
+    service_status,
+    system_status,
 )
 from utils.settings import (
     EDITABLE_SETTING_KEYS,
@@ -122,6 +131,12 @@ def login_redirect(request: Request) -> RedirectResponse | None:
             status_code=status.HTTP_303_SEE_OTHER,
         )
     return None
+
+
+async def require_action_csrf(request: Request) -> None:
+    form = await request.form()
+    if not csrf_is_valid(request, str(form.get("csrf", ""))):
+        raise HTTPException(status_code=400, detail="Invalid CSRF token.")
 
 
 @app.get("/login", response_class=HTMLResponse, name="login_page")
@@ -244,9 +259,8 @@ async def settings(request: Request) -> HTMLResponse:
 async def update_setting(request: Request) -> RedirectResponse:
     if redirect := login_redirect(request):
         return redirect
+    await require_action_csrf(request)
     form = await request.form()
-    if not csrf_is_valid(request, str(form.get("csrf", ""))):
-        raise HTTPException(status_code=400, detail="Invalid CSRF token.")
     key = str(form.get("key", "")).strip()
     value = str(form.get("value", ""))
     if is_forbidden_key(key) or key not in EDITABLE_SETTING_KEYS:
@@ -265,6 +279,79 @@ async def update_setting(request: Request) -> RedirectResponse:
         url=request.url_for("settings"),
         status_code=status.HTTP_303_SEE_OTHER,
     )
+
+
+@app.get("/operations", response_class=HTMLResponse, name="operations_page")
+async def operations_page(request: Request) -> HTMLResponse:
+    if redirect := login_redirect(request):
+        return redirect
+    message = request.session.pop("operations_message", None)
+    error = request.session.pop("operations_error", None)
+    return templates.TemplateResponse(
+        request=request,
+        name="operations.html",
+        context=template_context(
+            request,
+            page_title="Bot Operations",
+            services=[
+                service_status("bot"),
+                service_status("dashboard"),
+            ],
+            logs=[
+                service_logs("bot"),
+                service_logs("dashboard"),
+            ],
+            system=system_status(),
+            databases=operations_database_status(),
+            message=message,
+            error=error,
+        ),
+    )
+
+
+def operations_redirect(request: Request) -> RedirectResponse:
+    return RedirectResponse(
+        url=request.url_for("operations_page"),
+        status_code=status.HTTP_303_SEE_OTHER,
+    )
+
+
+@app.post("/operations/restart-bot", name="restart_bot")
+async def restart_bot(request: Request) -> RedirectResponse:
+    if redirect := login_redirect(request):
+        return redirect
+    await require_action_csrf(request)
+    ok, message = restart_service("bot")
+    request.session["operations_message" if ok else "operations_error"] = message
+    return operations_redirect(request)
+
+
+@app.post("/operations/restart-dashboard", name="restart_dashboard")
+async def restart_dashboard(request: Request) -> RedirectResponse:
+    if redirect := login_redirect(request):
+        return redirect
+    await require_action_csrf(request)
+    ok, message = restart_service("dashboard")
+    request.session["operations_message" if ok else "operations_error"] = message
+    return operations_redirect(request)
+
+
+@app.post("/operations/backup-database", name="backup_active_database")
+async def backup_active_database(request: Request) -> RedirectResponse:
+    if redirect := login_redirect(request):
+        return redirect
+    await require_action_csrf(request)
+    try:
+        destination = backup_database()
+    except (OSError, sqlite3.Error) as exc:
+        request.session["operations_error"] = (
+            f"Database backup failed: {type(exc).__name__}: {exc}"
+        )
+    else:
+        request.session["operations_message"] = (
+            f"Database backup created: {destination.name}"
+        )
+    return operations_redirect(request)
 
 
 @app.get("/bank", response_class=HTMLResponse, name="bank")
