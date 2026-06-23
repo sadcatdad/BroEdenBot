@@ -133,6 +133,17 @@ def _not_in_sql(column: str, values: set[int]) -> tuple[str, list[Any]]:
     )
 
 
+def _normalized_voice_channel_name_sql(column: str) -> str:
+    return (
+        "NULLIF(TRIM(REPLACE(REPLACE("
+        f"{column}, ' [voice]', ''), '[voice]', '')), '')"
+    )
+
+
+def _voice_channel_key_sql(column: str) -> str:
+    return f"LOWER(COALESCE({_normalized_voice_channel_name_sql(column)}, 'unknown'))"
+
+
 def _date_filter(
     range_key: str,
     *,
@@ -494,10 +505,13 @@ def _voice_selects(connection: sqlite3.Connection) -> list[str]:
     if {"guild_id", "user_id", "left_at", "duration_seconds"}.issubset(live):
         ignored_at = "ignored_at" if "ignored_at" in live else "NULL"
         ignored_reason = "ignored_reason" if "ignored_reason" in live else "NULL"
+        normalized_channel_name = _normalized_voice_channel_name_sql("channel_name")
         selects.append(
             f"""
             SELECT guild_id, user_id, username, display_name, channel_id,
-                   channel_name, joined_at, left_at, duration_seconds,
+                   channel_name,
+                   {normalized_channel_name} AS normalized_channel_name,
+                   joined_at, left_at, duration_seconds,
                    {ignored_at} AS ignored_at,
                    {ignored_reason} AS ignored_reason,
                    'live' AS source
@@ -508,16 +522,41 @@ def _voice_selects(connection: sqlite3.Connection) -> list[str]:
     if {"guild_id", "user_id", "left_at", "duration_seconds"}.issubset(imported):
         ignored_at = "ignored_at" if "ignored_at" in imported else "NULL"
         ignored_reason = "ignored_reason" if "ignored_reason" in imported else "NULL"
+        normalized_channel_name = _normalized_voice_channel_name_sql("voice_channel_name")
+        overlap_filter = ""
+        if {
+            "guild_id",
+            "user_id",
+            "channel_name",
+            "joined_at",
+            "left_at",
+        }.issubset(live):
+            live_ignored_sql = "AND live.ignored_at IS NULL" if "ignored_at" in live else ""
+            overlap_filter = f"""
+            WHERE NOT EXISTS (
+                SELECT 1
+                FROM vc_sessions AS live
+                WHERE live.guild_id = vc_imported_sessions.guild_id
+                  AND live.user_id = vc_imported_sessions.user_id
+                  AND {_voice_channel_key_sql("live.channel_name")} =
+                      {_voice_channel_key_sql("vc_imported_sessions.voice_channel_name")}
+                  AND live.joined_at < vc_imported_sessions.left_at
+                  AND live.left_at > vc_imported_sessions.joined_at
+                  {live_ignored_sql}
+            )
+            """
         selects.append(
             f"""
             SELECT guild_id, user_id, user_name AS username, display_name,
                    voice_channel_id AS channel_id,
-                   voice_channel_name AS channel_name, joined_at, left_at,
-                   duration_seconds,
+                   voice_channel_name AS channel_name,
+                   {normalized_channel_name} AS normalized_channel_name,
+                   joined_at, left_at, duration_seconds,
                    {ignored_at} AS ignored_at,
                    {ignored_reason} AS ignored_reason,
                    'imported' AS source
             FROM vc_imported_sessions
+            {overlap_filter}
             """
         )
     return selects
@@ -608,15 +647,13 @@ def get_voice_overview(
             dict(row)
             for row in connection.execute(
                 f"""
-                SELECT channel_id, MAX(channel_name) AS channel_name,
+                SELECT MAX(channel_id) AS channel_id,
+                       MAX(normalized_channel_name) AS channel_name,
                        COUNT(*) AS sessions,
                        SUM(duration_seconds) AS seconds
                 FROM ({union}) AS sessions
                 WHERE {where}
-                GROUP BY CASE
-                    WHEN channel_id IS NOT NULL THEN 'id:' || channel_id
-                    ELSE 'name:' || LOWER(COALESCE(channel_name, 'unknown'))
-                END
+                GROUP BY LOWER(COALESCE(normalized_channel_name, 'unknown'))
                 ORDER BY seconds DESC, channel_id, channel_name
                 LIMIT ?
                 """,
@@ -657,7 +694,8 @@ def get_voice_overview(
             dict(row)
             for row in connection.execute(
                 f"""
-                SELECT user_id, username, display_name, channel_id, channel_name,
+                SELECT user_id, username, display_name, channel_id,
+                       normalized_channel_name AS channel_name,
                        joined_at, left_at, duration_seconds, source
                 FROM ({union}) AS sessions
                 WHERE {where}

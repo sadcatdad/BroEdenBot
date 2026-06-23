@@ -68,6 +68,20 @@ def create_analytics_schema(database: Path) -> None:
             left_at TEXT NOT NULL,
             duration_seconds INTEGER NOT NULL
         );
+        CREATE TABLE vc_imported_sessions (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            guild_id INTEGER NOT NULL,
+            user_id INTEGER NOT NULL,
+            display_name TEXT,
+            user_name TEXT,
+            voice_channel_id INTEGER,
+            voice_channel_name TEXT,
+            joined_at TEXT NOT NULL,
+            left_at TEXT NOT NULL,
+            duration_seconds INTEGER NOT NULL,
+            ignored_at TEXT,
+            ignored_reason TEXT
+        );
         """
     )
     connection.commit()
@@ -205,6 +219,45 @@ class AnalyticsHelperTests(AnalyticsFixture):
         self.assertEqual(voice["sessions"], 1)
         self.assertEqual(voice["seconds"], 3600)
         self.assertEqual(voice["top_users"][0]["display_name"], "Alpha")
+
+    def test_voice_imported_suffixes_merge_and_overlaps_do_not_double_count(self):
+        self.insert_fixtures()
+        now = datetime.now(timezone.utc).replace(minute=0, second=0, microsecond=0)
+        connection = sqlite3.connect(self.database)
+        connection.execute(
+            """
+            INSERT INTO vc_imported_sessions (
+                guild_id, user_id, display_name, user_name, voice_channel_id,
+                voice_channel_name, joined_at, left_at, duration_seconds
+            ) VALUES (123, 1, 'Alpha', 'alpha', NULL, 'Lounge [voice]', ?, ?, 7200)
+            """,
+            (
+                (now - timedelta(days=1, hours=2)).isoformat(),
+                (now - timedelta(days=1)).isoformat(),
+            ),
+        )
+        connection.execute(
+            """
+            INSERT INTO vc_imported_sessions (
+                guild_id, user_id, display_name, user_name, voice_channel_id,
+                voice_channel_name, joined_at, left_at, duration_seconds
+            ) VALUES (123, 2, 'Beta', 'beta', NULL, 'Lounge [voice]', ?, ?, 1800)
+            """,
+            (
+                (now - timedelta(days=2, hours=1)).isoformat(),
+                (now - timedelta(days=2, minutes=30)).isoformat(),
+            ),
+        )
+        connection.commit()
+        connection.close()
+
+        voice = get_voice_overview("30d", 25)
+
+        self.assertEqual(voice["sessions"], 2)
+        self.assertEqual(voice["seconds"], 5400)
+        self.assertEqual(len(voice["top_channels"]), 1)
+        self.assertEqual(voice["top_channels"][0]["channel_name"], "Lounge")
+        self.assertEqual(voice["top_channels"][0]["sessions"], 2)
 
     def test_missing_tables_and_empty_tables_are_friendly(self):
         connection = sqlite3.connect(self.database)
