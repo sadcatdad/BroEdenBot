@@ -24,6 +24,7 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
+from utils.exclusions import env_csv_ids, load_excluded_user_cache
 from utils.vc_history import ensure_vc_history_schema
 
 
@@ -157,6 +158,8 @@ class FileResult:
     unmatched_leaves: int = 0
     open_sessions_closed: int = 0
     open_sessions_unclosed: int = 0
+    vc_excluded_role_sessions_skipped: int = 0
+    vc_excluded_role_duration_skipped: int = 0
     earliest_event: Optional[dt.datetime] = None
     latest_event: Optional[dt.datetime] = None
     confidence: Counter[str] = field(default_factory=Counter)
@@ -211,12 +214,27 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--min-session-seconds", type=int, default=10)
     parser.add_argument("--max-session-hours", type=float, default=24)
+    parser.add_argument(
+        "--excluded-user-cache",
+        type=Path,
+        help=(
+            "JSON cache of user IDs resolved from VC_EXCLUDED_ROLE_IDS. "
+            "Name-only sessions are not role-excluded."
+        ),
+    )
     args = parser.parse_args()
     if args.min_session_seconds < 0:
         parser.error("--min-session-seconds cannot be negative")
     if args.max_session_hours <= 0:
         parser.error("--max-session-hours must be greater than zero")
     return args
+
+
+def vc_excluded_user_ids(args: argparse.Namespace) -> set[int]:
+    excluded = env_csv_ids("VC_EXCLUDED_USER_IDS")
+    if getattr(args, "excluded_user_cache", None):
+        excluded.update(load_excluded_user_cache(args.excluded_user_cache))
+    return excluded
 
 
 def parse_int(value: Any) -> Optional[int]:
@@ -1014,7 +1032,14 @@ def process_file(
         result.error = safe_error(exc)
         return result
 
-    accepted = reconstruct_sessions(events, result, args)
+    excluded_user_ids = vc_excluded_user_ids(args)
+    accepted = []
+    for session in reconstruct_sessions(events, result, args):
+        if session.user_id is not None and session.user_id in excluded_user_ids:
+            result.vc_excluded_role_sessions_skipped += 1
+            result.vc_excluded_role_duration_skipped += session.duration_seconds
+            continue
+        accepted.append(session)
     result.accepted_sessions = accepted
     imported_at = dt.datetime.now(UTC).isoformat()
     try:
@@ -1126,6 +1151,14 @@ def print_file_summary(result: FileResult, dry_run: bool) -> None:
     else:
         print(f"  sessions imported: {result.sessions_imported}")
     print(f"  duplicate sessions skipped: {result.duplicates_skipped}")
+    print(
+        "  vc excluded-role sessions skipped: "
+        f"{result.vc_excluded_role_sessions_skipped}"
+    )
+    print(
+        "  vc excluded-role duration skipped: "
+        f"{format_duration(result.vc_excluded_role_duration_skipped)}"
+    )
     print(f"  skipped too short: {result.skipped_too_short}")
     print(f"  skipped too long/suspicious: {result.skipped_too_long}")
     print(f"  unmatched joins: {result.unmatched_joins}")
@@ -1221,6 +1254,14 @@ def print_final_summary(
     print(
         "  total duplicate sessions skipped: "
         f"{sum(result.duplicates_skipped for result in results)}"
+    )
+    print(
+        "  vc_excluded_role_sessions_skipped: "
+        f"{sum(result.vc_excluded_role_sessions_skipped for result in results)}"
+    )
+    print(
+        "  vc_excluded_role_duration_skipped: "
+        f"{format_duration(sum(result.vc_excluded_role_duration_skipped for result in results))}"
     )
     duration_label = (
         "total historical VC duration that would import"

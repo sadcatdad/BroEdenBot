@@ -24,6 +24,7 @@ from utils.ranked_graphic import (
     render_ranked_graphic,
 )
 from utils.settings import get_csv_ids_setting
+from utils.exclusions import member_is_excluded
 from utils.stats_reports import (
     render_missingrole_report,
     render_report_error,
@@ -274,6 +275,68 @@ class Stats(commands.Cog):
         self.bot = bot
         self._refresh_tasks: Dict[Tuple[int, int], asyncio.Task] = {}
         self._export_view = StatsExportView(self)
+
+    @property
+    def activity_excluded_user_ids(self) -> Set[int]:
+        return set(get_csv_ids_setting("ACTIVITY_EXCLUDED_USER_IDS"))
+
+    @property
+    def activity_excluded_role_ids(self) -> Set[int]:
+        return set(get_csv_ids_setting("ACTIVITY_EXCLUDED_ROLE_IDS"))
+
+    @property
+    def vc_excluded_user_ids(self) -> Set[int]:
+        return set(get_csv_ids_setting("VC_EXCLUDED_USER_IDS"))
+
+    @property
+    def vc_excluded_role_ids(self) -> Set[int]:
+        return set(get_csv_ids_setting("VC_EXCLUDED_ROLE_IDS"))
+
+    def _activity_excluded_ids_for_guild(
+        self,
+        guild: Optional[discord.Guild],
+    ) -> Set[int]:
+        excluded = set(self.activity_excluded_user_ids)
+        role_ids = self.activity_excluded_role_ids
+        if guild and role_ids:
+            for member in guild.members:
+                if member_is_excluded(
+                    member,
+                    user_ids=(),
+                    role_ids=role_ids,
+                ):
+                    excluded.add(member.id)
+        return excluded
+
+    def _vc_excluded_ids_for_guild(
+        self,
+        guild: Optional[discord.Guild],
+    ) -> Set[int]:
+        excluded = set(self.vc_excluded_user_ids)
+        role_ids = self.vc_excluded_role_ids
+        if guild and role_ids:
+            for member in guild.members:
+                if member_is_excluded(member, user_ids=(), role_ids=role_ids):
+                    excluded.add(member.id)
+        return excluded
+
+    @staticmethod
+    def _excluded_user_sql(user_ids: Iterable[int]) -> Tuple[str, Tuple[int, ...]]:
+        ids = tuple(sorted({int(user_id) for user_id in user_ids if user_id}))
+        if not ids:
+            return "", ()
+        placeholders = ", ".join("?" for _ in ids)
+        return f"AND user_id NOT IN ({placeholders})", ids
+
+    def _activity_member_excluded(self, member: Optional[discord.Member]) -> bool:
+        return bool(
+            member
+            and member_is_excluded(
+                member,
+                user_ids=self.activity_excluded_user_ids,
+                role_ids=self.activity_excluded_role_ids,
+            )
+        )
 
     async def cog_load(self) -> None:
         await self.bot.db.execute(
@@ -1956,6 +2019,12 @@ class Stats(commands.Cog):
             or message.author.bot
         ):
             return
+        if getattr(message.author, "id", None) in self.activity_excluded_user_ids:
+            return
+        if isinstance(message.author, discord.Member) and self._activity_member_excluded(
+            message.author
+        ):
+            return
         now = self._utcnow()
         activity_hour = now.replace(
             minute=0,
@@ -2518,16 +2587,25 @@ class Stats(commands.Cog):
         guild_id: int,
         days: Optional[int],
         source: str = "all",
+        excluded_user_ids: Iterable[int] = (),
     ):
         source_sql, source_parameters = self._activity_source_filter(source)
         date_sql, date_parameters = self._activity_date_filter(days)
+        excluded_sql, excluded_parameters = self._excluded_user_sql(
+            excluded_user_ids
+        )
         message_summary = await self._fetchone(
             f"""
             SELECT COALESCE(SUM(message_count), 0), COUNT(DISTINCT user_id)
             FROM stats_message_activity
-            WHERE guild_id = ? {date_sql} {source_sql}
+            WHERE guild_id = ? {date_sql} {source_sql} {excluded_sql}
             """,
-            (guild_id, *date_parameters, *source_parameters),
+            (
+                guild_id,
+                *date_parameters,
+                *source_parameters,
+                *excluded_parameters,
+            ),
         )
         total_messages, text_active_count = message_summary or (0, 0)
         text_users = {
@@ -2536,9 +2614,14 @@ class Stats(commands.Cog):
                 f"""
                 SELECT DISTINCT user_id
                 FROM stats_message_activity
-                WHERE guild_id = ? {date_sql} {source_sql}
+                WHERE guild_id = ? {date_sql} {source_sql} {excluded_sql}
                 """,
-                (guild_id, *date_parameters, *source_parameters),
+                (
+                    guild_id,
+                    *date_parameters,
+                    *source_parameters,
+                    *excluded_parameters,
+                ),
             )
         }
         event_date_sql, event_date_parameters = self._activity_date_filter(
@@ -2569,29 +2652,44 @@ class Stats(commands.Cog):
             f"""
             SELECT channel_id, MAX(channel_name), SUM(message_count)
             FROM stats_message_activity
-            WHERE guild_id = ? {date_sql} {source_sql}
+            WHERE guild_id = ? {date_sql} {source_sql} {excluded_sql}
             GROUP BY channel_id
             ORDER BY SUM(message_count) DESC
             LIMIT 1
             """,
-            (guild_id, *date_parameters, *source_parameters),
+            (
+                guild_id,
+                *date_parameters,
+                *source_parameters,
+                *excluded_parameters,
+            ),
         )
         daily_rows = await self._fetchall(
             f"""
             SELECT activity_date, SUM(message_count)
             FROM stats_message_activity
-            WHERE guild_id = ? {date_sql} {source_sql}
+            WHERE guild_id = ? {date_sql} {source_sql} {excluded_sql}
             GROUP BY activity_date
             """,
-            (guild_id, *date_parameters, *source_parameters),
+            (
+                guild_id,
+                *date_parameters,
+                *source_parameters,
+                *excluded_parameters,
+            ),
         )
         range_row = await self._fetchone(
             f"""
             SELECT MIN(activity_date), MAX(activity_date)
             FROM stats_message_activity
-            WHERE guild_id = ? {date_sql} {source_sql}
+            WHERE guild_id = ? {date_sql} {source_sql} {excluded_sql}
             """,
-            (guild_id, *date_parameters, *source_parameters),
+            (
+                guild_id,
+                *date_parameters,
+                *source_parameters,
+                *excluded_parameters,
+            ),
         )
         daily = {}
         if days is not None:
@@ -2618,6 +2716,9 @@ class Stats(commands.Cog):
         vc_seconds = 0
         top_vc_channel = "No tracked VC activity"
         if vc_available:
+            vc_excluded_sql, vc_excluded_parameters = self._excluded_user_sql(
+                self._vc_excluded_ids_for_guild(self.bot.get_guild(guild_id))
+            )
             vc_date_sql, vc_date_parameters = self._activity_date_filter(
                 days,
                 column="left_at",
@@ -2626,21 +2727,21 @@ class Stats(commands.Cog):
                 f"""
                 SELECT COALESCE(SUM(duration_seconds), 0)
                 FROM vc_sessions
-                WHERE guild_id = ? {vc_date_sql}
+                WHERE guild_id = ? {vc_date_sql} {vc_excluded_sql}
                 """,
-                (guild_id, *vc_date_parameters),
+                (guild_id, *vc_date_parameters, *vc_excluded_parameters),
             )
             vc_seconds = vc_total[0] if vc_total else 0
             top_vc = await self._fetchone(
                 f"""
                 SELECT channel_id, MAX(channel_name), SUM(duration_seconds)
                 FROM vc_sessions
-                WHERE guild_id = ? {vc_date_sql}
+                WHERE guild_id = ? {vc_date_sql} {vc_excluded_sql}
                 GROUP BY channel_id
                 ORDER BY SUM(duration_seconds) DESC
                 LIMIT 1
                 """,
-                (guild_id, *vc_date_parameters),
+                (guild_id, *vc_date_parameters, *vc_excluded_parameters),
             )
             if top_vc:
                 top_vc_channel = (
@@ -2651,9 +2752,9 @@ class Stats(commands.Cog):
                 f"""
                 SELECT DISTINCT user_id
                 FROM vc_sessions
-                WHERE guild_id = ? {vc_date_sql}
+                WHERE guild_id = ? {vc_date_sql} {vc_excluded_sql}
                 """,
-                (guild_id, *vc_date_parameters),
+                (guild_id, *vc_date_parameters, *vc_excluded_parameters),
             )
             if source != "imported":
                 text_users.update(row[0] for row in vc_users)
@@ -2731,6 +2832,8 @@ class Stats(commands.Cog):
         guild_id = guild.id
         source_sql, source_parameters = self._activity_source_filter(source)
         date_sql, date_parameters = self._activity_date_filter(days)
+        excluded_ids = self._activity_excluded_ids_for_guild(guild)
+        excluded_sql, excluded_parameters = self._excluded_user_sql(excluded_ids)
         output = io.StringIO(newline="")
         headers = [
             "section",
@@ -2758,7 +2861,12 @@ class Stats(commands.Cog):
         writer = csv.DictWriter(output, fieldnames=headers)
         writer.writeheader()
 
-        overview = await self._activity_overview_data(guild_id, days, source)
+        overview = await self._activity_overview_data(
+            guild_id,
+            days,
+            source,
+            excluded_ids,
+        )
         for metric in (
             "total_messages",
             "active_members",
@@ -2781,13 +2889,20 @@ class Stats(commands.Cog):
                    activity_date, activity_hour, message_count, source,
                    import_batch_id
             FROM stats_message_activity
-            WHERE guild_id = ? {date_sql} {source_sql}
+            WHERE guild_id = ? {date_sql} {source_sql} {excluded_sql}
             ORDER BY activity_hour, channel_id, user_id
             """,
-            (guild_id, *date_parameters, *source_parameters),
+            (
+                guild_id,
+                *date_parameters,
+                *source_parameters,
+                *excluded_parameters,
+            ),
         )
         for row in message_rows:
             member = current_member(guild, row[2])
+            if self._activity_member_excluded(member):
+                continue
             if member is None and not include_left_members:
                 continue
             writer.writerow(
@@ -2812,11 +2927,16 @@ class Stats(commands.Cog):
             f"""
             SELECT channel_id, MAX(channel_name), SUM(message_count)
             FROM stats_message_activity
-            WHERE guild_id = ? {date_sql} {source_sql}
+            WHERE guild_id = ? {date_sql} {source_sql} {excluded_sql}
             GROUP BY channel_id
             ORDER BY SUM(message_count) DESC
             """,
-            (guild_id, *date_parameters, *source_parameters),
+            (
+                guild_id,
+                *date_parameters,
+                *source_parameters,
+                *excluded_parameters,
+            ),
         )
         for channel_id, channel_name, count in channel_rows:
             writer.writerow(
@@ -2835,14 +2955,21 @@ class Stats(commands.Cog):
             SELECT user_id, MAX(username), MAX(display_name),
                    SUM(message_count)
             FROM stats_message_activity
-            WHERE guild_id = ? {date_sql} {source_sql}
+            WHERE guild_id = ? {date_sql} {source_sql} {excluded_sql}
             GROUP BY user_id
             ORDER BY SUM(message_count) DESC
             """,
-            (guild_id, *date_parameters, *source_parameters),
+            (
+                guild_id,
+                *date_parameters,
+                *source_parameters,
+                *excluded_parameters,
+            ),
         )
         for user_id, username, display_name, count in member_rows:
             member = current_member(guild, user_id)
+            if self._activity_member_excluded(member):
+                continue
             if member is None and not include_left_members:
                 continue
             writer.writerow(
@@ -2960,6 +3087,8 @@ class Stats(commands.Cog):
         period_label = self._activity_period_label(days)
         source = config.get("source", "all")
         limit = int(config.get("limit", 10))
+        excluded_ids = self._activity_excluded_ids_for_guild(guild)
+        excluded_sql, excluded_parameters = self._excluded_user_sql(excluded_ids)
         sections = []
         title = "Activity leaderboard"
         subtitle = f"{period_label} • {source}"
@@ -2972,20 +3101,31 @@ class Stats(commands.Cog):
                 SELECT channel_id, MAX(channel_name), SUM(message_count),
                        COUNT(DISTINCT user_id)
                 FROM stats_message_activity
-                WHERE guild_id = ? {date_sql} {source_sql}
+                WHERE guild_id = ? {date_sql} {source_sql} {excluded_sql}
                 GROUP BY channel_id
                 ORDER BY SUM(message_count) DESC
                 LIMIT ?
                 """,
-                (guild.id, *date_parameters, *source_parameters, limit),
+                (
+                    guild.id,
+                    *date_parameters,
+                    *source_parameters,
+                    *excluded_parameters,
+                    limit,
+                ),
             )
             total_row = await self._fetchone(
                 f"""
                 SELECT COALESCE(SUM(message_count), 0)
                 FROM stats_message_activity
-                WHERE guild_id = ? {date_sql} {source_sql}
+                WHERE guild_id = ? {date_sql} {source_sql} {excluded_sql}
                 """,
-                (guild.id, *date_parameters, *source_parameters),
+                (
+                    guild.id,
+                    *date_parameters,
+                    *source_parameters,
+                    *excluded_parameters,
+                ),
             )
             total = int(total_row[0] if total_row else 0)
             items = [
@@ -3012,10 +3152,10 @@ class Stats(commands.Cog):
                     SELECT channel_id, MAX(channel_name), SUM(message_count),
                            MAX(activity_hour)
                     FROM stats_message_activity
-                    WHERE guild_id = ? {source_sql}
+                    WHERE guild_id = ? {source_sql} {excluded_sql}
                     GROUP BY channel_id
                     """,
-                    (guild.id, *source_parameters),
+                    (guild.id, *source_parameters, *excluded_parameters),
                 )
             else:
                 cutoff = self._activity_cutoff(days)
@@ -3027,10 +3167,16 @@ class Stats(commands.Cog):
                            MAX(CASE WHEN activity_hour >= ?
                                THEN activity_hour END)
                     FROM stats_message_activity
-                    WHERE guild_id = ? {source_sql}
+                    WHERE guild_id = ? {source_sql} {excluded_sql}
                     GROUP BY channel_id
                     """,
-                    (cutoff, cutoff, guild.id, *source_parameters),
+                    (
+                        cutoff,
+                        cutoff,
+                        guild.id,
+                        *source_parameters,
+                        *excluded_parameters,
+                    ),
                 )
             row_map = {
                 channel_id: (channel_name, int(messages or 0), last_activity)
@@ -3075,16 +3221,23 @@ class Stats(commands.Cog):
                 SELECT user_id, MAX(username), MAX(display_name),
                        SUM(message_count) AS total
                 FROM stats_message_activity
-                WHERE guild_id = ? {date_sql} {source_sql}
+                WHERE guild_id = ? {date_sql} {source_sql} {excluded_sql}
                 GROUP BY user_id
                 ORDER BY total DESC
                 """,
-                (guild.id, *date_parameters, *source_parameters),
+                (
+                    guild.id,
+                    *date_parameters,
+                    *source_parameters,
+                    *excluded_parameters,
+                ),
             )
             include_left = bool(config.get("include_left_members", False))
             items = []
             for user_id, username, display_name, total in rows:
                 member = current_member(guild, user_id)
+                if self._activity_member_excluded(member):
+                    continue
                 if member is None and not include_left:
                     continue
                 items.append(
@@ -3121,6 +3274,9 @@ class Stats(commands.Cog):
             if not await self._table_exists("vc_sessions"):
                 sections = [RankedGraphicSection("Voice activity", [])]
             else:
+                vc_excluded_sql, vc_excluded_parameters = self._excluded_user_sql(
+                    self._vc_excluded_ids_for_guild(guild)
+                )
                 date_sql, date_parameters = self._activity_date_filter(
                     days,
                     column="left_at",
@@ -3129,23 +3285,28 @@ class Stats(commands.Cog):
                     f"""
                     SELECT channel_id, MAX(channel_name), SUM(duration_seconds)
                     FROM vc_sessions
-                    WHERE guild_id = ? {date_sql}
+                    WHERE guild_id = ? {date_sql} {vc_excluded_sql}
                     GROUP BY channel_id
                     ORDER BY SUM(duration_seconds) DESC
                     LIMIT ?
                     """,
-                    (guild.id, *date_parameters, limit),
+                    (
+                        guild.id,
+                        *date_parameters,
+                        *vc_excluded_parameters,
+                        limit,
+                    ),
                 )
                 member_rows = await self._fetchall(
                     f"""
                     SELECT user_id, MAX(username), MAX(display_name),
                            SUM(duration_seconds)
                     FROM vc_sessions
-                    WHERE guild_id = ? {date_sql}
+                    WHERE guild_id = ? {date_sql} {vc_excluded_sql}
                     GROUP BY user_id
                     ORDER BY SUM(duration_seconds) DESC
                     """,
-                    (guild.id, *date_parameters),
+                    (guild.id, *date_parameters, *vc_excluded_parameters),
                 )
                 channel_items = [
                     RankedGraphicItem(
@@ -3160,6 +3321,12 @@ class Stats(commands.Cog):
                 member_items = []
                 for user_id, username, display_name, seconds in member_rows:
                     member = current_member(guild, user_id)
+                    if member_is_excluded(
+                        member,
+                        user_ids=self.vc_excluded_user_ids,
+                        role_ids=self.vc_excluded_role_ids,
+                    ):
+                        continue
                     if member is None and not include_left:
                         continue
                     member_items.append(
@@ -3548,7 +3715,12 @@ class Stats(commands.Cog):
         days = config.get("days")
         source = config.get("source", "all")
         period_label = self._activity_period_label(days)
-        data = await self._activity_overview_data(guild.id, days, source)
+        data = await self._activity_overview_data(
+            guild.id,
+            days,
+            source,
+            self._activity_excluded_ids_for_guild(guild),
+        )
         embed = discord.Embed(
             title=f"Community activity overview — {period_label} ({source})",
             color=discord.Color(COLOR),
@@ -3610,25 +3782,39 @@ class Stats(commands.Cog):
         limit = int(config.get("limit", 10))
         source_sql, source_parameters = self._activity_source_filter(source)
         date_sql, date_parameters = self._activity_date_filter(days)
+        excluded_sql, excluded_parameters = self._excluded_user_sql(
+            self._activity_excluded_ids_for_guild(guild)
+        )
         rows = await self._fetchall(
             f"""
             SELECT channel_id, MAX(channel_name), SUM(message_count),
                    COUNT(DISTINCT user_id)
             FROM stats_message_activity
-            WHERE guild_id = ? {date_sql} {source_sql}
+            WHERE guild_id = ? {date_sql} {source_sql} {excluded_sql}
             GROUP BY channel_id
             ORDER BY SUM(message_count) DESC
             LIMIT ?
             """,
-            (guild.id, *date_parameters, *source_parameters, limit),
+            (
+                guild.id,
+                *date_parameters,
+                *source_parameters,
+                *excluded_parameters,
+                limit,
+            ),
         )
         total_row = await self._fetchone(
             f"""
             SELECT COALESCE(SUM(message_count), 0)
             FROM stats_message_activity
-            WHERE guild_id = ? {date_sql} {source_sql}
+            WHERE guild_id = ? {date_sql} {source_sql} {excluded_sql}
             """,
-            (guild.id, *date_parameters, *source_parameters),
+            (
+                guild.id,
+                *date_parameters,
+                *source_parameters,
+                *excluded_parameters,
+            ),
         )
         total = total_row[0] if total_row else 0
         embed = discord.Embed(
@@ -3671,15 +3857,18 @@ class Stats(commands.Cog):
         source = config.get("source", "all")
         limit = int(config.get("limit", 10))
         source_sql, source_parameters = self._activity_source_filter(source)
+        excluded_sql, excluded_parameters = self._excluded_user_sql(
+            self._activity_excluded_ids_for_guild(guild)
+        )
         if days is None:
             rows = await self._fetchall(
                 f"""
                 SELECT channel_id, SUM(message_count), MAX(activity_hour)
                 FROM stats_message_activity
-                WHERE guild_id = ? {source_sql}
+                WHERE guild_id = ? {source_sql} {excluded_sql}
                 GROUP BY channel_id
                 """,
-                (guild.id, *source_parameters),
+                (guild.id, *source_parameters, *excluded_parameters),
             )
         else:
             cutoff = self._activity_cutoff(days)
@@ -3691,10 +3880,16 @@ class Stats(commands.Cog):
                        MAX(CASE WHEN activity_hour >= ?
                            THEN activity_hour END)
                 FROM stats_message_activity
-                WHERE guild_id = ? {source_sql}
+                WHERE guild_id = ? {source_sql} {excluded_sql}
                 GROUP BY channel_id
                 """,
-                (cutoff, cutoff, guild.id, *source_parameters),
+                (
+                    cutoff,
+                    cutoff,
+                    guild.id,
+                    *source_parameters,
+                    *excluded_parameters,
+                ),
             )
         tracked = {
             row[0]: {"messages": row[1] or 0, "last": row[2]} for row in rows
@@ -3767,20 +3962,30 @@ class Stats(commands.Cog):
         include_left = bool(config.get("include_left_members", False))
         source_sql, source_parameters = self._activity_source_filter(source)
         date_sql, date_parameters = self._activity_date_filter(days)
+        excluded_sql, excluded_parameters = self._excluded_user_sql(
+            self._activity_excluded_ids_for_guild(guild)
+        )
         rows = await self._fetchall(
             f"""
             SELECT user_id, MAX(username), MAX(display_name),
                    SUM(message_count) AS total
             FROM stats_message_activity
-            WHERE guild_id = ? {date_sql} {source_sql}
+            WHERE guild_id = ? {date_sql} {source_sql} {excluded_sql}
             GROUP BY user_id
             ORDER BY total DESC
             """,
-            (guild.id, *date_parameters, *source_parameters),
+            (
+                guild.id,
+                *date_parameters,
+                *source_parameters,
+                *excluded_parameters,
+            ),
         )
         filtered_rows = []
         for user_id, username, display_name, total in rows:
             member = current_member(guild, user_id)
+            if self._activity_member_excluded(member):
+                continue
             if member is None and not include_left:
                 continue
             filtered_rows.append(
@@ -3843,6 +4048,9 @@ class Stats(commands.Cog):
         days = int(config.get("days", 30))
         source = config.get("source", "all")
         source_sql, source_parameters = self._activity_source_filter(source)
+        excluded_sql, excluded_parameters = self._excluded_user_sql(
+            self._activity_excluded_ids_for_guild(guild)
+        )
         current_start = self._activity_cutoff(days)
         previous_start = self._activity_cutoff(days * 2)
         totals = await self._fetchone(
@@ -3856,7 +4064,7 @@ class Stats(commands.Cog):
                 COUNT(DISTINCT CASE WHEN activity_hour >= ? AND activity_hour < ?
                     THEN user_id END)
             FROM stats_message_activity
-            WHERE guild_id = ? AND activity_hour >= ? {source_sql}
+            WHERE guild_id = ? AND activity_hour >= ? {source_sql} {excluded_sql}
             """,
             (
                 current_start,
@@ -3868,6 +4076,7 @@ class Stats(commands.Cog):
                 guild.id,
                 previous_start,
                 *source_parameters,
+                *excluded_parameters,
             ),
         )
         channel_rows = await self._fetchall(
@@ -3878,7 +4087,7 @@ class Stats(commands.Cog):
                    COALESCE(SUM(CASE WHEN activity_hour >= ? AND activity_hour < ?
                        THEN message_count ELSE 0 END), 0)
             FROM stats_message_activity
-            WHERE guild_id = ? AND activity_hour >= ? {source_sql}
+            WHERE guild_id = ? AND activity_hour >= ? {source_sql} {excluded_sql}
             GROUP BY channel_id
             """,
             (
@@ -3888,17 +4097,18 @@ class Stats(commands.Cog):
                 guild.id,
                 previous_start,
                 *source_parameters,
+                *excluded_parameters,
             ),
         )
         day_rows = await self._fetchall(
             f"""
             SELECT activity_date, SUM(message_count)
             FROM stats_message_activity
-            WHERE guild_id = ? AND activity_hour >= ? {source_sql}
+            WHERE guild_id = ? AND activity_hour >= ? {source_sql} {excluded_sql}
             GROUP BY activity_date
             ORDER BY SUM(message_count) DESC
             """,
-            (guild.id, current_start, *source_parameters),
+            (guild.id, current_start, *source_parameters, *excluded_parameters),
         )
         current_messages, previous_messages, current_members, previous_members = (
             int(value or 0) for value in totals
@@ -3978,14 +4188,22 @@ class Stats(commands.Cog):
         limit = int(config.get("limit", 10))
         source_sql, source_parameters = self._activity_source_filter(source)
         date_sql, date_parameters = self._activity_date_filter(days)
+        excluded_sql, excluded_parameters = self._excluded_user_sql(
+            self._activity_excluded_ids_for_guild(guild)
+        )
         rows = await self._fetchall(
             f"""
             SELECT channel_id, MAX(channel_name), user_id, SUM(message_count)
             FROM stats_message_activity
-            WHERE guild_id = ? {date_sql} {source_sql}
+            WHERE guild_id = ? {date_sql} {source_sql} {excluded_sql}
             GROUP BY channel_id, user_id
             """,
-            (guild.id, *date_parameters, *source_parameters),
+            (
+                guild.id,
+                *date_parameters,
+                *source_parameters,
+                *excluded_parameters,
+            ),
         )
         category_config = load_channel_categories()
         categories = defaultdict(
@@ -4053,14 +4271,22 @@ class Stats(commands.Cog):
         timezone_name = str(config.get("timezone", "America/Chicago"))
         source_sql, source_parameters = self._activity_source_filter(source)
         date_sql, date_parameters = self._activity_date_filter(days)
+        excluded_sql, excluded_parameters = self._excluded_user_sql(
+            self._activity_excluded_ids_for_guild(guild)
+        )
         rows = await self._fetchall(
             f"""
             SELECT activity_hour, SUM(message_count)
             FROM stats_message_activity
-            WHERE guild_id = ? {date_sql} {source_sql}
+            WHERE guild_id = ? {date_sql} {source_sql} {excluded_sql}
             GROUP BY activity_hour
             """,
-            (guild.id, *date_parameters, *source_parameters),
+            (
+                guild.id,
+                *date_parameters,
+                *source_parameters,
+                *excluded_parameters,
+            ),
         )
         try:
             selected_timezone = ZoneInfo(timezone_name)
@@ -4170,39 +4396,48 @@ class Stats(commands.Cog):
             days,
             column="left_at",
         )
+        vc_excluded_sql, vc_excluded_parameters = self._excluded_user_sql(
+            self._vc_excluded_ids_for_guild(guild)
+        )
         total = await self._fetchone(
             f"""
             SELECT COALESCE(SUM(duration_seconds), 0), COUNT(*)
             FROM vc_sessions
-            WHERE guild_id = ? {date_sql}
+            WHERE guild_id = ? {date_sql} {vc_excluded_sql}
             """,
-            (guild.id, *date_parameters),
+            (guild.id, *date_parameters, *vc_excluded_parameters),
         )
         channel_rows = await self._fetchall(
             f"""
             SELECT channel_id, MAX(channel_name), SUM(duration_seconds)
             FROM vc_sessions
-            WHERE guild_id = ? {date_sql}
+            WHERE guild_id = ? {date_sql} {vc_excluded_sql}
             GROUP BY channel_id
             ORDER BY SUM(duration_seconds) DESC
             LIMIT ?
             """,
-            (guild.id, *date_parameters, limit),
+            (guild.id, *date_parameters, *vc_excluded_parameters, limit),
         )
         member_rows = await self._fetchall(
             f"""
             SELECT user_id, MAX(username), MAX(display_name),
                    SUM(duration_seconds)
             FROM vc_sessions
-            WHERE guild_id = ? {date_sql}
+            WHERE guild_id = ? {date_sql} {vc_excluded_sql}
             GROUP BY user_id
             ORDER BY SUM(duration_seconds) DESC
             """,
-            (guild.id, *date_parameters),
+            (guild.id, *date_parameters, *vc_excluded_parameters),
         )
         filtered = []
         for user_id, username, display_name, seconds in member_rows:
             member = current_member(guild, user_id)
+            if member_is_excluded(
+                member,
+                user_ids=self.vc_excluded_user_ids,
+                role_ids=self.vc_excluded_role_ids,
+            ):
+                continue
             if member is None and not include_left:
                 continue
             filtered.append(

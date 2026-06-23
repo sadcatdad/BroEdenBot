@@ -26,6 +26,7 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
+from utils.exclusions import env_csv_ids, load_excluded_user_cache
 from utils.import_helpers import infer_export_channel
 
 
@@ -81,6 +82,8 @@ class FileResult:
     messages_imported: int = 0
     duplicates_skipped: int = 0
     messages_skipped: int = 0
+    activity_excluded_role_rows_skipped: int = 0
+    activity_excluded_role_messages_skipped: int = 0
     earliest: Optional[dt.datetime] = None
     latest: Optional[dt.datetime] = None
     status: str = "completed"
@@ -117,6 +120,14 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--dry-run", action="store_true")
     parser.add_argument("--source", default="imported")
     parser.add_argument(
+        "--excluded-user-cache",
+        type=Path,
+        help=(
+            "JSON cache of user IDs resolved from ACTIVITY_EXCLUDED_ROLE_IDS. "
+            "Use scripts/export_excluded_role_members.py to generate it."
+        ),
+    )
+    parser.add_argument(
         "--archive-completed",
         action="store_true",
         help="Move clean completed files into the archive folder",
@@ -137,6 +148,13 @@ def parse_args() -> argparse.Namespace:
 
 def utcnow() -> dt.datetime:
     return dt.datetime.now(UTC)
+
+
+def activity_excluded_user_ids(args: argparse.Namespace) -> set[int]:
+    excluded = env_csv_ids("ACTIVITY_EXCLUDED_USER_IDS")
+    if getattr(args, "excluded_user_cache", None):
+        excluded.update(load_excluded_user_cache(args.excluded_user_cache))
+    return excluded
 
 
 def is_database_locked(exc: BaseException) -> bool:
@@ -1006,6 +1024,7 @@ def process_file(
     result = FileResult(filename=str(path))
     item_label = "rows" if path.suffix.lower() == ".csv" else "messages"
     imported_at = utcnow().isoformat()
+    excluded_user_ids = activity_excluded_user_ids(args)
     buckets: dict[tuple[int, int, str], dict[str, Any]] = defaultdict(
         lambda: {"count": 0, "channel_name": "", "username": "", "display_name": ""}
     )
@@ -1047,6 +1066,12 @@ def process_file(
                     channel_name,
                 ) = parsed
                 update_range(result, timestamp)
+
+                if user_id in excluded_user_ids:
+                    result.activity_excluded_role_rows_skipped += 1
+                    result.activity_excluded_role_messages_skipped += 1
+                    result.messages_skipped += 1
+                    continue
 
                 if args.dry_run:
                     duplicate = is_dry_run_duplicate(
@@ -1181,6 +1206,14 @@ def print_file_result(result: FileResult) -> None:
     print(f"  Messages imported: {result.messages_imported:,}")
     print(f"  Duplicates skipped: {result.duplicates_skipped:,}")
     print(f"  {item_label} skipped: {result.messages_skipped:,}")
+    print(
+        "  Activity excluded-role rows skipped: "
+        f"{result.activity_excluded_role_rows_skipped:,}"
+    )
+    print(
+        "  Activity excluded-role messages skipped: "
+        f"{result.activity_excluded_role_messages_skipped:,}"
+    )
     print(f"  Date range: {date_text(result.earliest)} to {date_text(result.latest)}")
     if result.notes:
         print(f"  Notes: {result.notes}")
@@ -1300,6 +1333,14 @@ def main() -> int:
     print(
         f"  Total messages skipped: "
         f"{sum(r.messages_skipped for r in results):,}"
+    )
+    print(
+        "  Activity excluded-role rows skipped: "
+        f"{sum(r.activity_excluded_role_rows_skipped for r in results):,}"
+    )
+    print(
+        "  Activity excluded-role messages skipped: "
+        f"{sum(r.activity_excluded_role_messages_skipped for r in results):,}"
     )
     if dated:
         print(

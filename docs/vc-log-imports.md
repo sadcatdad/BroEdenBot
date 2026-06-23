@@ -193,6 +193,35 @@ Name-only historical rows can appear in leaderboard/export results when
 `include_left_members:true`, but `/vcstats user` requires a Discord member and
 therefore can only match imported rows with a user ID.
 
+## Exclude bot/stat roles
+
+Live VC tracking uses `VC_EXCLUDED_ROLE_IDS` and `VC_EXCLUDED_USER_IDS`. To
+apply the same shared bot/stat role to historical VC logs, generate a current
+role-member cache:
+
+```bash
+python scripts/export_excluded_role_members.py --guild-id 1278253523619807233 --role-ids 1282775339566895239 --output data/excluded_bot_role_members.json
+```
+
+Then pass it to the VC import:
+
+```bash
+python scripts/import_vc_logs.py --folder imports/vc_logs --guild-id 1278253523619807233 --excluded-user-cache data/excluded_bot_role_members.json --dry-run
+```
+
+Clean existing live/imported VC stats after backing up `data.db`:
+
+```bash
+python scripts/cleanup_vc_bots.py --dry-run --excluded-user-cache data/excluded_bot_role_members.json
+python scripts/cleanup_vc_bots.py --excluded-user-cache data/excluded_bot_role_members.json --vacuum --yes
+```
+
+Role-based historical exclusion uses current server membership. If a historical
+session only has a user name, it is not role-excluded by name; prefer resolved
+Discord user IDs or add known users to `VC_EXCLUDED_USER_IDS`. Cleanup can
+resolve role members either from `--excluded-user-cache` or live Discord
+membership when `--guild-id`, role IDs, and `DISCORD_TOKEN` are available.
+
 ## Limitations
 
 - Accuracy depends on the completeness and ordering of the VC log export.
@@ -203,3 +232,5 @@ therefore can only match imported rows with a user ID.
 - The bot cannot infer VC time that was never logged.
 - Historical logs do not establish AFK, alone, mute, or deafen state, so
   imported sessions are not reward eligible and do not generate VC XP pulses.
+- Historical logs do not contain role membership; role-based exclusion uses the
+  generated current-member cache or explicit user-ID exclusions.

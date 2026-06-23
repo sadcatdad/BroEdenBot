@@ -74,10 +74,34 @@ SETTING_DEFINITIONS = (
         "Roles allowed to create and refresh stats.",
     ),
     SettingDefinition(
+        "ACTIVITY_EXCLUDED_ROLE_IDS",
+        "permissions",
+        "csv_ids",
+        "Roles excluded from message activity stats.",
+    ),
+    SettingDefinition(
+        "ACTIVITY_EXCLUDED_USER_IDS",
+        "permissions",
+        "csv_ids",
+        "Users excluded from message activity stats.",
+    ),
+    SettingDefinition(
         "VCSTATS_ALLOWED_ROLE_IDS",
         "permissions",
         "csv_ids",
         "Roles allowed to use VC stats and reward previews.",
+    ),
+    SettingDefinition(
+        "VC_EXCLUDED_ROLE_IDS",
+        "permissions",
+        "csv_ids",
+        "Roles excluded from VC stats and rewards.",
+    ),
+    SettingDefinition(
+        "VC_EXCLUDED_USER_IDS",
+        "permissions",
+        "csv_ids",
+        "Users excluded from VC stats and rewards.",
     ),
     SettingDefinition(
         "BANK_ALLOWED_ROLE_IDS",

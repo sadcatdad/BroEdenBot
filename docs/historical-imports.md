@@ -149,6 +149,41 @@ Re-running imports is safe because message IDs are deduplicated. Existing
 import scripts and commands remain supported while channel-history exports are
 still being collected.
 
+## Exclude bot/stat roles
+
+Live message activity uses `ACTIVITY_EXCLUDED_ROLE_IDS` and
+`ACTIVITY_EXCLUDED_USER_IDS`. Historical CSV/JSON exports usually do not include
+role membership, so generate a current role-member cache before importing:
+
+```bash
+python scripts/export_excluded_role_members.py --guild-id 1278253523619807233 --role-ids 1282775339566895239 --output data/excluded_bot_role_members.json
+```
+
+Then pass the cache to activity imports:
+
+```bash
+python scripts/import_discord_history.py --folder imports/discord_history --guild-id 1278253523619807233 --excluded-user-cache data/excluded_bot_role_members.json --dry-run
+python scripts/import_full_csv_exports.py --folder imports/message_context --guild-id 1278253523619807233 --excluded-user-cache data/excluded_bot_role_members.json --dry-run
+```
+
+`scripts/import_full_csv_exports.py` still imports all selected CSV rows into
+`message_context.db`; the cache only filters the activity backfill. Historical
+role filtering is based on current role membership, so users who left the
+server cannot be role-resolved unless they are listed in
+`ACTIVITY_EXCLUDED_USER_IDS`.
+
+Clean existing activity rows after backing up `data.db`:
+
+```bash
+python scripts/cleanup_activity_bots.py --dry-run --excluded-user-cache data/excluded_bot_role_members.json
+python scripts/cleanup_activity_bots.py --excluded-user-cache data/excluded_bot_role_members.json --vacuum --yes
+```
+
+The cleanup utility deletes matching rows from `stats_message_activity` only. It
+does not touch `message_context.db`. It can resolve role members either from
+`--excluded-user-cache` or live Discord membership when `--guild-id`, role IDs,
+and `DISCORD_TOKEN` are available.
+
 ## Archive completed exports
 
 Archiving is opt-in and only occurs when `--archive-completed` is explicitly

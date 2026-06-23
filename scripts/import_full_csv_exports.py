@@ -91,6 +91,14 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--channel-id")
     parser.add_argument("--channel-name")
+    parser.add_argument(
+        "--excluded-user-cache",
+        type=Path,
+        help=(
+            "JSON cache of user IDs to skip for activity backfill. Context "
+            "import still imports all selected CSV rows."
+        ),
+    )
     return parser.parse_args()
 
 
@@ -119,6 +127,7 @@ def _activity_args(
         channel_name=channel_name,
         dry_run=args.dry_run,
         source="csv_backfill",
+        excluded_user_cache=args.excluded_user_cache,
         archive_completed=False,
         archive_duplicates=False,
         archive_folder=args.archive_folder,
@@ -264,7 +273,9 @@ def print_result(result: CombinedResult) -> None:
             "  Activity: "
             f"counted={result.activity.messages_imported:,} "
             f"duplicates={result.activity.duplicates_skipped:,} "
-            f"skipped={result.activity.messages_skipped:,}"
+            f"skipped={result.activity.messages_skipped:,} "
+            f"excluded_role_rows="
+            f"{result.activity.activity_excluded_role_rows_skipped:,}"
         )
     if result.activity_note:
         print(f"  Activity note: {result.activity_note}")
@@ -418,6 +429,14 @@ def main() -> int:
     print(
         "  Activity imported: "
         f"{sum(r.activity.messages_imported for r in results if r.activity):,}"
+    )
+    print(
+        "  Activity excluded-role rows skipped: "
+        f"{sum(r.activity.activity_excluded_role_rows_skipped for r in results if r.activity):,}"
+    )
+    print(
+        "  Activity excluded-role messages skipped: "
+        f"{sum(r.activity.activity_excluded_role_messages_skipped for r in results if r.activity):,}"
     )
     print(
         "  Activity skipped for JSON coverage: "

@@ -121,9 +121,11 @@ BOT_OWNER_ALLOW_ADMINS=false
 - `/bot help` lists the available management commands.
 - `/bot status` reports runtime, systemd, Git, loaded cogs, SQLite files,
   historical import metadata, active/archive import-folder counts,
-  configured-or-missing environment status, and VCXP role safety. It never
-  displays environment values or secrets. Startup cog failures are listed by
-  filename and exception type without exposing stack traces.
+  configured-or-missing environment status, and VCXP role safety. This includes
+  configured/missing status for `ACTIVITY_EXCLUDED_ROLE_IDS` and
+  `VC_EXCLUDED_ROLE_IDS` without displaying raw values. It never displays
+  environment values or secrets. Startup cog failures are listed by filename
+  and exception type without exposing stack traces.
 - `/bot logs [lines]` reads 50 recent service lines by default and accepts up
   to 200. Obvious credentials and traceback details are removed. Longer output
   is attached as a private text file.
@@ -884,7 +886,7 @@ The VC report also supports the preset periods, including all available tracked
 VC history with `period:all time`.
 Its top-member ranking defaults to current members only; set
 `include_left_members:true` to include historical users who left. Aggregate VC
-time and channel totals still include all matching sessions.
+time and channel totals exclude configured VC-excluded users.
 
 ### `/stats activity export [period] [days] [include_vc] [source] [include_left_members] [channel]`
 
@@ -905,8 +907,8 @@ shorter period.
 
 User-level export rows default to current members only. Set
 `include_left_members:true` to include historical users; user rows include an
-`is_current_member` column. Aggregate overview and channel totals continue to
-include all matching imported and live activity regardless of membership.
+`is_current_member` column. Aggregate overview and channel totals exclude
+configured activity-excluded users.
 
 ### `/stats activity importinfo [limit] [channel]`
 
@@ -925,6 +927,43 @@ The activity feature creates these tables in `data.db`:
 
 `stats_message_activity` uses one row per guild, text channel, member, and UTC
 hour, incrementing `message_count` as messages arrive.
+
+### Bot/stat exclusion role
+
+Set these values to exclude bot accounts from message activity and VC stats by
+their shared Discord role:
+
+```dotenv
+ACTIVITY_EXCLUDED_ROLE_IDS=1282775339566895239
+VC_EXCLUDED_ROLE_IDS=1282775339566895239
+```
+
+Live message activity ignores bot-authored messages, `ACTIVITY_EXCLUDED_USER_IDS`,
+and members with any `ACTIVITY_EXCLUDED_ROLE_IDS`. Live VC tracking ignores bots,
+`VC_EXCLUDED_USER_IDS`, and members with any `VC_EXCLUDED_ROLE_IDS`; excluded
+members do not receive VC rewards or automatic VC XP pulses.
+
+Historical exports usually do not contain role membership. Generate a current
+role-member cache before importing or cleaning historical data:
+
+```bash
+python scripts/export_excluded_role_members.py --guild-id 1278253523619807233 --role-ids 1282775339566895239 --output data/excluded_bot_role_members.json
+```
+
+Use that cache with imports and cleanup:
+
+```bash
+python scripts/import_discord_history.py --folder imports/discord_history --guild-id 1278253523619807233 --excluded-user-cache data/excluded_bot_role_members.json
+python scripts/import_full_csv_exports.py --folder imports/message_context --guild-id 1278253523619807233 --excluded-user-cache data/excluded_bot_role_members.json
+python scripts/import_vc_logs.py --folder imports/vc_logs --guild-id 1278253523619807233 --excluded-user-cache data/excluded_bot_role_members.json
+python scripts/cleanup_activity_bots.py --dry-run --excluded-user-cache data/excluded_bot_role_members.json
+python scripts/cleanup_vc_bots.py --dry-run --excluded-user-cache data/excluded_bot_role_members.json
+```
+
+Real cleanup requires `--yes`; add `--vacuum` after backing up `data.db`.
+Cleanup can also resolve members live with `--guild-id` plus configured or
+passed role IDs when `DISCORD_TOKEN` is available. It removes rows from stats
+tables only and never touches `message_context.db`.
 
 ### Historical Discord activity imports
 
@@ -1185,6 +1224,10 @@ updated from the authenticated local dashboard without rewriting `.env`.
 | `MESSAGE_CONTEXT_FALLBACK_MODEL` | Optional fallback Gemini model for `/context`; falls back to `MODAI_FALLBACK_MODEL`. |
 | `STAFF_NOTES_ALLOWED_ROLE_IDS` | Comma-separated Discord role IDs allowed to use staff notes. |
 | `VCSTATS_ALLOWED_ROLE_IDS` | Comma-separated Discord role IDs allowed to use VC stats and reward previews. |
+| `ACTIVITY_EXCLUDED_ROLE_IDS` | Comma-separated role IDs excluded from message activity stats. Recommended bot/stat exclusion role: `1282775339566895239`. |
+| `ACTIVITY_EXCLUDED_USER_IDS` | Comma-separated user IDs excluded from message activity stats as a fallback. |
+| `VC_EXCLUDED_ROLE_IDS` | Comma-separated role IDs excluded from VC stats, VC leaderboards, and VC rewards. Recommended bot/stat exclusion role: `1282775339566895239`. |
+| `VC_EXCLUDED_USER_IDS` | Comma-separated user IDs excluded from VC stats and rewards as a fallback. |
 | `VCREWARDS_ALLOWED_ROLE_IDS` | Optional role IDs allowed to use `/vcrewards audit`. Falls back to `VCSTATS_ALLOWED_ROLE_IDS`. |
 | `VCXP_TRIGGER_ROLE_ID` | Discord role ID temporarily added for each VC XP pulse. |
 | `VCXP_MINUTES_PER_PULSE` | Eligible VC minutes required per pulse. Defaults to `30`. |

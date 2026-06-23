@@ -15,6 +15,7 @@ from discord.ext import commands, tasks
 
 from config import COLOR
 from utils.member_filter import current_member, member_filter_warning
+from utils.exclusions import member_is_excluded
 from utils.ranked_graphic import (
     RankedGraphicItem,
     RankedGraphicSection,
@@ -88,6 +89,43 @@ class VCStats(commands.Cog):
     @property
     def allowed_role_ids(self) -> set[int]:
         return set(get_csv_ids_setting("VCSTATS_ALLOWED_ROLE_IDS"))
+
+    @property
+    def excluded_user_ids(self) -> set[int]:
+        return set(get_csv_ids_setting("VC_EXCLUDED_USER_IDS"))
+
+    @property
+    def excluded_role_ids(self) -> set[int]:
+        return set(get_csv_ids_setting("VC_EXCLUDED_ROLE_IDS"))
+
+    def _member_excluded(self, member: Optional[discord.Member]) -> bool:
+        return bool(
+            member
+            and member_is_excluded(
+                member,
+                user_ids=self.excluded_user_ids,
+                role_ids=self.excluded_role_ids,
+            )
+        )
+
+    def _excluded_user_ids_for_guild(
+        self,
+        guild: Optional[discord.Guild],
+    ) -> set[int]:
+        excluded = set(self.excluded_user_ids)
+        if guild and self.excluded_role_ids:
+            for member in guild.members:
+                if self._member_excluded(member):
+                    excluded.add(member.id)
+        return excluded
+
+    @staticmethod
+    def _excluded_user_sql(user_ids: Iterable[int]) -> Tuple[str, Tuple[int, ...]]:
+        ids = tuple(sorted({int(user_id) for user_id in user_ids if user_id}))
+        if not ids:
+            return "", ()
+        placeholders = ", ".join("?" for _ in ids)
+        return f"AND user_id NOT IN ({placeholders})", ids
 
     @property
     def vcxp_enabled(self) -> bool:
@@ -357,6 +395,16 @@ class VCStats(commands.Cog):
     def _non_bot_members(channel: discord.abc.Connectable) -> List[discord.Member]:
         return [member for member in channel.members if not member.bot]
 
+    def _tracked_voice_members(
+        self,
+        channel: discord.abc.Connectable,
+    ) -> List[discord.Member]:
+        return [
+            member
+            for member in channel.members
+            if not member.bot and not self._member_excluded(member)
+        ]
+
     async def _start_session(
         self,
         member: discord.Member,
@@ -364,8 +412,11 @@ class VCStats(commands.Cog):
         state: discord.VoiceState,
         started_at: datetime,
     ) -> None:
+        if self._member_excluded(member):
+            await self._discard_active_session(member.guild.id, member.id)
+            return
         flags = self._voice_flags(state)
-        alone = int(len(self._non_bot_members(channel)) <= 1)
+        alone = int(len(self._tracked_voice_members(channel)) <= 1)
         timestamp = started_at.isoformat()
         await self.bot.db.execute(
             """
@@ -400,8 +451,11 @@ class VCStats(commands.Cog):
         state: discord.VoiceState,
         observed_at: datetime,
     ) -> None:
+        if self._member_excluded(member):
+            await self._discard_active_session(member.guild.id, member.id)
+            return
         flags = self._voice_flags(state)
-        alone = int(len(self._non_bot_members(channel)) <= 1)
+        alone = int(len(self._tracked_voice_members(channel)) <= 1)
         await self.bot.db.execute(
             """
             UPDATE vc_active_sessions
@@ -437,7 +491,7 @@ class VCStats(commands.Cog):
     async def _mark_channel_has_company(
         self, guild_id: int, channel: discord.abc.Connectable
     ) -> None:
-        if len(self._non_bot_members(channel)) < 2:
+        if len(self._tracked_voice_members(channel)) < 2:
             return
         await self.bot.db.execute(
             """
@@ -447,6 +501,13 @@ class VCStats(commands.Cog):
             """,
             (guild_id, channel.id),
         )
+
+    async def _discard_active_session(self, guild_id: int, user_id: int) -> bool:
+        cursor = await self.bot.db.execute(
+            "DELETE FROM vc_active_sessions WHERE guild_id = ? AND user_id = ?",
+            (guild_id, user_id),
+        )
+        return bool(cursor.rowcount)
 
     async def _close_session(
         self,
@@ -553,7 +614,7 @@ class VCStats(commands.Cog):
         current = {}
         for guild in self.bot.guilds:
             for channel in guild.voice_channels + guild.stage_channels:
-                for member in self._non_bot_members(channel):
+                for member in self._tracked_voice_members(channel):
                     current[(guild.id, member.id)] = (member, channel)
         return current
 
@@ -565,9 +626,16 @@ class VCStats(commands.Cog):
         async with self._tracking_lock:
             active_rows = await self._load_active_rows()
             active = {(row[0], row[1]): row for row in active_rows}
+            excluded_by_guild = {
+                guild.id: self._excluded_user_ids_for_guild(guild)
+                for guild in self.bot.guilds
+            }
 
             for key, row in active.items():
                 guild_id, user_id, channel_id, last_seen_raw = row
+                if user_id in excluded_by_guild.get(guild_id, set()):
+                    await self._discard_active_session(guild_id, user_id)
+                    continue
                 occupant = current.get(key)
                 if startup or not occupant or occupant[1].id != channel_id:
                     safe_end = parse_timestamp(last_seen_raw) if last_seen_raw else now
@@ -612,6 +680,11 @@ class VCStats(commands.Cog):
         after: discord.VoiceState,
     ) -> None:
         if member.bot:
+            return
+        if self._member_excluded(member):
+            async with self._tracking_lock:
+                await self._discard_active_session(member.guild.id, member.id)
+                await self.bot.db.commit()
             return
         now = utc_now()
         try:
@@ -669,16 +742,21 @@ class VCStats(commands.Cog):
     async def _sync_xp_user_state(
         self, guild_id: int, user_id: int
     ) -> Tuple[int, int, int]:
-        cursor = await self.bot.db.execute(
-            """
-            SELECT COALESCE(SUM(counted_seconds), 0)
-            FROM vc_sessions
-            WHERE guild_id = ? AND user_id = ? AND reward_eligible = 1
-            """,
-            (guild_id, user_id),
-        )
-        eligible_seconds = int((await cursor.fetchone())[0] or 0)
-        await cursor.close()
+        guild = self.bot.get_guild(guild_id)
+        member = guild.get_member(user_id) if guild else None
+        if user_id in self.excluded_user_ids or self._member_excluded(member):
+            eligible_seconds = 0
+        else:
+            cursor = await self.bot.db.execute(
+                """
+                SELECT COALESCE(SUM(counted_seconds), 0)
+                FROM vc_sessions
+                WHERE guild_id = ? AND user_id = ? AND reward_eligible = 1
+                """,
+                (guild_id, user_id),
+            )
+            eligible_seconds = int((await cursor.fetchone())[0] or 0)
+            await cursor.close()
         pulses_earned = eligible_seconds // self._xp_seconds_per_pulse
         now = utc_now().isoformat()
         await self.bot.db.execute(
@@ -707,14 +785,18 @@ class VCStats(commands.Cog):
         return int(row[0]), int(row[1]), int(row[2])
 
     async def _sync_xp_states(self, guild_id: int) -> None:
+        guild = self.bot.get_guild(guild_id)
+        excluded_sql, excluded_parameters = self._excluded_user_sql(
+            self._excluded_user_ids_for_guild(guild)
+        )
         rows = await self._fetchall(
-            """
+            f"""
             SELECT user_id, COALESCE(SUM(counted_seconds), 0)
             FROM vc_sessions
-            WHERE guild_id = ? AND reward_eligible = 1
+            WHERE guild_id = ? AND reward_eligible = 1 {excluded_sql}
             GROUP BY user_id
             """,
-            (guild_id,),
+            (guild_id, *excluded_parameters),
         )
         now = utc_now().isoformat()
         await self.bot.db.execute(
@@ -903,6 +985,8 @@ class VCStats(commands.Cog):
         try:
             if member.bot:
                 return False, "Bots cannot receive VC XP pulses."
+            if self._member_excluded(member):
+                return False, "That member is excluded from VC stats and rewards."
             if role.managed:
                 return False, "The configured trigger role is managed by an integration."
             bot_member = member.guild.me
@@ -1096,6 +1180,13 @@ class VCStats(commands.Cog):
                         user_id,
                     )
                     continue
+                if self._member_excluded(member):
+                    logger.info(
+                        "VC XP pulse skipped: excluded member guild=%s user=%s",
+                        guild.id,
+                        user_id,
+                    )
+                    continue
                 pulse_tasks.append(
                     self._pay_one_pulse(member, role, automatic=True)
                 )
@@ -1225,6 +1316,12 @@ class VCStats(commands.Cog):
         if await self._deny_if_unauthorised(interaction):
             return
         await interaction.response.defer(ephemeral=True, thinking=True)
+        if self._member_excluded(user):
+            await interaction.followup.send(
+                "That member is excluded from VC stats and rewards.",
+                ephemeral=True,
+            )
+            return
         session_sql = self._session_source_sql(source)
         rows = await self._fetchall(
             f"""
@@ -1291,12 +1388,15 @@ class VCStats(commands.Cog):
         await interaction.response.defer(ephemeral=True, thinking=True)
         time_column = "counted_seconds" if eligible_only else "duration_seconds"
         session_sql = self._session_source_sql(source)
+        excluded_sql, excluded_parameters = self._excluded_user_sql(
+            self._excluded_user_ids_for_guild(interaction.guild)
+        )
         rows = await self._fetchall(
             f"""
             SELECT user_id, MAX(display_name), MAX(username),
                    SUM({time_column}) AS ranked_seconds
             FROM ({session_sql}) AS sessions
-            WHERE guild_id = ? AND left_at >= ?
+            WHERE guild_id = ? AND left_at >= ? {excluded_sql}
             GROUP BY CASE
                 WHEN user_id IS NOT NULL THEN 'id:' || user_id
                 ELSE 'name:' || LOWER(COALESCE(display_name, username, 'unknown'))
@@ -1304,7 +1404,7 @@ class VCStats(commands.Cog):
             HAVING ranked_seconds > 0
             ORDER BY ranked_seconds DESC
             """,
-            (interaction.guild_id, self._cutoff(days)),
+            (interaction.guild_id, self._cutoff(days), *excluded_parameters),
         )
         filtered_rows = []
         for user_id, display_name, username, ranked_seconds in rows:
@@ -1313,6 +1413,8 @@ class VCStats(commands.Cog):
                 if user_id is not None
                 else None
             )
+            if self._member_excluded(member):
+                continue
             if member is None and not include_left_members:
                 continue
             filtered_rows.append(
@@ -1408,8 +1510,11 @@ class VCStats(commands.Cog):
             )
             return
         now = utc_now()
+        excluded_ids = self._excluded_user_ids_for_guild(interaction.guild)
         lines = []
         for row in rows[:MAX_CURRENT_LINES]:
+            if row[0] in excluded_ids:
+                continue
             duration = int((now - parse_timestamp(row[4])).total_seconds())
             statuses = []
             if row[5]:
@@ -1428,6 +1533,11 @@ class VCStats(commands.Cog):
             )
         if len(rows) > MAX_CURRENT_LINES:
             lines.append(f"…and {len(rows) - MAX_CURRENT_LINES} more.")
+        if not lines:
+            await interaction.followup.send(
+                "No members are currently being tracked in VC.", ephemeral=True
+            )
+            return
         await self._send_lines(interaction, "**Currently tracked in VC**", lines)
 
     @vcstats.command(name="channel", description="Show voice-channel stats")
@@ -1449,6 +1559,9 @@ class VCStats(commands.Cog):
         await interaction.response.defer(ephemeral=True, thinking=True)
         cutoff = self._cutoff(days)
         session_sql = self._session_source_sql(source)
+        excluded_sql, excluded_parameters = self._excluded_user_sql(
+            self._excluded_user_ids_for_guild(interaction.guild)
+        )
         if channel:
             rows = await self._fetchall(
                 f"""
@@ -1460,9 +1573,14 @@ class VCStats(commands.Cog):
                            ELSE 'name:' || LOWER(COALESCE(display_name, username, 'unknown'))
                        END)
                 FROM ({session_sql}) AS sessions
-                WHERE guild_id = ? AND channel_id = ? AND left_at >= ?
+                WHERE guild_id = ? AND channel_id = ? AND left_at >= ? {excluded_sql}
                 """,
-                (interaction.guild_id, channel.id, cutoff),
+                (
+                    interaction.guild_id,
+                    channel.id,
+                    cutoff,
+                    *excluded_parameters,
+                ),
             )
             total, eligible, sessions, members = rows[0]
             await interaction.followup.send(
@@ -1481,7 +1599,7 @@ class VCStats(commands.Cog):
             SELECT channel_id, MAX(channel_name), SUM(duration_seconds) AS total,
                    COUNT(*)
             FROM ({session_sql}) AS sessions
-            WHERE guild_id = ? AND left_at >= ?
+            WHERE guild_id = ? AND left_at >= ? {excluded_sql}
             GROUP BY CASE
                 WHEN channel_id IS NOT NULL THEN 'id:' || channel_id
                 ELSE 'name:' || LOWER(COALESCE(channel_name, 'unknown'))
@@ -1489,7 +1607,7 @@ class VCStats(commands.Cog):
             ORDER BY total DESC
             LIMIT 10
             """,
-            (interaction.guild_id, cutoff),
+            (interaction.guild_id, cutoff, *excluded_parameters),
         )
         if not rows:
             await interaction.followup.send(
@@ -1517,6 +1635,9 @@ class VCStats(commands.Cog):
     ) -> list:
         conditions = ["guild_id = ?", "left_at >= ?"]
         parameters: List[object] = [guild_id, self._cutoff(days)]
+        excluded_sql, excluded_parameters = self._excluded_user_sql(
+            self._excluded_user_ids_for_guild(self.bot.get_guild(guild_id))
+        )
         if user_id is not None:
             conditions.append("user_id = ?")
             parameters.append(user_id)
@@ -1532,10 +1653,10 @@ class VCStats(commands.Cog):
                    was_self_deafened, was_server_muted, was_server_deafened,
                    session_source, confidence, is_estimated, source_file
             FROM ({session_sql}) AS sessions
-            WHERE {' AND '.join(conditions)}
+            WHERE {' AND '.join(conditions)} {excluded_sql}
             ORDER BY joined_at DESC
             """,
-            parameters,
+            (*parameters, *excluded_parameters),
         )
 
     @staticmethod
@@ -1586,6 +1707,8 @@ class VCStats(commands.Cog):
                 if row[0] is not None
                 else None
             )
+            if self._member_excluded(member):
+                continue
             if member is None and not include_left_members:
                 continue
             export_rows.append(
@@ -1713,15 +1836,19 @@ class VCStats(commands.Cog):
         include_left_members: bool = False,
     ) -> List[Tuple[int, str, str, int, int, int, int, int, bool]]:
         await self._sync_xp_states(guild.id)
+        excluded_sql, excluded_parameters = self._excluded_user_sql(
+            self._excluded_user_ids_for_guild(guild)
+        )
         period_rows = await self._fetchall(
-            """
+            f"""
             SELECT user_id, MAX(username), MAX(display_name),
                    COALESCE(SUM(counted_seconds), 0)
             FROM vc_sessions
             WHERE guild_id = ? AND reward_eligible = 1 AND left_at >= ?
+              {excluded_sql}
             GROUP BY user_id
             """,
-            (guild.id, self._cutoff(days)),
+            (guild.id, self._cutoff(days), *excluded_parameters),
         )
         period_by_user = {
             row[0]: (row[1] or "", row[2] or "", int(row[3] or 0))
@@ -1738,6 +1865,8 @@ class VCStats(commands.Cog):
         preview = []
         for user_id, eligible_total, pulses_earned, pulses_paid in state_rows:
             member = current_member(guild, user_id)
+            if user_id in self.excluded_user_ids or self._member_excluded(member):
+                continue
             if member is None and not include_left_members:
                 continue
             username, display_name, period_seconds = period_by_user.get(
@@ -1843,6 +1972,7 @@ class VCStats(commands.Cog):
 
         state_exists = await self._table_exists("vc_xp_user_state")
         pulses_exists = await self._table_exists("vc_xp_pulses")
+        excluded_ids = self._excluded_user_ids_for_guild(guild)
         unpaid_users = 0
         paid_last_day = 0
         recent_rows = []
@@ -1858,7 +1988,8 @@ class VCStats(commands.Cog):
             unpaid_users = sum(
                 1
                 for (user_id,) in rows
-                if include_left_members or current_member(guild, user_id)
+                if user_id not in excluded_ids
+                and (include_left_members or current_member(guild, user_id))
             )
         if pulses_exists:
             day_ago = (utc_now() - timedelta(hours=24)).isoformat()
@@ -1888,7 +2019,11 @@ class VCStats(commands.Cog):
 
         stuck_members = []
         if role:
-            stuck_members = [member for member in role.members if not member.bot]
+            stuck_members = [
+                member
+                for member in role.members
+                if not member.bot and not self._member_excluded(member)
+            ]
 
         def label(passed: bool, *, warning: bool = False) -> str:
             if passed:
@@ -2055,6 +2190,8 @@ class VCStats(commands.Cog):
         filtered_rows = []
         for row in rows:
             member = current_member(interaction.guild, row[0])
+            if row[0] in self.excluded_user_ids or self._member_excluded(member):
+                continue
             if member is None and not include_left_members:
                 continue
             filtered_rows.append((*row, member))
@@ -2103,6 +2240,12 @@ class VCStats(commands.Cog):
                 ephemeral=True,
             )
             return
+        if self._member_excluded(user):
+            await interaction.response.send_message(
+                "That member is excluded from VC stats and rewards.",
+                ephemeral=True,
+            )
+            return
         issue = self._xp_configuration_issue(interaction.guild)
         if issue:
             await interaction.response.send_message(issue, ephemeral=True)
@@ -2142,6 +2285,12 @@ class VCStats(commands.Cog):
         if not self._is_administrator(interaction):
             await interaction.response.send_message(
                 "Only administrators can mark VC XP pulses paid.",
+                ephemeral=True,
+            )
+            return
+        if self._member_excluded(user):
+            await interaction.response.send_message(
+                "That member is excluded from VC stats and rewards.",
                 ephemeral=True,
             )
             return
