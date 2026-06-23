@@ -28,6 +28,16 @@ from utils.stats_reports import (
     render_report_error,
     render_rolecompare_report,
 )
+from utils.stats_manager import (
+    complete_action,
+    get_stat,
+    initialize_stats_manager_schema,
+    mark_action_processing,
+    parse_stat_id,
+    pending_refresh_actions,
+    replace_member_snapshot,
+    update_stat_result,
+)
 
 
 PERMISSION_DENIED_MESSAGE = "You do not have permission to use stats commands."
@@ -526,12 +536,16 @@ class Stats(commands.Cog):
             """
         )
         await self.bot.db.commit()
+        initialize_stats_manager_schema()
         self.bot.add_view(self._export_view)
         if not self.daily_stats_refresh.is_running():
             self.daily_stats_refresh.start()
+        if not self.dashboard_action_worker.is_running():
+            self.dashboard_action_worker.start()
 
     async def cog_unload(self) -> None:
         self.daily_stats_refresh.cancel()
+        self.dashboard_action_worker.cancel()
         for task in self._refresh_tasks.values():
             task.cancel()
         self._refresh_tasks.clear()
@@ -1468,7 +1482,7 @@ class Stats(commands.Cog):
         guild_id: Optional[int] = None,
         report_id: Optional[int] = None,
     ):
-        clauses = []
+        clauses = ["status = 'active'"]
         parameters = []
         if guild_id is not None:
             clauses.append("guild_id = ?")
@@ -2047,7 +2061,9 @@ class Stats(commands.Cog):
             f"""
             SELECT DISTINCT role_id
             FROM role_stat_embeds
-            WHERE guild_id = ? AND role_id IN ({placeholders})
+            WHERE guild_id = ?
+              AND status = 'active'
+              AND role_id IN ({placeholders})
             """,
             (guild_id, *role_ids),
         )
@@ -2058,6 +2074,7 @@ class Stats(commands.Cog):
             SELECT DISTINCT id
             FROM tracked_stats_reports
             WHERE guild_id = ?
+              AND status = 'active'
               AND (
                     role_1_id IN ({placeholders})
                  OR role_2_id IN ({placeholders})
@@ -2142,7 +2159,7 @@ class Stats(commands.Cog):
         guild_id: Optional[int] = None,
         role_id: Optional[int] = None,
     ):
-        clauses = []
+        clauses = ["status = 'active'"]
         parameters = []
 
         if guild_id is not None:
@@ -3165,16 +3182,22 @@ class Stats(commands.Cog):
         self,
         *,
         guild_id: Optional[int] = None,
+        report_id: Optional[int] = None,
     ):
         query = """
             SELECT id, guild_id, channel_id, message_id, report_type, config_json
             FROM tracked_activity_reports
         """
-        parameters = ()
+        clauses = ["status = 'active'"]
+        parameters = []
         if guild_id is not None:
-            query += " WHERE guild_id = ?"
-            parameters = (guild_id,)
-        return await self._fetchall(query, parameters)
+            clauses.append("guild_id = ?")
+            parameters.append(guild_id)
+        if report_id is not None:
+            clauses.append("id = ?")
+            parameters.append(report_id)
+        query += " WHERE " + " AND ".join(clauses)
+        return await self._fetchall(query, tuple(parameters))
 
     async def _refresh_activity_report_row(self, row) -> bool:
         record_id, guild_id, channel_id, message_id, report_type, config_json = row
@@ -3303,6 +3326,143 @@ class Stats(commands.Cog):
     @daily_stats_refresh.before_loop
     async def before_daily_stats_refresh(self) -> None:
         await self.bot.wait_until_ready()
+
+    @tasks.loop(seconds=5)
+    async def dashboard_action_worker(self) -> None:
+        for action in pending_refresh_actions(limit=10):
+            action_id = int(action["id"])
+            if not mark_action_processing(action_id):
+                continue
+            try:
+                payload = json.loads(action["payload_json"])
+                stat_id = str(payload.get("stat_id", ""))
+                success, message = await self._process_dashboard_stat_refresh(
+                    stat_id
+                )
+            except Exception as exc:
+                logger.exception(
+                    "Dashboard stat refresh action failed action_id=%s",
+                    action_id,
+                )
+                success = False
+                message = f"Refresh failed: {type(exc).__name__}"
+            complete_action(action_id, success, message)
+
+    @dashboard_action_worker.before_loop
+    async def before_dashboard_action_worker(self) -> None:
+        await self.bot.wait_until_ready()
+
+    async def _process_dashboard_stat_refresh(
+        self,
+        stat_id: str,
+    ) -> tuple[bool, str]:
+        source, record_id = parse_stat_id(stat_id)
+        record = get_stat(stat_id)
+        if record is None:
+            return False, "Stat was not found."
+        if record["status"] != "active":
+            return False, "Archived stats cannot be refreshed."
+
+        if source == "roster":
+            rows = await self._tracked_rows()
+            row = next((item for item in rows if item[0] == record_id), None)
+            refresher = self._refresh_row
+        elif source == "report":
+            rows = await self._tracked_report_rows(report_id=record_id)
+            row = rows[0] if rows else None
+            refresher = self._refresh_report_row
+        else:
+            rows = await self._tracked_activity_rows(report_id=record_id)
+            row = rows[0] if rows else None
+            refresher = self._refresh_activity_report_row
+
+        if row is None:
+            update_stat_result(stat_id, False, "Active stat record was not found.")
+            return False, "Active stat record was not found."
+        success = await refresher(row)
+        if success:
+            await self._snapshot_dashboard_stat_members(stat_id, record)
+            update_stat_result(stat_id, True, "Refreshed successfully.")
+            return True, f"{stat_id} refreshed successfully."
+        update_stat_result(stat_id, False, "Discord message refresh failed.")
+        return False, f"{stat_id} could not be refreshed."
+
+    async def _snapshot_dashboard_stat_members(
+        self,
+        stat_id: str,
+        record: dict,
+    ) -> None:
+        guild = self.bot.get_guild(record["guild_id"])
+        if guild is None:
+            replace_member_snapshot(stat_id, [])
+            return
+        members = []
+        if record["source"] == "roster":
+            role = guild.get_role(record["role_id"])
+            if role:
+                members = [
+                    self._dashboard_member_row(member, role.id, "member")
+                    for member in role.members
+                ]
+        elif record["source"] == "report":
+            rows = await self._tracked_report_rows(report_id=record["id"])
+            if not rows:
+                replace_member_snapshot(stat_id, [])
+                return
+            row = rows[0]
+            report_type = row[4]
+            if report_type == "rolecompare":
+                role_1 = guild.get_role(row[5])
+                role_2 = guild.get_role(row[6])
+                if role_1 and role_2:
+                    data = self._calculate_rolecompare(role_1, role_2)
+                    for category in ("role_1_only", "role_2_only", "both"):
+                        for member in data[category]:
+                            role_id = (
+                                role_2.id
+                                if category == "role_2_only"
+                                else role_1.id
+                            )
+                            members.append(
+                                self._dashboard_member_row(
+                                    member,
+                                    role_id,
+                                    category,
+                                )
+                            )
+            elif report_type == "missingrole":
+                has_role = guild.get_role(row[7])
+                missing_role = guild.get_role(row[8])
+                if has_role and missing_role:
+                    data = self._calculate_missingrole(has_role, missing_role)
+                    members = [
+                        self._dashboard_member_row(
+                            member,
+                            has_role.id,
+                            "missing_role",
+                        )
+                        for member in data["members"]
+                    ]
+        replace_member_snapshot(stat_id, members)
+
+    @staticmethod
+    def _dashboard_member_row(
+        member: discord.Member,
+        role_id: int,
+        category: str,
+    ) -> dict:
+        return {
+            "discord_user_id": member.id,
+            "username": getattr(member, "name", None),
+            "display_name": member.display_name,
+            "role_id": role_id,
+            "joined_at": (
+                member.joined_at.astimezone(datetime.timezone.utc).isoformat()
+                if member.joined_at
+                else None
+            ),
+            "category": category,
+        }
 
     async def _build_activity_report_embed(
         self,

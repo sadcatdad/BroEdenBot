@@ -1,0 +1,46 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="page-heading">
+  <div>
+    <p class="eyebrow">Existing tracked graphics</p>
+    <h1>Stats Graphics</h1>
+  </div>
+</div>
+<p class="muted">Refreshes are queued for the live Discord bot process. Archiving disables future automatic refreshes without deleting Discord messages.</p>
+{% if message %}<div class="alert success">{{ message }}</div>{% endif %}
+{% if error %}<div class="alert error">{{ error }}</div>{% endif %}
+
+{% if stats %}
+<section class="card">
+  <div class="table-wrap">
+    <table>
+      <thead>
+        <tr><th>ID</th><th>Title</th><th>Target</th><th>Members</th><th>Channel / Message</th><th>Updated</th><th>Status</th><th>Actions</th></tr>
+      </thead>
+      <tbody>
+      {% for stat in stats %}
+      <tr>
+        <td><code>{{ stat.stat_id }}</code></td>
+        <td>{{ stat.title }}<br><small class="muted">{{ stat.source }}{% if stat.report_type %} · {{ stat.report_type }}{% endif %}</small></td>
+        <td>{{ stat.role_ids|join(", ") if stat.role_ids else "—" }}</td>
+        <td>{{ stat.member_count }}</td>
+        <td>{{ stat.channel_id or "—" }}<br><small class="muted">{{ stat.message_id or "—" }}</small></td>
+        <td>{{ stat.updated_at or "—" }}</td>
+        <td><span class="badge status-{{ stat.display_status }}">{{ stat.display_status }}</span></td>
+        <td>
+          <div class="table-actions">
+            <a class="button secondary small" href="{{ url_for('stats_detail', stat_id=stat.stat_id) }}">View</a>
+            {% if stat.editable %}<a class="button secondary small" href="{{ url_for('stats_edit', stat_id=stat.stat_id) }}">Edit</a>{% endif %}
+            <a class="button secondary small" href="{{ url_for('stats_export', stat_id=stat.stat_id) }}">CSV</a>
+          </div>
+        </td>
+      </tr>
+      {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</section>
+{% else %}
+<div class="empty-state">No tracked stats graphics found yet.</div>
+{% endif %}
+{% endblock %}

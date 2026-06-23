@@ -10,7 +10,7 @@ from typing import Any
 import uvicorn
 from dotenv import load_dotenv
 from fastapi import FastAPI, Form, HTTPException, Request, status
-from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
+from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, Response
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from starlette.middleware.sessions import SessionMiddleware
@@ -45,6 +45,15 @@ from utils.settings import (
     recent_setting_changes,
     set_setting,
     settings_for_dashboard,
+)
+from utils.stats_manager import (
+    archive_stat,
+    export_stat_csv,
+    get_stat,
+    initialize_stats_manager_schema,
+    list_stats,
+    queue_stat_refresh,
+    update_stat,
 )
 
 
@@ -94,6 +103,7 @@ def validate_dashboard_config() -> None:
 validate_dashboard_config()
 if dashboard_enabled():
     initialize_settings_from_env()
+    initialize_stats_manager_schema()
 
 app = FastAPI(
     title="BroEdenBot Local Dashboard",
@@ -313,6 +323,166 @@ def operations_redirect(request: Request) -> RedirectResponse:
     return RedirectResponse(
         url=request.url_for("operations_page"),
         status_code=status.HTTP_303_SEE_OTHER,
+    )
+
+
+def stats_redirect(request: Request, stat_id: str | None = None) -> RedirectResponse:
+    url = (
+        request.url_for("stats_detail", stat_id=stat_id)
+        if stat_id
+        else request.url_for("stats_page")
+    )
+    return RedirectResponse(url=url, status_code=status.HTTP_303_SEE_OTHER)
+
+
+@app.get("/stats", response_class=HTMLResponse, name="stats_page")
+async def stats_page(request: Request) -> HTMLResponse:
+    if redirect := login_redirect(request):
+        return redirect
+    return templates.TemplateResponse(
+        request=request,
+        name="stats.html",
+        context=template_context(
+            request,
+            page_title="Stats Graphics",
+            stats=list_stats(),
+            message=request.session.pop("stats_message", None),
+            error=request.session.pop("stats_error", None),
+        ),
+    )
+
+
+@app.get("/stats/{stat_id}", response_class=HTMLResponse, name="stats_detail")
+async def stats_detail(request: Request, stat_id: str) -> HTMLResponse:
+    if redirect := login_redirect(request):
+        return redirect
+    try:
+        record = get_stat(stat_id)
+    except ValueError:
+        record = None
+    if record is None:
+        raise HTTPException(status_code=404, detail="Stat was not found.")
+    return templates.TemplateResponse(
+        request=request,
+        name="stats_detail.html",
+        context=template_context(
+            request,
+            page_title=record["title"],
+            stat=record,
+            message=request.session.pop("stats_message", None),
+            error=request.session.pop("stats_error", None),
+        ),
+    )
+
+
+@app.get("/stats/{stat_id}/edit", response_class=HTMLResponse, name="stats_edit")
+async def stats_edit(request: Request, stat_id: str) -> HTMLResponse:
+    if redirect := login_redirect(request):
+        return redirect
+    try:
+        record = get_stat(stat_id)
+    except ValueError:
+        record = None
+    if record is None:
+        raise HTTPException(status_code=404, detail="Stat was not found.")
+    if not record["editable"]:
+        request.session["stats_error"] = (
+            "This activity report does not support dashboard editing."
+        )
+        return stats_redirect(request, stat_id)
+    return templates.TemplateResponse(
+        request=request,
+        name="stats_edit.html",
+        context=template_context(
+            request,
+            page_title=f"Edit {record['title']}",
+            stat=record,
+            error=request.session.pop("stats_error", None),
+        ),
+    )
+
+
+@app.post("/stats/{stat_id}/edit", name="stats_update")
+async def stats_update(request: Request, stat_id: str) -> RedirectResponse:
+    if redirect := login_redirect(request):
+        return redirect
+    await require_action_csrf(request)
+    form = await request.form()
+    try:
+        update_stat(
+            stat_id,
+            title=str(form.get("title", "")),
+            body=str(form.get("body", "")),
+            image_url=str(form.get("image_url", "")),
+        )
+    except ValueError as exc:
+        request.session["stats_error"] = str(exc)
+        return RedirectResponse(
+            url=request.url_for("stats_edit", stat_id=stat_id),
+            status_code=status.HTTP_303_SEE_OTHER,
+        )
+    request.session["stats_message"] = (
+        "Configuration saved. Queue a refresh to update the Discord post."
+    )
+    return stats_redirect(request, stat_id)
+
+
+@app.post("/stats/{stat_id}/refresh", name="stats_refresh")
+async def stats_refresh(request: Request, stat_id: str) -> RedirectResponse:
+    if redirect := login_redirect(request):
+        return redirect
+    await require_action_csrf(request)
+    try:
+        action_id = queue_stat_refresh(
+            stat_id,
+            str(request.session.get("dashboard_user", "dashboard")),
+        )
+    except ValueError as exc:
+        request.session["stats_error"] = str(exc)
+    else:
+        request.session["stats_message"] = (
+            f"Refresh queued as dashboard action #{action_id}. "
+            "The Discord bot process will handle it."
+        )
+    return stats_redirect(request, stat_id)
+
+
+@app.post("/stats/{stat_id}/archive", name="stats_archive")
+async def stats_archive(request: Request, stat_id: str) -> RedirectResponse:
+    if redirect := login_redirect(request):
+        return redirect
+    await require_action_csrf(request)
+    try:
+        archive_stat(stat_id)
+    except ValueError as exc:
+        request.session["stats_error"] = str(exc)
+    else:
+        request.session["stats_message"] = (
+            f"{stat_id} archived. Its Discord message was not deleted."
+        )
+    return stats_redirect(request, stat_id)
+
+
+@app.get("/stats/{stat_id}/export.csv", name="stats_export")
+async def stats_export(request: Request, stat_id: str):
+    if redirect := login_redirect(request):
+        return redirect
+    try:
+        data = export_stat_csv(stat_id)
+    except ValueError:
+        raise HTTPException(status_code=404, detail="Stat was not found.")
+    if data is None:
+        request.session["stats_error"] = (
+            "No stored member snapshot is available yet. "
+            "Queue a refresh and try again after the bot processes it."
+        )
+        return stats_redirect(request, stat_id)
+    return Response(
+        content=data,
+        media_type="text/csv; charset=utf-8",
+        headers={
+            "Content-Disposition": f'attachment; filename="{stat_id}-members.csv"'
+        },
     )
 
 

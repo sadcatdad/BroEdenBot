@@ -65,6 +65,9 @@ maintenance.
   foreign-key setup for async SQLite connections.
 - `utils/settings.py` — Allowlisted, validated runtime settings stored in
   `data.db`, with environment fallback and a non-secret dashboard audit trail.
+- `utils/stats_manager.py` — Non-destructive dashboard management for existing
+  tracked stats graphics, queued bot-side refreshes, archives, and member
+  snapshot CSV exports.
 - `scripts/import_message_context.py` — Streaming DiscordChatExporter CSV
   importer for the separate full-server archive.
 - `scripts/import_full_csv_exports.py` — Imports every full-server CSV into

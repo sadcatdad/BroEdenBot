@@ -1358,6 +1358,43 @@ The current implementation intentionally does not invoke `sudo` for status or
 log reads; these optional entries are only a reference if local policy is
 tightened and the fixed read commands are updated accordingly.
 
+### Stats Graphics Manager
+
+The authenticated Stats page manages the bot's existing tracked role rosters,
+role-comparison and missing-role graphics, and tracked activity reports. It
+reuses `role_stat_embeds`, `tracked_stats_reports`, and
+`tracked_activity_reports`; it does not create a parallel stats system.
+
+Tracked items use dashboard IDs such as `roster-12`, `report-4`, and
+`activity-8`. The list and detail pages show their safe configuration, Discord
+channel/message IDs, update time, archive/error state, and locally stored
+member-snapshot count. Role rosters and role reports allow edits to title,
+description, and—where already supported—the optional roster image URL.
+Guild, role, channel, and message IDs are read-only.
+
+The dashboard and Discord bot run as separate processes. Clicking Refresh
+therefore inserts a fixed `refresh_stat` entry into `dashboard_actions`; it
+does not start another Discord client. The live Stats cog checks this queue,
+uses its existing refresh helpers, records success or failure, and captures a
+local member snapshot for supported role rosters and role reports. No shell
+command or user-supplied SQL is involved.
+
+Archive is intentionally non-destructive. It marks the tracked record
+`archived`, excludes it from automatic and queued refreshes, keeps it visible
+in the dashboard, and leaves the existing Discord message alone. Existing
+Discord `/stats delete` and `/stats reset` behavior remains separate.
+
+CSV export uses the latest locally stored `dashboard_stat_members` snapshot and
+includes Discord user ID, username/display name, role ID, join time when
+available, snapshot category, capture time, and export time. If no snapshot is
+available, the dashboard shows a friendly message and suggests queueing a
+refresh. Member previews are limited to the first 100 rows on the detail page.
+
+The Stats Graphics Manager remains local-only and requires dashboard login.
+Every edit, refresh, and archive POST requires the existing session CSRF token.
+It adds no public access, OAuth, bank manager, checklist manager, terminal, or
+arbitrary command/SQL surface.
+
 An optional separate systemd unit template is provided at
 `broeden-dashboard.service.example`. It uses the current
 `sadcatdad` account and `/home/sadcatdad/BroEdenBot` project path. Copy it to

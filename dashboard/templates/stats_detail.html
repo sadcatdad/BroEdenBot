@@ -1,0 +1,78 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="page-heading">
+  <div>
+    <p class="eyebrow">{{ stat.stat_id }} · {{ stat.source }}</p>
+    <h1>{{ stat.title }}</h1>
+  </div>
+  <span class="badge status-{{ stat.display_status }}">{{ stat.display_status }}</span>
+</div>
+{% if message %}<div class="alert success">{{ message }}</div>{% endif %}
+{% if error %}<div class="alert error">{{ error }}</div>{% endif %}
+
+<section class="card">
+  <div class="detail-grid">
+    <div><span>Body</span><strong>{{ stat.body or "Not configured" }}</strong></div>
+    <div><span>Role/target IDs</span><strong>{{ stat.role_ids|join(", ") if stat.role_ids else "—" }}</strong></div>
+    <div><span>Channel ID</span><strong>{{ stat.channel_id or "—" }}</strong></div>
+    <div><span>Message ID</span><strong>{{ stat.message_id or "—" }}</strong></div>
+    <div><span>Report type</span><strong>{{ stat.report_type or "role roster" }}</strong></div>
+    <div><span>Last updated</span><strong>{{ stat.updated_at or "—" }}</strong></div>
+    <div><span>Last error</span><strong>{{ stat.last_error or "None" }}</strong></div>
+    <div><span>Stored members</span><strong>{{ stat.member_count }}</strong></div>
+  </div>
+  {% if stat.config_json %}<pre class="log-output compact">{{ stat.config_json }}</pre>{% endif %}
+  {% if stat.image_url %}
+  <div class="stat-preview">
+    <p class="muted">Configured banner preview</p>
+    <img src="{{ stat.image_url }}" alt="Configured stats banner">
+  </div>
+  {% endif %}
+</section>
+
+<section class="card operation-actions">
+  <div>
+    <h2>Actions</h2>
+    <p class="muted">Refresh is processed by the Discord bot. Archive is non-destructive.</p>
+  </div>
+  <div class="action-buttons">
+    {% if stat.editable %}<a class="button secondary" href="{{ url_for('stats_edit', stat_id=stat.stat_id) }}">Edit</a>{% endif %}
+    <a class="button secondary" href="{{ url_for('stats_export', stat_id=stat.stat_id) }}">Export CSV</a>
+    {% if stat.status == "active" %}
+    <form method="post" action="{{ url_for('stats_refresh', stat_id=stat.stat_id) }}">
+      <input type="hidden" name="csrf" value="{{ csrf_token }}">
+      <button class="button" type="submit">Queue refresh</button>
+    </form>
+    <form method="post" action="{{ url_for('stats_archive', stat_id=stat.stat_id) }}" onsubmit="return confirm('Archive this stat? Its Discord message will remain.');">
+      <input type="hidden" name="csrf" value="{{ csrf_token }}">
+      <button class="button danger" type="submit">Archive</button>
+    </form>
+    {% endif %}
+  </div>
+</section>
+
+<section class="card">
+  <h2>Member snapshot</h2>
+  {% if stat.members %}
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>User ID</th><th>Username</th><th>Display name</th><th>Role ID</th><th>Category</th><th>Joined</th></tr></thead>
+      <tbody>
+      {% for member in stat.members %}
+      <tr>
+        <td>{{ member.discord_user_id }}</td>
+        <td>{{ member.username or "—" }}</td>
+        <td>{{ member.display_name or "—" }}</td>
+        <td>{{ member.role_id or "—" }}</td>
+        <td>{{ member.category or "—" }}</td>
+        <td>{{ member.joined_at or "—" }}</td>
+      </tr>
+      {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {% else %}
+  <p class="muted">No stored member snapshot is available. Queue a refresh to let the Discord bot capture one when supported.</p>
+  {% endif %}
+</section>
+{% endblock %}
