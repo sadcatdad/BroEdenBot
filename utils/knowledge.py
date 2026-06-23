@@ -55,6 +55,18 @@ def load_staff_knowledge() -> Dict[str, str]:
     return knowledge
 
 
+def reload_knowledge() -> Dict[str, int]:
+    """Clear both knowledge caches and reload their existing source files."""
+    load_knowledge.cache_clear()
+    load_staff_knowledge.cache_clear()
+    public = load_server_knowledge()
+    staff = load_staff_knowledge()
+    return {
+        "public_sources": sum(bool(content) for content in public.values()),
+        "staff_sources": sum(bool(content) for content in staff.values()),
+    }
+
+
 def compact_knowledge_context(max_chars: int = 18_000) -> str:
     """Return public and staff-only context for private moderation prompts."""
     sections = [COMMUNITY_CONTEXT]

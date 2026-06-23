@@ -9,7 +9,7 @@ SENSITIVE_TEXT_PATTERNS = (
     (
         re.compile(
             r"(?im)\b((?:[A-Z][A-Z0-9_]*_)?"
-            r"(?:TOKEN|SECRET|PASSWORD|API_KEY))\s*=\s*([^\s,;]+)"
+            r"(?:TOKEN|SECRET|PASSWORD|API_KEY))\s*[:=]\s*([^\s,;]+)"
         ),
         r"\1=[REDACTED]",
     ),
@@ -21,6 +21,13 @@ SENSITIVE_TEXT_PATTERNS = (
         re.compile(
             r"\b[A-Za-z0-9_-]{20,}\.[A-Za-z0-9_-]{6}"
             r"\.[A-Za-z0-9_-]{20,}\b"
+        ),
+        "[REDACTED TOKEN]",
+    ),
+    (
+        re.compile(
+            r"(?i)\b(?:sk|ghp|github_pat|xox[baprs])[-_]"
+            r"[A-Za-z0-9_-]{12,}\b"
         ),
         "[REDACTED TOKEN]",
     ),

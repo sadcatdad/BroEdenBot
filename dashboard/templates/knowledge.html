@@ -1,0 +1,136 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="page-heading">
+  <div>
+    <p class="eyebrow">Allowlisted local documents</p>
+    <h1>Knowledge</h1>
+  </div>
+  <form method="post" action="{{ url_for('knowledge_reindex_all') }}">
+    <input type="hidden" name="csrf" value="{{ csrf_token }}">
+    <button class="button" type="submit">Reindex all knowledge</button>
+  </form>
+</div>
+<p class="muted">Only the fixed documents below are accessible. Public and staff knowledge remain separate, and reindex requests are handled by the live bot process.</p>
+{% if message %}<div class="alert success">{{ message }}</div>{% endif %}
+{% if error %}<div class="alert error">{{ error }}</div>{% endif %}
+
+<section class="card knowledge-filters" aria-label="Knowledge filters">
+  <label>
+    Search
+    <input id="knowledge-search" type="search" placeholder="Document name or path">
+  </label>
+  <label>
+    Category
+    <select id="knowledge-category">
+      <option value="">All categories</option>
+      {% for category in documents|map(attribute='category')|unique|sort %}
+      <option value="{{ category|lower }}">{{ category }}</option>
+      {% endfor %}
+    </select>
+  </label>
+  <label>
+    Visibility
+    <select id="knowledge-visibility">
+      <option value="">All visibility</option>
+      <option value="public">Public</option>
+      <option value="staff">Staff</option>
+      <option value="internal">Internal</option>
+    </select>
+  </label>
+  <label>
+    Status
+    <select id="knowledge-status">
+      <option value="">All statuses</option>
+      <option value="found">Found</option>
+      <option value="missing">Missing</option>
+      <option value="empty">Empty</option>
+      <option value="unreadable">Unreadable</option>
+    </select>
+  </label>
+</section>
+
+<section class="card">
+  <div class="table-wrap">
+    <table id="knowledge-table">
+      <thead>
+        <tr><th>Document</th><th>Category</th><th>Visibility</th><th>Path</th><th>Size / words</th><th>Modified</th><th>Status</th><th>Actions</th></tr>
+      </thead>
+      <tbody>
+      {% for document in documents %}
+      <tr
+        data-search="{{ (document.display_name ~ ' ' ~ document.relative_path)|lower }}"
+        data-category="{{ document.category|lower }}"
+        data-visibility="{{ document.visibility }}"
+        data-status="{{ document.status }}"
+      >
+        <td><strong>{{ document.display_name }}</strong><br><small class="muted">{{ "Editable" if document.editable else "Read-only" }}</small></td>
+        <td>{{ document.category }}</td>
+        <td><span class="badge visibility-{{ document.visibility }}">{{ document.visibility }}</span></td>
+        <td><code>{{ document.relative_path }}</code></td>
+        <td>{{ document.size_bytes }} bytes<br><small class="muted">{{ document.word_count }} words</small></td>
+        <td>{{ document.modified_at or "—" }}</td>
+        <td><span class="badge status-{{ document.status }}">{{ document.status }}</span></td>
+        <td>
+          <div class="table-actions">
+            <a class="button secondary small" href="{{ url_for('knowledge_detail', doc_key=document.doc_key) }}">View</a>
+            <a class="button secondary small" href="{{ url_for('knowledge_preview', doc_key=document.doc_key) }}">Preview</a>
+            {% if document.editable %}<a class="button secondary small" href="{{ url_for('knowledge_edit', doc_key=document.doc_key) }}">Edit</a>{% endif %}
+            {% if document.reindex_supported %}
+            <form method="post" action="{{ url_for('knowledge_reindex', doc_key=document.doc_key) }}">
+              <input type="hidden" name="csrf" value="{{ csrf_token }}">
+              <button class="button small" type="submit">Reindex</button>
+            </form>
+            {% endif %}
+          </div>
+        </td>
+      </tr>
+      {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</section>
+
+<section class="card">
+  <h2>Recent knowledge activity</h2>
+  {% if recent_audit %}
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>Document</th><th>Action</th><th>Changed by</th><th>Backup</th><th>Time</th></tr></thead>
+      <tbody>
+      {% for entry in recent_audit %}
+      <tr>
+        <td><code>{{ entry.doc_key }}</code><br><small class="muted">{{ entry.path }}</small></td>
+        <td>{{ entry.action }}</td>
+        <td>{{ entry.changed_by or "dashboard" }}</td>
+        <td>{{ entry.backup_path or "—" }}</td>
+        <td>{{ entry.created_at }}</td>
+      </tr>
+      {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {% else %}
+  <p class="muted">No knowledge edits or reindex requests recorded yet.</p>
+  {% endif %}
+</section>
+
+<script>
+(() => {
+  const rows = [...document.querySelectorAll("#knowledge-table tbody tr")];
+  const controls = ["knowledge-search", "knowledge-category", "knowledge-visibility", "knowledge-status"]
+    .map((id) => document.getElementById(id));
+  const applyFilters = () => {
+    const [search, category, visibility, status] = controls.map((control) => control.value.toLowerCase());
+    rows.forEach((row) => {
+      row.hidden = !(
+        (!search || row.dataset.search.includes(search)) &&
+        (!category || row.dataset.category === category) &&
+        (!visibility || row.dataset.visibility === visibility) &&
+        (!status || row.dataset.status === status)
+      );
+    });
+  };
+  controls.forEach((control) => control.addEventListener("input", applyFilters));
+})();
+</script>
+{% endblock %}

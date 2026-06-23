@@ -1239,9 +1239,10 @@ notify anyone.
 ## Local web dashboard
 
 The local FastAPI dashboard provides shared-database status, bank overview,
-historical-import status, and database-backed editing for an explicit allowlist
-of safe runtime settings. It does not edit `.env`, modify bank records, expose
-Discord or Gemini secrets, or provide public hosting.
+historical-import status, database-backed editing for an explicit allowlist of
+safe runtime settings, stats graphics management, and an allowlisted local
+Knowledge Manager. It does not edit `.env`, modify bank records, expose Discord
+or Gemini secrets, or provide public hosting.
 
 Set these values in the project-root `.env` and replace the placeholder
 password and signing key before using the dashboard. When
@@ -1395,6 +1396,48 @@ The Stats Graphics Manager remains local-only and requires dashboard login.
 Every edit, refresh, and archive POST requires the existing session CSRF token.
 It adds no public access, OAuth, bank manager, checklist manager, terminal, or
 arbitrary command/SQL surface.
+
+### Knowledge Base / Guide Manager
+
+The authenticated Knowledge page lists only a fixed source-code allowlist. It
+does not accept paths, browse directories, follow symlinks outside the project,
+or expose a file-download route. The allowlist includes:
+
+- Public bot knowledge: `data/knowledge/rules.md` and
+  `data/knowledge/survival_guide.md`.
+- Private staff knowledge:
+  `data/staff_knowledge/rangers_handbook.md`.
+- Internal guides under `docs/`: message context, staff context, checklists,
+  historical imports, VC log imports, and the codebase map.
+
+Each entry shows its category, public/staff/internal visibility, relative path,
+editability, modified time, size, approximate word count, and
+found/missing/empty state. Search and filters run in the browser against this
+already allowlisted metadata. Document previews are escaped plain text, so raw
+HTML and scripts are not executed. Obvious token, password, API-key, secret,
+authorization, and provider-token patterns are redacted from displayed content
+and rejected on save.
+
+The public Rules and Survival Guide, private Ranger's Handbook, message-context
+guide, and staff-context guide are editable. Import guides, checklist docs, and
+the codebase map are intentionally read-only in this dashboard phase. Edits are
+limited to UTF-8 Markdown/text, reject binary or content over 1 MB, and use a
+temporary file plus atomic replacement. Before replacing an existing file, the
+dashboard creates a timestamped copy under `backups/knowledge/`; those runtime
+backups are ignored by Git. `knowledge_audit` records metadata for edits and
+reindex requests without storing old or new document contents.
+
+Knowledge loaders are cached inside the Discord bot process. Reindex buttons
+therefore enqueue only the fixed `reindex_knowledge` action in the existing
+`dashboard_actions` table. The live Stats cog action worker validates that
+fixed payload, clears and reloads the existing public/staff knowledge caches,
+then marks the action completed or failed. The dashboard never creates a
+second Discord client and does not build a duplicate knowledge index.
+
+The Knowledge Manager remains local-only and requires the existing signed
+login session. Every edit and reindex POST requires CSRF protection. This phase
+is a document manager, not an AI prompt-testing console, import manager, bank
+manager, checklist manager, terminal, or public knowledge portal.
 
 An optional separate systemd unit template is provided at
 `broeden-dashboard.service.example`. It uses the current

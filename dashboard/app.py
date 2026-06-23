@@ -38,6 +38,14 @@ from dashboard.operations import (
     service_status,
     system_status,
 )
+from utils.knowledge_manager import (
+    document_details,
+    initialize_knowledge_schema,
+    list_documents,
+    queue_knowledge_reindex,
+    recent_knowledge_audit,
+    save_document,
+)
 from utils.settings import (
     EDITABLE_SETTING_KEYS,
     initialize_settings_from_env,
@@ -104,6 +112,7 @@ validate_dashboard_config()
 if dashboard_enabled():
     initialize_settings_from_env()
     initialize_stats_manager_schema()
+    initialize_knowledge_schema()
 
 app = FastAPI(
     title="BroEdenBot Local Dashboard",
@@ -333,6 +342,180 @@ def stats_redirect(request: Request, stat_id: str | None = None) -> RedirectResp
         else request.url_for("stats_page")
     )
     return RedirectResponse(url=url, status_code=status.HTTP_303_SEE_OTHER)
+
+
+def knowledge_redirect(
+    request: Request,
+    doc_key: str | None = None,
+) -> RedirectResponse:
+    url = (
+        request.url_for("knowledge_detail", doc_key=doc_key)
+        if doc_key
+        else request.url_for("knowledge_page")
+    )
+    return RedirectResponse(url=url, status_code=status.HTTP_303_SEE_OTHER)
+
+
+def knowledge_document_or_error(doc_key: str) -> dict[str, Any]:
+    try:
+        return document_details(doc_key)
+    except KeyError as exc:
+        raise HTTPException(
+            status_code=404,
+            detail="Knowledge document was not found.",
+        ) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.get("/knowledge", response_class=HTMLResponse, name="knowledge_page")
+async def knowledge_page(request: Request) -> HTMLResponse:
+    if redirect := login_redirect(request):
+        return redirect
+    return templates.TemplateResponse(
+        request=request,
+        name="knowledge.html",
+        context=template_context(
+            request,
+            page_title="Knowledge",
+            documents=list_documents(),
+            recent_audit=recent_knowledge_audit(),
+            message=request.session.pop("knowledge_message", None),
+            error=request.session.pop("knowledge_error", None),
+        ),
+    )
+
+
+@app.get(
+    "/knowledge/{doc_key}",
+    response_class=HTMLResponse,
+    name="knowledge_detail",
+)
+async def knowledge_detail(request: Request, doc_key: str) -> HTMLResponse:
+    if redirect := login_redirect(request):
+        return redirect
+    document = knowledge_document_or_error(doc_key)
+    return templates.TemplateResponse(
+        request=request,
+        name="knowledge_detail.html",
+        context=template_context(
+            request,
+            page_title=document["display_name"],
+            document=document,
+            message=request.session.pop("knowledge_message", None),
+            error=request.session.pop("knowledge_error", None),
+        ),
+    )
+
+
+@app.get(
+    "/knowledge/{doc_key}/preview",
+    response_class=HTMLResponse,
+    name="knowledge_preview",
+)
+async def knowledge_preview(request: Request, doc_key: str) -> HTMLResponse:
+    if redirect := login_redirect(request):
+        return redirect
+    document = knowledge_document_or_error(doc_key)
+    return templates.TemplateResponse(
+        request=request,
+        name="knowledge_preview.html",
+        context=template_context(
+            request,
+            page_title=f"Preview {document['display_name']}",
+            document=document,
+        ),
+    )
+
+
+@app.get(
+    "/knowledge/{doc_key}/edit",
+    response_class=HTMLResponse,
+    name="knowledge_edit",
+)
+async def knowledge_edit(request: Request, doc_key: str) -> HTMLResponse:
+    if redirect := login_redirect(request):
+        return redirect
+    document = knowledge_document_or_error(doc_key)
+    if not document["editable"]:
+        raise HTTPException(status_code=403, detail="This document is read-only.")
+    return templates.TemplateResponse(
+        request=request,
+        name="knowledge_edit.html",
+        context=template_context(
+            request,
+            page_title=f"Edit {document['display_name']}",
+            document=document,
+            error=request.session.pop("knowledge_error", None),
+        ),
+    )
+
+
+@app.post("/knowledge/{doc_key}/edit", name="knowledge_update")
+async def knowledge_update(request: Request, doc_key: str) -> RedirectResponse:
+    if redirect := login_redirect(request):
+        return redirect
+    await require_action_csrf(request)
+    document = knowledge_document_or_error(doc_key)
+    if not document["editable"]:
+        raise HTTPException(status_code=403, detail="This document is read-only.")
+    form = await request.form()
+    try:
+        backup_path = save_document(
+            doc_key,
+            str(form.get("content", "")),
+            str(request.session.get("dashboard_user", "dashboard")),
+        )
+    except ValueError as exc:
+        request.session["knowledge_error"] = str(exc)
+        return RedirectResponse(
+            url=request.url_for("knowledge_edit", doc_key=doc_key),
+            status_code=status.HTTP_303_SEE_OTHER,
+        )
+    backup_message = (
+        f" Backup created as {backup_path.name}." if backup_path else ""
+    )
+    request.session["knowledge_message"] = (
+        f"{document['display_name']} saved.{backup_message} "
+        "Queue a reindex if this document is used by the bot."
+    )
+    return knowledge_redirect(request, doc_key)
+
+
+@app.post("/knowledge/{doc_key}/reindex", name="knowledge_reindex")
+async def knowledge_reindex(request: Request, doc_key: str) -> RedirectResponse:
+    if redirect := login_redirect(request):
+        return redirect
+    await require_action_csrf(request)
+    document = knowledge_document_or_error(doc_key)
+    try:
+        action_id = queue_knowledge_reindex(
+            doc_key,
+            str(request.session.get("dashboard_user", "dashboard")),
+        )
+    except ValueError as exc:
+        request.session["knowledge_error"] = str(exc)
+    else:
+        request.session["knowledge_message"] = (
+            f"Reindex queued as dashboard action #{action_id} for "
+            f"{document['display_name']}."
+        )
+    return knowledge_redirect(request, doc_key)
+
+
+@app.post("/knowledge/reindex-all", name="knowledge_reindex_all")
+async def knowledge_reindex_all(request: Request) -> RedirectResponse:
+    if redirect := login_redirect(request):
+        return redirect
+    await require_action_csrf(request)
+    action_id = queue_knowledge_reindex(
+        None,
+        str(request.session.get("dashboard_user", "dashboard")),
+    )
+    request.session["knowledge_message"] = (
+        f"Full knowledge reindex queued as dashboard action #{action_id}."
+    )
+    return knowledge_redirect(request)
 
 
 @app.get("/stats", response_class=HTMLResponse, name="stats_page")

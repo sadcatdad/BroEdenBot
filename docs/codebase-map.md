@@ -17,7 +17,8 @@ maintenance.
   by `/context`.
 - `dashboard/` — Separate local-network FastAPI dashboard with signed login
   sessions, safe configuration, read-only data views, fixed service controls,
-  redacted logs, system status, and SQLite backups.
+  redacted logs, system status, SQLite backups, stats management, and an
+  allowlisted Knowledge Manager.
 - `broeden-dashboard.service.example` — Optional standalone systemd unit
   template for the dashboard; it does not replace the bot service.
 
@@ -47,7 +48,10 @@ maintenance.
 
 - `utils/ui.py` — Brand colors, status embeds, progress bars, and truncation.
 - `utils/knowledge.py` — Separate cached public and private-staff knowledge
-  loaders and search.
+  loaders, cache reload, and search.
+- `utils/knowledge_manager.py` — Fixed document allowlist, safe UTF-8
+  reads/atomic edits, knowledge backups and audit rows, and queued bot-side
+  cache reloads for the local dashboard.
 - `data/staff_knowledge/rangers_handbook.md` — Private Ranger operations and
   moderation guidance used by staff-facing AI only.
 - `utils/member_filter.py` — Current-member filtering safeguards.

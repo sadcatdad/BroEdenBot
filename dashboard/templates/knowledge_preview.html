@@ -1,0 +1,20 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="page-heading">
+  <div>
+    <p class="eyebrow">Safe plain-text preview</p>
+    <h1>{{ document.display_name }}</h1>
+  </div>
+  <a class="button secondary" href="{{ url_for('knowledge_detail', doc_key=document.doc_key) }}">Back</a>
+</div>
+{% if document.visibility != "public" %}
+<div class="alert warning">This preview contains {{ document.visibility }} material.</div>
+{% endif %}
+<section class="card">
+  {% if document.content %}
+  <pre class="document-preview">{{ document.content }}</pre>
+  {% else %}
+  <p class="muted">{{ document.error or "This document has no content." }}</p>
+  {% endif %}
+</section>
+{% endblock %}

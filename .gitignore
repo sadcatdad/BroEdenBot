@@ -36,3 +36,4 @@ __pycache__/
 *.zip
 staff_context.db
 message_context.db
+/backups/knowledge/

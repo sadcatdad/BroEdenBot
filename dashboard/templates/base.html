@@ -15,6 +15,7 @@
       <a class="{{ 'active' if current_path == '/settings' else '' }}" href="{{ url_for('settings') }}">Settings</a>
       <a class="{{ 'active' if current_path.startswith('/operations') else '' }}" href="{{ url_for('operations_page') }}">Operations</a>
       <a class="{{ 'active' if current_path.startswith('/stats') else '' }}" href="{{ url_for('stats_page') }}">Stats</a>
+      <a class="{{ 'active' if current_path.startswith('/knowledge') else '' }}" href="{{ url_for('knowledge_page') }}">Knowledge</a>
       <a class="{{ 'active' if current_path == '/bank' else '' }}" href="{{ url_for('bank') }}">Bank</a>
       <a class="{{ 'active' if current_path == '/imports' else '' }}" href="{{ url_for('imports') }}">Imports</a>
     </nav>

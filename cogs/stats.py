@@ -17,6 +17,7 @@ from discord.ext import commands, tasks
 from config import COLOR
 from utils.compact_roster import CompactRosterItem, render_compact_roster_pngs
 from utils.member_filter import current_member, member_filter_warning
+from utils.knowledge_manager import process_knowledge_reindex
 from utils.ranked_graphic import (
     RankedGraphicItem,
     RankedGraphicSection,
@@ -34,7 +35,7 @@ from utils.stats_manager import (
     initialize_stats_manager_schema,
     mark_action_processing,
     parse_stat_id,
-    pending_refresh_actions,
+    pending_dashboard_actions,
     replace_member_snapshot,
     update_stat_result,
 )
@@ -3351,24 +3352,34 @@ class Stats(commands.Cog):
 
     @tasks.loop(seconds=5)
     async def dashboard_action_worker(self) -> None:
-        actions = await asyncio.to_thread(pending_refresh_actions, 10)
+        actions = await asyncio.to_thread(pending_dashboard_actions, 10)
         for action in actions:
             action_id = int(action["id"])
             if not await asyncio.to_thread(mark_action_processing, action_id):
                 continue
             try:
                 payload = json.loads(action["payload_json"])
-                stat_id = str(payload.get("stat_id", ""))
-                success, message = await self._process_dashboard_stat_refresh(
-                    stat_id
-                )
+                if action["action_type"] == "refresh_stat":
+                    stat_id = str(payload.get("stat_id", ""))
+                    success, message = await self._process_dashboard_stat_refresh(
+                        stat_id
+                    )
+                elif action["action_type"] == "reindex_knowledge":
+                    success, message = await asyncio.to_thread(
+                        process_knowledge_reindex,
+                        payload,
+                    )
+                else:
+                    success = False
+                    message = "Unsupported dashboard action."
             except Exception as exc:
                 logger.exception(
-                    "Dashboard stat refresh action failed action_id=%s",
+                    "Dashboard action failed action_id=%s action_type=%s",
                     action_id,
+                    action.get("action_type"),
                 )
                 success = False
-                message = f"Refresh failed: {type(exc).__name__}"
+                message = f"Dashboard action failed: {type(exc).__name__}"
             await asyncio.to_thread(
                 complete_action,
                 action_id,

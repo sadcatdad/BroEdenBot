@@ -1,0 +1,55 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="page-heading">
+  <div>
+    <p class="eyebrow">{{ document.category }} · {{ document.visibility }}</p>
+    <h1>{{ document.display_name }}</h1>
+  </div>
+  <span class="badge status-{{ document.status }}">{{ document.status }}</span>
+</div>
+{% if message %}<div class="alert success">{{ message }}</div>{% endif %}
+{% if error %}<div class="alert error">{{ error }}</div>{% endif %}
+{% if document.visibility != "public" %}
+<div class="alert warning">This is {{ document.visibility }} material. Keep it inside the authenticated local dashboard.</div>
+{% endif %}
+
+<section class="card">
+  <p>{{ document.description }}</p>
+  <div class="detail-grid">
+    <div><span>Path</span><strong>{{ document.relative_path }}</strong></div>
+    <div><span>Editable</span><strong>{{ "Yes" if document.editable else "No" }}</strong></div>
+    <div><span>Last modified</span><strong>{{ document.modified_at or "—" }}</strong></div>
+    <div><span>File size</span><strong>{{ document.size_bytes }} bytes</strong></div>
+    <div><span>Word count</span><strong>{{ document.word_count }}</strong></div>
+    <div><span>Reindex supported</span><strong>{{ "Yes" if document.reindex_supported else "No" }}</strong></div>
+  </div>
+  {% if document.error %}<div class="alert error">{{ document.error }}</div>{% endif %}
+</section>
+
+<section class="card operation-actions">
+  <div>
+    <h2>Actions</h2>
+    <p class="muted">Edits are backed up before an atomic UTF-8 save.</p>
+  </div>
+  <div class="action-buttons">
+    <a class="button secondary" href="{{ url_for('knowledge_page') }}">Back to Knowledge</a>
+    <a class="button secondary" href="{{ url_for('knowledge_preview', doc_key=document.doc_key) }}">Preview</a>
+    {% if document.editable %}<a class="button" href="{{ url_for('knowledge_edit', doc_key=document.doc_key) }}">Edit</a>{% endif %}
+    {% if document.reindex_supported %}
+    <form method="post" action="{{ url_for('knowledge_reindex', doc_key=document.doc_key) }}">
+      <input type="hidden" name="csrf" value="{{ csrf_token }}">
+      <button class="button" type="submit">Queue reindex</button>
+    </form>
+    {% endif %}
+  </div>
+</section>
+
+<section class="card">
+  <h2>Content preview</h2>
+  {% if document.content %}
+  <pre class="document-preview">{{ document.content }}</pre>
+  {% else %}
+  <p class="muted">{{ document.error or "This document has no content." }}</p>
+  {% endif %}
+</section>
+{% endblock %}

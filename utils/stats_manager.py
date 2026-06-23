@@ -378,12 +378,30 @@ def export_stat_csv(stat_id: str) -> Optional[bytes]:
     return output.getvalue().encode("utf-8-sig")
 
 
-def pending_refresh_actions(limit: int = 10) -> list[dict[str, Any]]:
+def pending_dashboard_actions(limit: int = 10) -> list[dict[str, Any]]:
     initialize_stats_manager_schema()
     with _connect() as connection:
         rows = connection.execute(
             """
-            SELECT id, payload_json, requested_by, created_at
+            SELECT id, action_type, payload_json, requested_by, created_at
+            FROM dashboard_actions
+            WHERE action_type IN ('refresh_stat', 'reindex_knowledge')
+              AND status = 'pending'
+            ORDER BY id
+            LIMIT ?
+            """,
+            (limit,),
+        ).fetchall()
+    return [dict(row) for row in rows]
+
+
+def pending_refresh_actions(limit: int = 10) -> list[dict[str, Any]]:
+    """Compatibility wrapper for callers that only process stats refreshes."""
+    initialize_stats_manager_schema()
+    with _connect() as connection:
+        rows = connection.execute(
+            """
+            SELECT id, action_type, payload_json, requested_by, created_at
             FROM dashboard_actions
             WHERE action_type = 'refresh_stat' AND status = 'pending'
             ORDER BY id
