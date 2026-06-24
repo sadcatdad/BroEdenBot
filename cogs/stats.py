@@ -16,6 +16,10 @@ from discord.ext import commands, tasks
 
 from config import COLOR
 from utils.compact_roster import CompactRosterItem, render_compact_roster_pngs
+from utils.discord_metadata import (
+    record_discord_metadata_error,
+    save_discord_metadata_snapshot,
+)
 from utils.member_filter import current_member, member_filter_warning
 from utils.knowledge_manager import process_knowledge_reindex
 from utils.ranked_graphic import (
@@ -3536,6 +3540,10 @@ class Stats(commands.Cog):
                         process_knowledge_reindex,
                         payload,
                     )
+                elif action["action_type"] == "refresh_discord_metadata":
+                    success, message = await self._process_discord_metadata_refresh(
+                        payload,
+                    )
                 else:
                     success = False
                     message = "Unsupported dashboard action."
@@ -3557,6 +3565,114 @@ class Stats(commands.Cog):
     @dashboard_action_worker.before_loop
     async def before_dashboard_action_worker(self) -> None:
         await self.bot.wait_until_ready()
+
+    async def _process_discord_metadata_refresh(
+        self,
+        payload: dict,
+    ) -> tuple[bool, str]:
+        guild_id_text = str(payload.get("guild_id") or os.getenv("GUILD_ID", "")).strip()
+        guild = None
+        if guild_id_text.isdigit():
+            guild = self.bot.get_guild(int(guild_id_text))
+        if guild is None and len(getattr(self.bot, "guilds", [])) == 1:
+            guild = self.bot.guilds[0]
+        if guild is None:
+            message = (
+                "Could not load live Discord roles/channels. Check bot guild access "
+                "and GUILD_ID."
+            )
+            await asyncio.to_thread(record_discord_metadata_error, message)
+            return False, message
+
+        roles = self._discord_metadata_roles(guild)
+        categories, channels = self._discord_metadata_channels(guild)
+        await asyncio.to_thread(
+            save_discord_metadata_snapshot,
+            guild_id=str(guild.id),
+            guild_name=guild.name,
+            roles=roles,
+            categories=categories,
+            channels=channels,
+        )
+        return (
+            True,
+            "Discord metadata refreshed: "
+            f"{len(roles)} roles, {len(categories)} categories, {len(channels)} channels.",
+        )
+
+    def _discord_metadata_roles(self, guild: discord.Guild) -> list[dict]:
+        member_roles: dict[int, int] = defaultdict(int)
+        for member in getattr(guild, "members", []) or []:
+            for role in getattr(member, "roles", []) or []:
+                member_roles[int(role.id)] += 1
+        roles = []
+        for role in guild.roles:
+            if role.is_default():
+                continue
+            tags = getattr(role, "tags", None)
+            roles.append(
+                {
+                    "id": str(role.id),
+                    "name": role.name,
+                    "color": str(role.color),
+                    "position": int(role.position),
+                    "managed": bool(role.managed),
+                    "mentionable": bool(role.mentionable),
+                    "hoist": bool(role.hoist),
+                    "member_count": member_roles.get(int(role.id)),
+                    "is_bot_role": bool(getattr(tags, "bot_id", None)) if tags else False,
+                }
+            )
+        return sorted(roles, key=lambda item: int(item["position"]), reverse=True)
+
+    def _discord_metadata_channels(
+        self,
+        guild: discord.Guild,
+    ) -> tuple[list[dict], list[dict]]:
+        categories = []
+        channels = []
+        category_children: dict[int, list[str]] = defaultdict(list)
+
+        for channel in guild.channels:
+            if isinstance(channel, discord.CategoryChannel):
+                continue
+            parent = getattr(channel, "category", None)
+            channel_id = str(channel.id)
+            if parent is not None:
+                category_children[int(parent.id)].append(channel_id)
+            channels.append(
+                {
+                    "id": channel_id,
+                    "name": getattr(channel, "name", str(channel.id)),
+                    "type": str(getattr(channel, "type", "unknown")),
+                    "position": int(getattr(channel, "position", 0)),
+                    "parent_id": str(parent.id) if parent else None,
+                    "parent_name": parent.name if parent else None,
+                    "nsfw": bool(getattr(channel, "nsfw", False)),
+                    "archived": bool(getattr(channel, "archived", False)),
+                    "is_thread": isinstance(channel, discord.Thread),
+                }
+            )
+
+        for category in guild.categories:
+            child_ids = category_children.get(int(category.id), [])
+            categories.append(
+                {
+                    "id": str(category.id),
+                    "name": category.name,
+                    "position": int(category.position),
+                    "child_channel_ids": child_ids,
+                }
+            )
+
+        categories.sort(key=lambda item: int(item["position"]))
+        channels.sort(
+            key=lambda item: (
+                int(item["position"]),
+                str(item["name"]).casefold(),
+            )
+        )
+        return categories, channels
 
     async def _process_dashboard_stat_refresh(
         self,

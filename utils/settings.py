@@ -26,6 +26,7 @@ class SettingDefinition:
     default: str = ""
     minimum: Optional[int] = None
     editable: bool = True
+    title: str = ""
 
 
 SETTING_DEFINITIONS = (
@@ -194,60 +195,84 @@ SETTING_DEFINITIONS = (
         "dashboard_json",
         "json_ids",
         "Dashboard-managed Discord role IDs treated as administrators.",
+        title="Admin Roles",
     ),
     SettingDefinition(
         "staff_role_ids",
         "dashboard_json",
         "json_ids",
         "Dashboard-managed Discord role IDs treated as staff.",
+        title="Staff Roles",
     ),
     SettingDefinition(
         "bot_role_ids_excluded_from_stats",
         "dashboard_json",
         "json_ids",
         "Bot role IDs excluded from analytics and stats calculations.",
+        title="Excluded Bot Roles",
     ),
     SettingDefinition(
         "analytics_excluded_channel_ids",
         "dashboard_json",
         "json_ids",
         "Channel IDs excluded from analytics.",
+        title="Analytics Excluded Channels",
     ),
     SettingDefinition(
         "analytics_excluded_category_ids",
         "dashboard_json",
         "json_ids",
         "Category IDs whose child channels are excluded from analytics.",
+        title="Analytics Excluded Categories",
     ),
     SettingDefinition(
         "bank_allowed_role_ids",
         "dashboard_json",
         "json_ids",
         "Dashboard-managed roles allowed to use bank tools.",
+        title="Bank Allowed Roles",
     ),
     SettingDefinition(
         "bank_log_channel_id",
         "dashboard_json",
         "json_ids",
         "Dashboard-managed bank log channel ID.",
+        title="Bank Log Channel",
     ),
     SettingDefinition(
         "knowledge_allowed_channel_ids",
         "dashboard_json",
         "json_ids",
         "Channels allowed to use knowledge features.",
+        title="Knowledge Allowed Channels",
+    ),
+    SettingDefinition(
+        "knowledge_allowed_category_ids",
+        "dashboard_json",
+        "json_ids",
+        "Categories whose child channels are allowed to use knowledge features.",
+        title="Knowledge Allowed Categories",
     ),
     SettingDefinition(
         "ask_command_allowed_channel_ids",
         "dashboard_json",
         "json_ids",
         "Channels allowed to use /ask.",
+        title="/ask Allowed Channels",
+    ),
+    SettingDefinition(
+        "ask_command_allowed_category_ids",
+        "dashboard_json",
+        "json_ids",
+        "Categories whose child channels are allowed to use /ask.",
+        title="/ask Allowed Categories",
     ),
     SettingDefinition(
         "import_archive_path",
         "dashboard_json",
         "string",
         "Default local archive path for completed imports.",
+        title="Import Archive Path",
     ),
     SettingDefinition(
         "import_context_only_default",
@@ -255,6 +280,7 @@ SETTING_DEFINITIONS = (
         "bool",
         "Default import mode for context-only imports.",
         default="false",
+        title="Context-only Import Default",
     ),
 )
 DEFINITIONS_BY_KEY = {definition.key: definition for definition in SETTING_DEFINITIONS}
@@ -501,6 +527,7 @@ def settings_for_dashboard() -> dict[str, list[dict[str, object]]]:
                 "value_type": definition.value_type,
                 "description": definition.description,
                 "editable": definition.editable,
+                "title": definition.title or definition.key.replace("_", " ").title(),
             }
         )
     return sections

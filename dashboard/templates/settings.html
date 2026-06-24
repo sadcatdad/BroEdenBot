@@ -3,7 +3,7 @@
 <div class="page-heading">
   <div>
     <p class="eyebrow">Database-backed runtime configuration</p>
-    <h1>Settings</h1>
+    <h1>{{ page_title or "Settings" }}</h1>
   </div>
 </div>
 <p class="muted">Safe values are stored in SQLite and take priority over `.env`. Secrets and boot-only values are never editable here.</p>
@@ -12,6 +12,30 @@
 <div class="settings-layout">
 {% include "_settings_nav.html" %}
 <div>
+
+{% if discord_metadata %}
+<section class="card settings-section metadata-preview">
+  <div class="section-heading">
+    <div>
+      <p class="eyebrow">Live Discord metadata</p>
+      <h2>Discord Metadata Preview</h2>
+    </div>
+    <form method="post" action="{{ url_for('refresh_discord_metadata') }}">
+      <input type="hidden" name="csrf" value="{{ csrf_token }}">
+      <button class="button secondary" type="submit">Refresh Discord Metadata</button>
+    </form>
+  </div>
+  {% if discord_metadata.status.last_error %}
+  <div class="alert error">Could not load live Discord roles/channels. Check bot guild access and required intents. {{ discord_metadata.status.last_error }}</div>
+  {% endif %}
+  <div class="card-grid three compact-grid">
+    <article class="card soft-card"><p class="label">Roles loaded</p><p class="metric">{{ discord_metadata.status.roles_count or 0 }}</p></article>
+    <article class="card soft-card"><p class="label">Categories loaded</p><p class="metric">{{ discord_metadata.status.categories_count or 0 }}</p></article>
+    <article class="card soft-card"><p class="label">Channels loaded</p><p class="metric">{{ discord_metadata.status.channels_count or 0 }}</p></article>
+  </div>
+  <p class="muted">Last refreshed: {{ discord_metadata.status.last_refreshed_at or "Never" }}</p>
+</section>
+{% endif %}
 
 {% set section_titles = {
   "ask": "Ask",
@@ -25,8 +49,9 @@
   <h2>{{ section_titles[section_name] }}</h2>
   <div class="editable-settings">
     {% for setting in sections[section_name] %}
-    <div class="setting-row">
+    <div class="setting-row {{ 'setting-row-large' if setting.value_type == 'json_ids' else '' }}">
       <div class="setting-copy">
+        <h3>{{ setting.title }}</h3>
         <code>{{ setting.key }}</code>
         <p>{{ setting.description }}</p>
         <small>Effective value: <strong>{{ setting.value or "Not configured" }}</strong></small>
@@ -41,11 +66,11 @@
           <option value="true" {{ "selected" if setting.value == "true" else "" }}>true</option>
         </select>
         {% elif setting.key in ["admin_role_ids", "staff_role_ids", "bot_role_ids_excluded_from_stats", "bank_allowed_role_ids"] %}
-        <role-multi-select input-name="value" value='{{ setting.value|e }}'></role-multi-select>
+        <role-multi-select input-name="value" setting-key="{{ setting.key }}" value='{{ setting.value|e }}'></role-multi-select>
         {% elif setting.key in ["analytics_excluded_channel_ids", "knowledge_allowed_channel_ids", "ask_command_allowed_channel_ids", "bank_log_channel_id"] %}
-        <channel-multi-select input-name="value" value='{{ setting.value|e }}'></channel-multi-select>
-        {% elif setting.key == "analytics_excluded_category_ids" %}
-        <category-multi-select input-name="value" value='{{ setting.value|e }}'></category-multi-select>
+        <channel-multi-select input-name="value" setting-key="{{ setting.key }}" value='{{ setting.value|e }}'></channel-multi-select>
+        {% elif setting.key in ["analytics_excluded_category_ids", "knowledge_allowed_category_ids", "ask_command_allowed_category_ids"] %}
+        <category-multi-select input-name="value" setting-key="{{ setting.key }}" value='{{ setting.value|e }}'></category-multi-select>
         {% else %}
         <input
           name="value"
@@ -54,7 +79,7 @@
           inputmode="{{ 'numeric' if setting.value_type == 'int' else 'text' }}"
         >
         {% endif %}
-        <button class="button" type="submit">Save</button>
+        <div class="setting-actions"><button class="button" type="submit">Save</button></div>
       </form>
       {% else %}
       <div class="readonly-value">{{ setting.value or "Not configured" }}</div>

@@ -65,7 +65,7 @@ class DashboardRouteTests(unittest.TestCase):
 
     def test_login_and_settings_do_not_expose_secrets(self):
         self.login()
-        settings = self.client.get("/settings")
+        settings = self.client.get("/settings/permissions")
         self.assertEqual(settings.status_code, 200)
         self.assertIn("STAFF_AI_ALLOWED_ROLE_IDS", settings.text)
         self.assertIn("MESSAGE_CONTEXT_ALLOWED_ROLE_IDS", settings.text)

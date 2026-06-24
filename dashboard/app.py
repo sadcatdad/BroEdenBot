@@ -44,6 +44,8 @@ from dashboard.discord_metadata import (
     categories_metadata,
     channels_metadata,
     guild_structure,
+    picker_metadata,
+    queue_metadata_refresh,
     roles_metadata,
 )
 from dashboard.operations import (
@@ -195,6 +197,7 @@ def render_settings_page(
         "models",
         "dashboard_json",
     ),
+    **values: Any,
 ) -> HTMLResponse:
     message = request.session.pop("settings_message", None)
     error = request.session.pop("settings_error", None)
@@ -209,6 +212,7 @@ def render_settings_page(
             recent_changes=recent_setting_changes(),
             message=message,
             error=error,
+            **values,
         ),
     )
 
@@ -461,7 +465,7 @@ async def settings(request: Request) -> HTMLResponse:
     return render_settings_page(
         request,
         page_title="Bot Configuration",
-        visible_sections=("ask", "permissions", "vcxp", "models", "dashboard_json"),
+        visible_sections=("ask", "vcxp", "models"),
     )
 
 
@@ -484,6 +488,25 @@ async def settings_discord(request: Request) -> HTMLResponse:
         request,
         page_title="Discord Roles & Channels",
         visible_sections=("dashboard_json",),
+        discord_metadata=picker_metadata(),
+    )
+
+
+@app.post("/settings/discord/refresh", name="refresh_discord_metadata")
+async def refresh_discord_metadata(request: Request) -> RedirectResponse:
+    if redirect := login_redirect(request):
+        return redirect
+    await require_action_csrf(request)
+    action_id = queue_metadata_refresh(
+        str(request.session.get("dashboard_user", "dashboard"))
+    )
+    request.session["settings_message"] = (
+        f"Discord metadata refresh queued as dashboard action #{action_id}. "
+        "The live bot process will update the snapshot."
+    )
+    return RedirectResponse(
+        url=request.url_for("settings_discord"),
+        status_code=status.HTTP_303_SEE_OTHER,
     )
 
 

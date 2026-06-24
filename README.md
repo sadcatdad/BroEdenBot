@@ -1435,15 +1435,28 @@ configuration surfaces:
 Role, channel, and category pickers use local metadata endpoints only:
 `/api/discord/roles`, `/api/discord/channels`,
 `/api/discord/categories`, and `/api/discord/guild-structure`. These endpoints
-require dashboard login and return IDs, names, types, parent category IDs, and
-sort positions when the local database contains them. Missing or deleted
-objects are preserved and displayed as `Missing: <id>` so operators can remove
-stale values deliberately; the dashboard does not silently delete saved IDs.
+require dashboard login and return the latest live-guild snapshot written by
+the running Discord bot: role color, position, managed/mentionable/hoist flags,
+member count when available, channel type, parent category, NSFW/thread flags,
+and Discord sort order. Historical import channels are not used as selector
+options. Missing or deleted saved objects are displayed separately as missing
+saved items so operators can remove stale values deliberately; the dashboard
+does not silently delete saved IDs.
+
+Settings → Discord Roles & Channels includes a Discord Metadata Preview showing
+roles, categories, channels, last refresh time, and the latest refresh error if
+one exists. The Refresh Discord Metadata button queues the fixed
+`refresh_discord_metadata` dashboard action. The live bot process handles that
+action from its existing dashboard action worker and snapshots current guild
+roles/channels/categories into SQLite. The FastAPI dashboard still does not
+start a second Discord client and does not expose arbitrary API calls.
 
 Channel settings and category settings are stored separately. A channel is
 treated as selected when either its own channel ID is selected or its parent
 category ID is selected, which lets future channels added under a selected
-category inherit that setting automatically.
+category inherit that setting automatically. Parallel category settings include
+`analytics_excluded_category_ids`, `knowledge_allowed_category_ids`, and
+`ask_command_allowed_category_ids`.
 
 `GUILD_ID`, `MODAI_MODEL`, `MODAI_FALLBACK_MODEL`, `ASK_MODEL`, and
 `ASK_FALLBACK_MODEL` remain read-only displays. `DISCORD_TOKEN`,

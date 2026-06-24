@@ -19,7 +19,8 @@ maintenance.
   bootstrap, allowlisted Discord OAuth identities, role-aware write
   protection, safe configuration, fixed service controls, redacted logs,
   SQLite backups, stats management, an allowlisted Knowledge Manager, and
-  aggregate server analytics.
+  aggregate server analytics. Discord role/channel pickers read a live-guild
+  metadata snapshot written by the bot, not historical import tables.
 - `dashboard/users.py` — Dashboard user schema, PBKDF2 password bootstrap,
   Discord identity linking, active/disabled status, and owner/admin/viewer
   roles.
@@ -78,6 +79,9 @@ maintenance.
   foreign-key setup for async SQLite connections.
 - `utils/settings.py` — Allowlisted, validated runtime settings stored in
   `data.db`, with environment fallback and a non-secret dashboard audit trail.
+- `utils/discord_metadata.py` — Shared SQLite snapshot and fixed dashboard
+  action helpers for live Discord roles, categories, and channels used by the
+  dashboard settings pickers.
 - `utils/stats_manager.py` — Non-destructive dashboard management for existing
   tracked stats graphics, queued bot-side refreshes, archives, and member
   snapshot CSV exports.

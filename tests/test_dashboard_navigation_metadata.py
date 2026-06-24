@@ -12,6 +12,7 @@ from dashboard.app import app
 from dashboard.discord_metadata import channel_matches_selection
 from dashboard.users import initialize_dashboard_users
 from utils.settings import get_setting, initialize_settings_from_env
+from utils.discord_metadata import save_discord_metadata_snapshot
 
 
 class DashboardNavigationMetadataTests(unittest.TestCase):
@@ -54,48 +55,44 @@ class DashboardNavigationMetadataTests(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
 
     def create_discord_snapshot(self):
-        connection = sqlite3.connect(self.database)
-        connection.executescript(
-            """
-            CREATE TABLE dashboard_discord_roles (
-                id TEXT PRIMARY KEY,
-                name TEXT,
-                position INTEGER
-            );
-            CREATE TABLE dashboard_discord_categories (
-                id TEXT PRIMARY KEY,
-                name TEXT,
-                position INTEGER
-            );
-            CREATE TABLE dashboard_discord_channels (
-                id TEXT PRIMARY KEY,
-                name TEXT,
-                type TEXT,
-                parent_id TEXT,
-                position INTEGER
-            );
-            """
+        save_discord_metadata_snapshot(
+            guild_id="123456789012345678",
+            guild_name="Bro Eden",
+            roles=[
+                {
+                    "id": "111111111111111111",
+                    "name": "Staff",
+                    "color": "#ff00ff",
+                    "position": 10,
+                    "managed": False,
+                    "mentionable": True,
+                    "hoist": True,
+                    "member_count": 7,
+                    "is_bot_role": False,
+                }
+            ],
+            categories=[
+                {
+                    "id": "222222222222222222",
+                    "name": "Tickets",
+                    "position": 2,
+                    "child_channel_ids": ["333333333333333333"],
+                }
+            ],
+            channels=[
+                {
+                    "id": "333333333333333333",
+                    "name": "help-desk",
+                    "type": "text",
+                    "parent_id": "222222222222222222",
+                    "parent_name": "Tickets",
+                    "position": 3,
+                    "nsfw": False,
+                    "archived": False,
+                    "is_thread": False,
+                }
+            ],
         )
-        connection.execute(
-            "INSERT INTO dashboard_discord_roles VALUES (?, ?, ?)",
-            ("111111111111111111", "Staff", 1),
-        )
-        connection.execute(
-            "INSERT INTO dashboard_discord_categories VALUES (?, ?, ?)",
-            ("222222222222222222", "Tickets", 2),
-        )
-        connection.execute(
-            "INSERT INTO dashboard_discord_channels VALUES (?, ?, ?, ?, ?)",
-            (
-                "333333333333333333",
-                "help-desk",
-                "text",
-                "222222222222222222",
-                3,
-            ),
-        )
-        connection.commit()
-        connection.close()
 
     def test_top_level_nav_and_settings_sidebar_labels_render(self):
         self.login()
@@ -161,9 +158,11 @@ class DashboardNavigationMetadataTests(unittest.TestCase):
         self.assertEqual(categories.status_code, 200)
         self.assertEqual(structure.status_code, 200)
         self.assertEqual(roles.json()[0]["name"], "Staff")
+        self.assertEqual(roles.json()[0]["color"], "#ff00ff")
+        self.assertEqual(roles.json()[0]["member_count"], 7)
         self.assertEqual(channels.json()[0]["parent_id"], "222222222222222222")
-        self.assertEqual(categories.json()[0]["type"], "category")
-        self.assertIn("roles", structure.json())
+        self.assertEqual(categories.json()[0]["child_channel_ids"], ["333333333333333333"])
+        self.assertEqual(structure.json()["categories"][0]["channels"][0]["name"], "help-desk")
 
     def test_json_settings_save_and_stale_ids_are_preserved(self):
         self.login()
@@ -182,8 +181,49 @@ class DashboardNavigationMetadataTests(unittest.TestCase):
         self.assertEqual(get_setting("analytics_excluded_category_ids"), '["444444444444444444"]')
 
         categories = self.client.get("/api/discord/categories").json()
-        self.assertEqual(categories[0]["name"], "Missing: 444444444444444444")
-        self.assertTrue(categories[0]["missing"])
+        self.assertEqual(categories, [])
+        settings = self.client.get("/settings/discord")
+        self.assertIn("analytics_excluded_category_ids", settings.text)
+
+    def test_imported_channels_are_not_selector_options(self):
+        connection = sqlite3.connect(self.database)
+        connection.execute(
+            """
+            CREATE TABLE stats_message_activity (
+                guild_id INTEGER,
+                channel_id INTEGER,
+                channel_name TEXT
+            )
+            """
+        )
+        connection.execute(
+            "INSERT INTO stats_message_activity VALUES (1, 555555555555555555, 'import-only')"
+        )
+        connection.commit()
+        connection.close()
+
+        self.login()
+        channels = self.client.get("/api/discord/channels").json()
+        self.assertEqual(channels, [])
+
+    def test_refresh_discord_metadata_queues_fixed_action(self):
+        self.login()
+        page = self.client.get("/settings/discord")
+        token = re.search(r'name="csrf" value="([^"]+)"', page.text).group(1)
+        response = self.client.post(
+            "/settings/discord/refresh",
+            data={"csrf": token, "action_type": "whoami"},
+            follow_redirects=False,
+        )
+        self.assertEqual(response.status_code, 303)
+        connection = sqlite3.connect(self.database)
+        row = connection.execute(
+            "SELECT action_type, payload_json, status FROM dashboard_actions"
+        ).fetchone()
+        connection.close()
+        self.assertEqual(row[0], "refresh_discord_metadata")
+        self.assertEqual(row[1], "{}")
+        self.assertEqual(row[2], "pending")
 
     def test_category_selection_matches_child_channels(self):
         self.assertTrue(

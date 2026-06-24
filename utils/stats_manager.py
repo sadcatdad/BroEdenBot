@@ -385,7 +385,11 @@ def pending_dashboard_actions(limit: int = 10) -> list[dict[str, Any]]:
             """
             SELECT id, action_type, payload_json, requested_by, created_at
             FROM dashboard_actions
-            WHERE action_type IN ('refresh_stat', 'reindex_knowledge')
+            WHERE action_type IN (
+                'refresh_stat',
+                'reindex_knowledge',
+                'refresh_discord_metadata'
+            )
               AND status = 'pending'
             ORDER BY id
             LIMIT ?
