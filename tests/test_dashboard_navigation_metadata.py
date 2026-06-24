@@ -106,6 +106,11 @@ class DashboardNavigationMetadataTests(unittest.TestCase):
 
         settings = self.client.get("/settings")
         self.assertEqual(settings.status_code, 200)
+        self.assertIn('class="settings-layout"', settings.text)
+        self.assertIn('class="settings-sidebar"', settings.text)
+        self.assertIn('class="settings-menu"', settings.text)
+        self.assertIn('class="settings-menu-item active"', settings.text)
+        self.assertIn('aria-current="page"', settings.text)
         for label in (
             "Bot Configuration",
             "Permissions &amp; Access",
@@ -237,6 +242,11 @@ class DashboardNavigationMetadataTests(unittest.TestCase):
         self.assertIn(".discord-picker-panel[hidden] { display: none; }", styles)
         self.assertIn(".discord-picker-option {\n  display: flex;", styles)
         self.assertIn(".discord-picker-category-row", styles)
+        self.assertIn(".settings-sidebar", styles)
+        self.assertIn(".settings-menu-item", styles)
+        self.assertIn("text-decoration: none", styles)
+        base_template = (root / "dashboard/templates/base.html").read_text()
+        self.assertIn("styles.css') }}?v=settings-sidebar1", base_template)
 
     def test_category_selection_matches_child_channels(self):
         self.assertTrue(

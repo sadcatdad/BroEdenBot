@@ -187,32 +187,61 @@ th { color: var(--muted); font-size: .73rem; letter-spacing: .06em; text-transfo
 .settings-section { margin-bottom: 1rem; }
 .settings-layout {
   display: grid;
-  grid-template-columns: 240px minmax(0, 1fr);
-  gap: 1.15rem;
+  grid-template-columns: minmax(220px, 280px) minmax(0, 1fr);
+  gap: 1.35rem;
   align-items: start;
 }
-.sidebar-nav {
+.settings-layout > div:last-child { min-width: 0; }
+.settings-sidebar {
   position: sticky;
   top: 5.2rem;
+  align-self: start;
+  padding: 1rem;
+  background:
+    radial-gradient(circle at 0 0, rgba(240, 49, 155, .16), transparent 34%),
+    linear-gradient(180deg, #1b1c25, var(--panel));
+  border: 1px solid rgba(255, 255, 255, .1);
+  border-radius: 1.1rem;
+  box-shadow: 0 18px 50px rgba(0, 0, 0, .28);
+}
+.settings-sidebar-heading {
+  margin-bottom: .85rem;
+  padding: .15rem .2rem .75rem;
+  border-bottom: 1px solid var(--border);
+}
+.settings-sidebar-heading strong {
+  display: block;
+  margin-top: .25rem;
+  font-size: 1.05rem;
+}
+.settings-menu {
   display: grid;
   gap: .35rem;
-  padding: .85rem;
-  background: linear-gradient(180deg, #1b1c25, var(--panel));
-  border: 1px solid var(--border);
-  border-radius: 1rem;
-  box-shadow: 0 18px 50px rgba(0, 0, 0, .22);
 }
-.sidebar-nav a {
-  padding: .68rem .75rem;
+.settings-menu-item {
+  display: flex;
+  align-items: center;
+  min-height: 2.65rem;
+  padding: .72rem .85rem;
   color: var(--muted);
   border: 1px solid transparent;
-  border-radius: .7rem;
+  border-radius: .78rem;
   text-decoration: none;
+  font-weight: 750;
+  line-height: 1.2;
+  transition: background .15s ease, border-color .15s ease, color .15s ease, transform .15s ease;
 }
-.sidebar-nav a:hover, .sidebar-nav a.active {
+.settings-menu-item:hover,
+.settings-menu-item:focus-visible,
+.settings-menu-item.active {
   color: var(--text);
   background: var(--panel-soft);
-  border-color: var(--border);
+  border-color: rgba(240, 49, 155, .38);
+  box-shadow: inset 3px 0 0 var(--accent);
+}
+.settings-menu-item:hover,
+.settings-menu-item:focus-visible {
+  transform: translateX(2px);
 }
 .editable-settings { display: grid; }
 .setting-row {
@@ -516,11 +545,19 @@ details summary { color: var(--muted); cursor: pointer; }
   .card-grid, .card-grid.three { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .two-column { grid-template-columns: 1fr; }
   .settings-layout { grid-template-columns: 1fr; }
-  .sidebar-nav {
+  .settings-sidebar {
     position: static;
+  }
+  .settings-sidebar-heading { margin-bottom: .7rem; }
+  .settings-menu {
     grid-auto-flow: column;
     grid-auto-columns: max-content;
     overflow-x: auto;
+    padding-bottom: .1rem;
+  }
+  .settings-menu-item:hover,
+  .settings-menu-item:focus-visible {
+    transform: none;
   }
   .setting-row, .setting-row-large { grid-template-columns: 1fr; }
   .discord-picker-controls { grid-template-columns: 1fr; }
