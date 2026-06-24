@@ -1310,8 +1310,14 @@ notify anyone.
 The local FastAPI dashboard provides shared-database status, bank overview,
 historical-import status, database-backed editing for an explicit allowlist of
 safe runtime settings, stats graphics management, and an allowlisted local
-Knowledge Manager. It does not edit `.env`, modify bank records, expose Discord
-or Gemini secrets, or provide public hosting.
+Knowledge Base manager. It does not edit `.env`, modify bank records, expose
+Discord or Gemini secrets, or provide public hosting.
+
+The top-level dashboard tabs are Overview, Operations, Analytics, Bank, and
+Settings. Stats Graphics lives under Analytics. Knowledge Base, Imports, and
+Dashboard Users live under Settings. The older `/stats`, `/knowledge`,
+`/imports`, and `/users` links redirect to their new locations so existing
+bookmarks remain usable.
 
 Set these values in the project-root `.env` and replace the placeholder
 password and signing key before using the dashboard. When
@@ -1397,18 +1403,47 @@ Discord login is confirmed working, and never share
 
 ### Phase 1.5 runtime settings
 
-The Settings page groups editable values under Ask, Permissions, and VC XP.
-Updates are validated, stored as text in the shared `data.db` `bot_settings`
-table, and recorded in `bot_settings_audit` when the value changes. Existing
-database values are never overwritten during environment seeding. The bot
-reads these safe values from SQLite first and falls back to `.env` only when a
-database row is missing.
+The Settings section has sidebar entries for Bot Configuration, Permissions &
+Access, Discord Roles & Channels, Knowledge Base, Imports, Dashboard Users,
+and Advanced. Updates are validated, stored as text in the shared `data.db`
+`bot_settings` table, and recorded in `bot_settings_audit` when the value
+changes. Existing database values are never overwritten during environment
+seeding. The bot reads these safe values from SQLite first and falls back to
+`.env` only when a database row is missing.
 
 Editable settings include `/ask` channels and cooldown, staff/owner permission
 IDs, and VC XP role-pulse controls. Discord ID lists accept blank values or
 comma-separated 17-20 digit IDs and remove spaces when saved. Integer and
 boolean values are range-checked. Changes take effect through runtime setting
 lookups; the dashboard does not automatically restart the bot.
+
+Dashboard-managed JSON settings are also stored in `bot_settings` for future
+configuration surfaces:
+
+- `admin_role_ids`
+- `staff_role_ids`
+- `bot_role_ids_excluded_from_stats`
+- `analytics_excluded_channel_ids`
+- `analytics_excluded_category_ids`
+- `bank_allowed_role_ids`
+- `bank_log_channel_id`
+- `knowledge_allowed_channel_ids`
+- `ask_command_allowed_channel_ids`
+- `import_archive_path`
+- `import_context_only_default`
+
+Role, channel, and category pickers use local metadata endpoints only:
+`/api/discord/roles`, `/api/discord/channels`,
+`/api/discord/categories`, and `/api/discord/guild-structure`. These endpoints
+require dashboard login and return IDs, names, types, parent category IDs, and
+sort positions when the local database contains them. Missing or deleted
+objects are preserved and displayed as `Missing: <id>` so operators can remove
+stale values deliberately; the dashboard does not silently delete saved IDs.
+
+Channel settings and category settings are stored separately. A channel is
+treated as selected when either its own channel ID is selected or its parent
+category ID is selected, which lets future channels added under a selected
+category inherit that setting automatically.
 
 `GUILD_ID`, `MODAI_MODEL`, `MODAI_FALLBACK_MODEL`, `ASK_MODEL`, and
 `ASK_FALLBACK_MODEL` remain read-only displays. `DISCORD_TOKEN`,
@@ -1480,9 +1515,9 @@ tightened and the fixed read commands are updated accordingly.
 
 ### Stats Graphics Manager
 
-The authenticated Stats page manages the bot's existing tracked role rosters,
-role-comparison and missing-role graphics, and tracked activity reports. It
-reuses `role_stat_embeds`, `tracked_stats_reports`, and
+The authenticated Analytics → Stats Graphics page manages the bot's existing
+tracked role rosters, role-comparison and missing-role graphics, and tracked
+activity reports. It reuses `role_stat_embeds`, `tracked_stats_reports`, and
 `tracked_activity_reports`; it does not create a parallel stats system.
 
 Tracked items use dashboard IDs such as `roster-12`, `report-4`, and
@@ -1518,9 +1553,10 @@ surface.
 
 ### Knowledge Base / Guide Manager
 
-The authenticated Knowledge page lists only a fixed source-code allowlist. It
-does not accept paths, browse directories, follow symlinks outside the project,
-or expose a file-download route. The allowlist includes:
+The authenticated Settings → Knowledge Base page lists only a fixed
+source-code allowlist. It does not accept paths, browse directories, follow
+symlinks outside the project, or expose a file-download route. The allowlist
+includes:
 
 - Public bot knowledge: `data/knowledge/rules.md` and
   `data/knowledge/survival_guide.md`.
@@ -1584,6 +1620,10 @@ voice summary, and data freshness. Separate pages provide:
   weekly summaries, and recent session metadata.
 - A server-rendered UTC day-of-week/hour heatmap with no JavaScript chart
   dependency.
+
+The Analytics sidebar contains Overview, Activity Analytics, Stats Graphics,
+VC Analytics, and Exports. Channel, member, and heatmap drilldowns remain
+available from Activity Analytics.
 
 Allowed text ranges are 7 days, 30 days, 90 days, 1 year, and all time. The
 heatmap supports 30 days, 90 days, 1 year, and all time. Leaderboards accept

@@ -9,14 +9,18 @@
 <p class="muted">Safe values are stored in SQLite and take priority over `.env`. Secrets and boot-only values are never editable here.</p>
 {% if message %}<div class="alert success">{{ message }}</div>{% endif %}
 {% if error %}<div class="alert error">{{ error }}</div>{% endif %}
+<div class="settings-layout">
+{% include "_settings_nav.html" %}
+<div>
 
 {% set section_titles = {
   "ask": "Ask",
   "permissions": "Permissions",
   "vcxp": "VC XP",
-  "models": "Models / Read-only"
+  "models": "Models / Read-only",
+  "dashboard_json": "Dashboard-managed JSON settings"
 } %}
-{% for section_name in ("ask", "permissions", "vcxp", "models") %}
+{% for section_name in visible_sections %}
 <section class="card settings-section">
   <h2>{{ section_titles[section_name] }}</h2>
   <div class="editable-settings">
@@ -36,6 +40,12 @@
           <option value="false" {{ "selected" if setting.value == "false" else "" }}>false</option>
           <option value="true" {{ "selected" if setting.value == "true" else "" }}>true</option>
         </select>
+        {% elif setting.key in ["admin_role_ids", "staff_role_ids", "bot_role_ids_excluded_from_stats", "bank_allowed_role_ids"] %}
+        <role-multi-select input-name="value" value='{{ setting.value|e }}'></role-multi-select>
+        {% elif setting.key in ["analytics_excluded_channel_ids", "knowledge_allowed_channel_ids", "ask_command_allowed_channel_ids", "bank_log_channel_id"] %}
+        <channel-multi-select input-name="value" value='{{ setting.value|e }}'></channel-multi-select>
+        {% elif setting.key == "analytics_excluded_category_ids" %}
+        <category-multi-select input-name="value" value='{{ setting.value|e }}'></category-multi-select>
         {% else %}
         <input
           name="value"
@@ -78,4 +88,6 @@
   <p class="muted">No dashboard setting changes recorded yet.</p>
   {% endif %}
 </section>
+</div>
+</div>
 {% endblock %}

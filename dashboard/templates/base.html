@@ -5,6 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>{{ page_title or "Login" }} · BroEdenBot</title>
   <link rel="stylesheet" href="{{ url_for('static', path='styles.css') }}?v=oauth1">
+  <script src="{{ url_for('static', path='discord_pickers.js') }}?v=nav1" defer></script>
 </head>
 <body>
   {% if authenticated %}
@@ -12,14 +13,10 @@
     <a class="brand" href="{{ url_for('home') }}">BroEdenBot</a>
     <nav aria-label="Dashboard navigation">
       <a class="{{ 'active' if current_path == '/' else '' }}" href="{{ url_for('home') }}">Overview</a>
-      <a class="{{ 'active' if current_path == '/settings' else '' }}" href="{{ url_for('settings') }}">Settings</a>
       <a class="{{ 'active' if current_path.startswith('/operations') else '' }}" href="{{ url_for('operations_page') }}">Operations</a>
-      <a class="{{ 'active' if current_path.startswith('/stats') else '' }}" href="{{ url_for('stats_page') }}">Stats</a>
-      <a class="{{ 'active' if current_path.startswith('/knowledge') else '' }}" href="{{ url_for('knowledge_page') }}">Knowledge</a>
       <a class="{{ 'active' if current_path.startswith('/analytics') else '' }}" href="{{ url_for('analytics_page') }}">Analytics</a>
       <a class="{{ 'active' if current_path == '/bank' else '' }}" href="{{ url_for('bank') }}">Bank</a>
-      <a class="{{ 'active' if current_path == '/imports' else '' }}" href="{{ url_for('imports') }}">Imports</a>
-      {% if can_manage_users %}<a class="{{ 'active' if current_path == '/users' else '' }}" href="{{ url_for('users_page') }}">Users</a>{% endif %}
+      <a class="{{ 'active' if current_path.startswith('/settings') else '' }}" href="{{ url_for('settings') }}">Settings</a>
     </nav>
     {% if current_user %}
     <div class="session-user">

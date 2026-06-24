@@ -40,6 +40,12 @@ from dashboard.db import (
     find_database_path,
     import_history,
 )
+from dashboard.discord_metadata import (
+    categories_metadata,
+    channels_metadata,
+    guild_structure,
+    roles_metadata,
+)
 from dashboard.operations import (
     backup_database,
     operations_database_status,
@@ -77,6 +83,7 @@ from utils.analytics import (
     validate_range,
 )
 from utils.settings import (
+    DEFINITIONS_BY_KEY,
     EDITABLE_SETTING_KEYS,
     initialize_settings_from_env,
     is_forbidden_key,
@@ -175,6 +182,44 @@ def template_context(request: Request, **values: Any) -> dict[str, Any]:
         "csrf_token": csrf_token(request),
         **values,
     }
+
+
+def render_settings_page(
+    request: Request,
+    *,
+    page_title: str = "Settings",
+    visible_sections: tuple[str, ...] = (
+        "ask",
+        "permissions",
+        "vcxp",
+        "models",
+        "dashboard_json",
+    ),
+) -> HTMLResponse:
+    message = request.session.pop("settings_message", None)
+    error = request.session.pop("settings_error", None)
+    return templates.TemplateResponse(
+        request=request,
+        name="settings.html",
+        context=template_context(
+            request,
+            page_title=page_title,
+            sections=settings_for_dashboard(),
+            visible_sections=visible_sections,
+            recent_changes=recent_setting_changes(),
+            message=message,
+            error=error,
+        ),
+    )
+
+
+def settings_redirect_for_key(request: Request, key: str) -> str:
+    definition = DEFINITIONS_BY_KEY.get(key)
+    if definition and definition.section == "dashboard_json":
+        return str(request.url_for("settings_discord"))
+    if definition and definition.section == "permissions":
+        return str(request.url_for("settings_permissions"))
+    return str(request.url_for("settings"))
 
 
 def login_redirect(request: Request) -> RedirectResponse | None:
@@ -344,7 +389,15 @@ async def logout(request: Request, csrf: str = Form(...)) -> RedirectResponse:
     )
 
 
-@app.get("/users", response_class=HTMLResponse, name="users_page")
+@app.get("/users", response_class=HTMLResponse, name="users_legacy")
+async def users_redirect(request: Request) -> RedirectResponse:
+    return RedirectResponse(
+        url=request.url_for("users_page"),
+        status_code=status.HTTP_303_SEE_OTHER,
+    )
+
+
+@app.get("/settings/users", response_class=HTMLResponse, name="users_page")
 async def users_page(request: Request) -> HTMLResponse:
     if redirect := login_redirect(request):
         return redirect
@@ -405,19 +458,43 @@ async def home(request: Request) -> HTMLResponse:
 async def settings(request: Request) -> HTMLResponse:
     if redirect := login_redirect(request):
         return redirect
-    message = request.session.pop("settings_message", None)
-    error = request.session.pop("settings_error", None)
-    return templates.TemplateResponse(
-        request=request,
-        name="settings.html",
-        context=template_context(
-            request,
-            page_title="Settings",
-            sections=settings_for_dashboard(),
-            recent_changes=recent_setting_changes(),
-            message=message,
-            error=error,
-        ),
+    return render_settings_page(
+        request,
+        page_title="Bot Configuration",
+        visible_sections=("ask", "permissions", "vcxp", "models", "dashboard_json"),
+    )
+
+
+@app.get("/settings/permissions", response_class=HTMLResponse, name="settings_permissions")
+async def settings_permissions(request: Request) -> HTMLResponse:
+    if redirect := login_redirect(request):
+        return redirect
+    return render_settings_page(
+        request,
+        page_title="Permissions & Access",
+        visible_sections=("permissions",),
+    )
+
+
+@app.get("/settings/discord", response_class=HTMLResponse, name="settings_discord")
+async def settings_discord(request: Request) -> HTMLResponse:
+    if redirect := login_redirect(request):
+        return redirect
+    return render_settings_page(
+        request,
+        page_title="Discord Roles & Channels",
+        visible_sections=("dashboard_json",),
+    )
+
+
+@app.get("/settings/advanced", response_class=HTMLResponse, name="settings_advanced")
+async def settings_advanced(request: Request) -> HTMLResponse:
+    if redirect := login_redirect(request):
+        return redirect
+    return render_settings_page(
+        request,
+        page_title="Advanced Settings",
+        visible_sections=("ask", "permissions", "vcxp", "models", "dashboard_json"),
     )
 
 
@@ -442,7 +519,7 @@ async def update_setting(request: Request) -> RedirectResponse:
     else:
         request.session["settings_message"] = f"{key} saved as {normalized or '(blank)'}."
     return RedirectResponse(
-        url=request.url_for("settings"),
+        url=settings_redirect_for_key(request, key),
         status_code=status.HTTP_303_SEE_OTHER,
     )
 
@@ -562,6 +639,65 @@ async def analytics_page(
             range_key=range_key,
             limit=limit,
             analytics=get_analytics_overview(range_key),
+        ),
+    )
+
+
+@app.get("/analytics/exports", response_class=HTMLResponse, name="analytics_exports")
+async def analytics_exports(
+    request: Request,
+    range: str = "30d",
+) -> HTMLResponse:
+    if redirect := login_redirect(request):
+        return redirect
+    range_key, limit = analytics_parameters(range, 25)
+    exports = [
+        {
+            "type": "overview",
+            "range": range_key,
+            "label": "Overview",
+            "description": "Top-level server activity metrics.",
+        },
+        {
+            "type": "activity",
+            "range": range_key,
+            "label": "Activity Analytics",
+            "description": "Daily, weekly, and monthly message counts.",
+        },
+        {
+            "type": "channels",
+            "range": range_key,
+            "label": "Channels",
+            "description": "Aggregated channel leaderboard.",
+        },
+        {
+            "type": "members",
+            "range": range_key,
+            "label": "Members",
+            "description": "Aggregated member leaderboard.",
+        },
+        {
+            "type": "voice",
+            "range": range_key,
+            "label": "VC Analytics",
+            "description": "Completed voice session summaries.",
+        },
+        {
+            "type": "heatmap",
+            "range": "90d" if range_key == "7d" else range_key,
+            "label": "Heatmap",
+            "description": "Activity heatmap export.",
+        },
+    ]
+    return templates.TemplateResponse(
+        request=request,
+        name="analytics_exports.html",
+        context=analytics_context(
+            request,
+            page_title="Analytics Exports",
+            range_key=range_key,
+            limit=limit,
+            exports=exports,
         ),
     )
 
@@ -715,7 +851,12 @@ async def analytics_export(
     )
 
 
-@app.get("/knowledge", response_class=HTMLResponse, name="knowledge_page")
+@app.get("/knowledge", response_class=HTMLResponse, name="knowledge_legacy")
+async def knowledge_legacy(request: Request) -> RedirectResponse:
+    return knowledge_redirect(request)
+
+
+@app.get("/settings/knowledge", response_class=HTMLResponse, name="knowledge_page")
 async def knowledge_page(request: Request) -> HTMLResponse:
     if redirect := login_redirect(request):
         return redirect
@@ -724,7 +865,7 @@ async def knowledge_page(request: Request) -> HTMLResponse:
         name="knowledge.html",
         context=template_context(
             request,
-            page_title="Knowledge",
+            page_title="Knowledge Base",
             documents=list_documents(),
             recent_audit=recent_knowledge_audit(),
             message=request.session.pop("knowledge_message", None),
@@ -733,8 +874,13 @@ async def knowledge_page(request: Request) -> HTMLResponse:
     )
 
 
+@app.get("/knowledge/{doc_key}", response_class=HTMLResponse, name="knowledge_detail_legacy")
+async def knowledge_detail_legacy(request: Request, doc_key: str) -> RedirectResponse:
+    return knowledge_redirect(request, doc_key)
+
+
 @app.get(
-    "/knowledge/{doc_key}",
+    "/settings/knowledge/{doc_key}",
     response_class=HTMLResponse,
     name="knowledge_detail",
 )
@@ -755,8 +901,16 @@ async def knowledge_detail(request: Request, doc_key: str) -> HTMLResponse:
     )
 
 
+@app.get("/knowledge/{doc_key}/preview", response_class=HTMLResponse, name="knowledge_preview_legacy")
+async def knowledge_preview_legacy(request: Request, doc_key: str) -> RedirectResponse:
+    return RedirectResponse(
+        url=request.url_for("knowledge_preview", doc_key=doc_key),
+        status_code=status.HTTP_303_SEE_OTHER,
+    )
+
+
 @app.get(
-    "/knowledge/{doc_key}/preview",
+    "/settings/knowledge/{doc_key}/preview",
     response_class=HTMLResponse,
     name="knowledge_preview",
 )
@@ -775,8 +929,16 @@ async def knowledge_preview(request: Request, doc_key: str) -> HTMLResponse:
     )
 
 
+@app.get("/knowledge/{doc_key}/edit", response_class=HTMLResponse, name="knowledge_edit_legacy")
+async def knowledge_edit_legacy(request: Request, doc_key: str) -> RedirectResponse:
+    return RedirectResponse(
+        url=request.url_for("knowledge_edit", doc_key=doc_key),
+        status_code=status.HTTP_303_SEE_OTHER,
+    )
+
+
 @app.get(
-    "/knowledge/{doc_key}/edit",
+    "/settings/knowledge/{doc_key}/edit",
     response_class=HTMLResponse,
     name="knowledge_edit",
 )
@@ -865,7 +1027,12 @@ async def knowledge_reindex_all(request: Request) -> RedirectResponse:
     return knowledge_redirect(request)
 
 
-@app.get("/stats", response_class=HTMLResponse, name="stats_page")
+@app.get("/stats", response_class=HTMLResponse, name="stats_legacy")
+async def stats_legacy(request: Request) -> RedirectResponse:
+    return stats_redirect(request)
+
+
+@app.get("/analytics/stats", response_class=HTMLResponse, name="stats_page")
 async def stats_page(request: Request) -> HTMLResponse:
     if redirect := login_redirect(request):
         return redirect
@@ -875,6 +1042,8 @@ async def stats_page(request: Request) -> HTMLResponse:
         context=template_context(
             request,
             page_title="Stats Graphics",
+            range_key="30d",
+            limit=25,
             stats=list_stats(),
             message=request.session.pop("stats_message", None),
             error=request.session.pop("stats_error", None),
@@ -882,7 +1051,12 @@ async def stats_page(request: Request) -> HTMLResponse:
     )
 
 
-@app.get("/stats/{stat_id}", response_class=HTMLResponse, name="stats_detail")
+@app.get("/stats/{stat_id}", response_class=HTMLResponse, name="stats_detail_legacy")
+async def stats_detail_legacy(request: Request, stat_id: str) -> RedirectResponse:
+    return stats_redirect(request, stat_id)
+
+
+@app.get("/analytics/stats/{stat_id}", response_class=HTMLResponse, name="stats_detail")
 async def stats_detail(request: Request, stat_id: str) -> HTMLResponse:
     if redirect := login_redirect(request):
         return redirect
@@ -905,7 +1079,15 @@ async def stats_detail(request: Request, stat_id: str) -> HTMLResponse:
     )
 
 
-@app.get("/stats/{stat_id}/edit", response_class=HTMLResponse, name="stats_edit")
+@app.get("/stats/{stat_id}/edit", response_class=HTMLResponse, name="stats_edit_legacy")
+async def stats_edit_legacy(request: Request, stat_id: str) -> RedirectResponse:
+    return RedirectResponse(
+        url=request.url_for("stats_edit", stat_id=stat_id),
+        status_code=status.HTTP_303_SEE_OTHER,
+    )
+
+
+@app.get("/analytics/stats/{stat_id}/edit", response_class=HTMLResponse, name="stats_edit")
 async def stats_edit(request: Request, stat_id: str) -> HTMLResponse:
     if redirect := login_redirect(request):
         return redirect
@@ -1068,7 +1250,15 @@ async def bank(request: Request) -> HTMLResponse:
     )
 
 
-@app.get("/imports", response_class=HTMLResponse, name="imports")
+@app.get("/imports", response_class=HTMLResponse, name="imports_legacy")
+async def imports_legacy(request: Request) -> RedirectResponse:
+    return RedirectResponse(
+        url=request.url_for("imports"),
+        status_code=status.HTTP_303_SEE_OTHER,
+    )
+
+
+@app.get("/settings/imports", response_class=HTMLResponse, name="imports")
 async def imports(request: Request) -> HTMLResponse:
     if redirect := login_redirect(request):
         return redirect
@@ -1081,6 +1271,34 @@ async def imports(request: Request) -> HTMLResponse:
             history=import_history(),
         ),
     )
+
+
+@app.get("/api/discord/roles", response_class=JSONResponse)
+async def api_discord_roles(request: Request) -> JSONResponse:
+    if redirect := login_redirect(request):
+        return redirect
+    return JSONResponse(roles_metadata())
+
+
+@app.get("/api/discord/channels", response_class=JSONResponse)
+async def api_discord_channels(request: Request) -> JSONResponse:
+    if redirect := login_redirect(request):
+        return redirect
+    return JSONResponse(channels_metadata())
+
+
+@app.get("/api/discord/categories", response_class=JSONResponse)
+async def api_discord_categories(request: Request) -> JSONResponse:
+    if redirect := login_redirect(request):
+        return redirect
+    return JSONResponse(categories_metadata())
+
+
+@app.get("/api/discord/guild-structure", response_class=JSONResponse)
+async def api_discord_guild_structure(request: Request) -> JSONResponse:
+    if redirect := login_redirect(request):
+        return redirect
+    return JSONResponse(guild_structure())
 
 
 @app.get("/health", response_class=JSONResponse)

@@ -116,6 +116,12 @@ SETTING_DEFINITIONS = (
         "Roles allowed to use bank commands.",
     ),
     SettingDefinition(
+        "BANK_LOG_CHANNEL_ID",
+        "permissions",
+        "csv_ids",
+        "Discord channel ID used for bank logs.",
+    ),
+    SettingDefinition(
         "BOT_OWNER_USER_IDS",
         "permissions",
         "csv_ids",
@@ -182,6 +188,73 @@ SETTING_DEFINITIONS = (
         "string",
         "Fallback /ask model.",
         editable=False,
+    ),
+    SettingDefinition(
+        "admin_role_ids",
+        "dashboard_json",
+        "json_ids",
+        "Dashboard-managed Discord role IDs treated as administrators.",
+    ),
+    SettingDefinition(
+        "staff_role_ids",
+        "dashboard_json",
+        "json_ids",
+        "Dashboard-managed Discord role IDs treated as staff.",
+    ),
+    SettingDefinition(
+        "bot_role_ids_excluded_from_stats",
+        "dashboard_json",
+        "json_ids",
+        "Bot role IDs excluded from analytics and stats calculations.",
+    ),
+    SettingDefinition(
+        "analytics_excluded_channel_ids",
+        "dashboard_json",
+        "json_ids",
+        "Channel IDs excluded from analytics.",
+    ),
+    SettingDefinition(
+        "analytics_excluded_category_ids",
+        "dashboard_json",
+        "json_ids",
+        "Category IDs whose child channels are excluded from analytics.",
+    ),
+    SettingDefinition(
+        "bank_allowed_role_ids",
+        "dashboard_json",
+        "json_ids",
+        "Dashboard-managed roles allowed to use bank tools.",
+    ),
+    SettingDefinition(
+        "bank_log_channel_id",
+        "dashboard_json",
+        "json_ids",
+        "Dashboard-managed bank log channel ID.",
+    ),
+    SettingDefinition(
+        "knowledge_allowed_channel_ids",
+        "dashboard_json",
+        "json_ids",
+        "Channels allowed to use knowledge features.",
+    ),
+    SettingDefinition(
+        "ask_command_allowed_channel_ids",
+        "dashboard_json",
+        "json_ids",
+        "Channels allowed to use /ask.",
+    ),
+    SettingDefinition(
+        "import_archive_path",
+        "dashboard_json",
+        "string",
+        "Default local archive path for completed imports.",
+    ),
+    SettingDefinition(
+        "import_context_only_default",
+        "dashboard_json",
+        "bool",
+        "Default import mode for context-only imports.",
+        default="false",
     ),
 )
 DEFINITIONS_BY_KEY = {definition.key: definition for definition in SETTING_DEFINITIONS}
@@ -343,6 +416,26 @@ def normalize_setting_value(key: str, value: str) -> str:
         if key == "VCXP_TRIGGER_ROLE_ID" and len(items) != 1:
             raise ValueError("Use one Discord role ID.")
         return ",".join(items)
+    if definition.value_type == "json_ids":
+        if not text:
+            return "[]"
+        raw_items = text.split(",")
+        if text.lstrip().startswith("["):
+            import json
+
+            try:
+                parsed = json.loads(text)
+            except json.JSONDecodeError as exc:
+                raise ValueError("Value must be a JSON array of Discord IDs.") from exc
+            if not isinstance(parsed, list):
+                raise ValueError("Value must be a JSON array of Discord IDs.")
+            raw_items = [str(item) for item in parsed]
+        items = [item.strip() for item in raw_items]
+        if any(not item or not SNOWFLAKE_RE.fullmatch(item) for item in items):
+            raise ValueError("Use Discord IDs containing 17 to 20 digits.")
+        import json
+
+        return json.dumps(items)
     return text
 
 
@@ -392,7 +485,13 @@ def set_setting(key: str, value: str, *, changed_by: str = "system") -> str:
 
 
 def settings_for_dashboard() -> dict[str, list[dict[str, object]]]:
-    sections = {"ask": [], "permissions": [], "vcxp": [], "models": []}
+    sections = {
+        "ask": [],
+        "permissions": [],
+        "vcxp": [],
+        "models": [],
+        "dashboard_json": [],
+    }
     for definition in SETTING_DEFINITIONS:
         value = get_setting(definition.key, "") or ""
         sections[definition.section].append(

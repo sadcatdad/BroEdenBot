@@ -1,0 +1,9 @@
+<aside class="sidebar-nav" aria-label="Settings sections">
+  <a class="{{ 'active' if current_path == '/settings' else '' }}" href="{{ url_for('settings') }}">Bot Configuration</a>
+  <a class="{{ 'active' if current_path == '/settings/permissions' else '' }}" href="{{ url_for('settings_permissions') }}">Permissions &amp; Access</a>
+  <a class="{{ 'active' if current_path == '/settings/discord' else '' }}" href="{{ url_for('settings_discord') }}">Discord Roles &amp; Channels</a>
+  <a class="{{ 'active' if current_path.startswith('/settings/knowledge') else '' }}" href="{{ url_for('knowledge_page') }}">Knowledge Base</a>
+  <a class="{{ 'active' if current_path == '/settings/imports' else '' }}" href="{{ url_for('imports') }}">Imports</a>
+  {% if can_manage_users %}<a class="{{ 'active' if current_path == '/settings/users' else '' }}" href="{{ url_for('users_page') }}">Dashboard Users</a>{% endif %}
+  <a class="{{ 'active' if current_path == '/settings/advanced' else '' }}" href="{{ url_for('settings_advanced') }}">Advanced</a>
+</aside>

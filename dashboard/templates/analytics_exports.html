@@ -1,0 +1,26 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="page-heading">
+  <div><p class="eyebrow">Content-free exports</p><h1>Exports</h1></div>
+</div>
+{% include "_analytics_nav.html" %}
+{% include "_analytics_ranges.html" %}
+<section class="card">
+  <h2>Download CSV exports</h2>
+  <p class="muted">Exports use aggregated dashboard data only. Raw message content and secrets are not included.</p>
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>Export</th><th>Description</th><th>Action</th></tr></thead>
+      <tbody>
+      {% for export in exports %}
+      <tr>
+        <td>{{ export.label }}</td>
+        <td>{{ export.description }}</td>
+        <td><a class="button secondary small" href="{{ url_for('analytics_export') }}?range={{ export.range }}&type={{ export.type }}">Download</a></td>
+      </tr>
+      {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</section>
+{% endblock %}

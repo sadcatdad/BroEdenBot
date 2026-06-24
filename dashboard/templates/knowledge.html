@@ -13,6 +13,9 @@
 <p class="muted">Only the fixed documents below are accessible. Public and staff knowledge remain separate, and reindex requests are handled by the live bot process.</p>
 {% if message %}<div class="alert success">{{ message }}</div>{% endif %}
 {% if error %}<div class="alert error">{{ error }}</div>{% endif %}
+<div class="settings-layout">
+{% include "_settings_nav.html" %}
+<div>
 
 <section class="card knowledge-filters" aria-label="Knowledge filters">
   <label>
@@ -113,6 +116,8 @@
   <p class="muted">No knowledge edits or reindex requests recorded yet.</p>
   {% endif %}
 </section>
+</div>
+</div>
 
 <script>
 (() => {

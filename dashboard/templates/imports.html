@@ -7,6 +7,9 @@
   </div>
   <p class="path">{{ history.database.path }}</p>
 </div>
+<div class="settings-layout">
+{% include "_settings_nav.html" %}
+<div>
 
 {% if history.error %}
 <div class="alert error">Import history could not be read: {{ history.error }}</div>
@@ -36,4 +39,6 @@
   </div>
 </section>
 {% endif %}
+</div>
+</div>
 {% endblock %}
