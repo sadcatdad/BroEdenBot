@@ -225,6 +225,19 @@ class DashboardNavigationMetadataTests(unittest.TestCase):
         self.assertEqual(row[1], "{}")
         self.assertEqual(row[2], "pending")
 
+    def test_picker_assets_use_collapsed_compact_panel_pattern(self):
+        root = Path(__file__).resolve().parent.parent
+        script = (root / "dashboard/static/discord_pickers.js").read_text()
+        styles = (root / "dashboard/static/styles.css").read_text()
+        self.assertIn("this.panelOpen = false", script)
+        self.assertIn("Browse ${label}", script)
+        self.assertIn("this.panelOpen || Boolean(query)", script)
+        self.assertIn("slice(0, max)", script)
+        self.assertIn("discord-picker-panel", script)
+        self.assertIn(".discord-picker-panel[hidden] { display: none; }", styles)
+        self.assertIn(".discord-picker-option {\n  display: flex;", styles)
+        self.assertIn(".discord-picker-category-row", styles)
+
     def test_category_selection_matches_child_channels(self):
         self.assertTrue(
             channel_matches_selection(

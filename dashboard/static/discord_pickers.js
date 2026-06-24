@@ -4,7 +4,9 @@ class DiscordObjectPicker extends HTMLElement {
     this.objects = [];
     this.groups = [];
     this.selected = new Set();
-    this.collapsed = new Set();
+    this.expandedGroups = new Set();
+    this.panelOpen = false;
+    this.showAllResults = false;
     this.loaded = false;
     this.error = "";
   }
@@ -13,7 +15,6 @@ class DiscordObjectPicker extends HTMLElement {
     this.mode = this.getAttribute("mode") || "object";
     this.endpoint = this.getAttribute("endpoint") || "/api/discord/guild-structure";
     this.inputName = this.getAttribute("input-name") || this.getAttribute("name") || "";
-    this.settingKey = this.getAttribute("setting-key") || "";
     this.placeholder = this.getAttribute("placeholder") || "Search Discord objects";
     this.selected = new Set(this.initialValues());
     this.renderShell();
@@ -33,20 +34,18 @@ class DiscordObjectPicker extends HTMLElement {
   }
 
   async loadObjects() {
-    this.setState("loading");
+    this.setStatus("Loading live Discord metadata…");
     try {
       const response = await fetch(this.endpoint, { credentials: "same-origin" });
       if (!response.ok) throw new Error(`HTTP ${response.status}`);
-      const data = await response.json();
-      this.applyData(data);
-      this.loaded = true;
+      this.applyData(await response.json());
       this.error = "";
     } catch (_error) {
-      this.loaded = true;
       this.error = "Could not load live Discord roles/channels. Check bot guild access and required intents.";
       this.objects = [];
       this.groups = [];
     }
+    this.loaded = true;
     this.draw();
   }
 
@@ -84,69 +83,95 @@ class DiscordObjectPicker extends HTMLElement {
     this.classList.add("discord-picker");
     this.innerHTML = `
       <div class="discord-picker-selected"></div>
-      <label class="discord-picker-search-label">
-        <span>Search</span>
-        <input class="discord-picker-search" type="search" placeholder="${this.escape(this.placeholder)}">
-      </label>
+      <div class="discord-picker-controls">
+        <label class="discord-picker-search-label">
+          <span>Search</span>
+          <input class="discord-picker-search" type="search" placeholder="${this.escape(this.placeholder)}">
+        </label>
+        <button type="button" class="button secondary picker-browse"></button>
+      </div>
       <div class="discord-picker-status muted">Loading live Discord metadata…</div>
-      <div class="discord-picker-options"></div>
+      <div class="discord-picker-panel" hidden>
+        <div class="discord-picker-options"></div>
+      </div>
       <div class="discord-picker-missing"></div>
       <input class="discord-picker-value" type="hidden" name="${this.escape(this.inputName)}">
     `;
-    this.querySelector(".discord-picker-search").addEventListener("input", () => this.draw());
+    this.querySelector(".discord-picker-search").addEventListener("input", () => {
+      this.showAllResults = false;
+      if (this.searchQuery()) this.panelOpen = true;
+      this.draw();
+    });
+    this.querySelector(".picker-browse").addEventListener("click", () => {
+      this.panelOpen = !this.panelOpen;
+      this.showAllResults = false;
+      this.draw();
+    });
     this.drawSelected();
+    this.updateBrowseButton();
   }
 
-  setState(message) {
+  setStatus(message) {
     const status = this.querySelector(".discord-picker-status");
-    if (status) status.textContent = message === "loading" ? "Loading live Discord metadata…" : "";
+    if (status) status.textContent = message || "";
   }
 
   draw() {
     this.drawSelected();
+    this.updateBrowseButton();
     const status = this.querySelector(".discord-picker-status");
+    const panel = this.querySelector(".discord-picker-panel");
     const options = this.querySelector(".discord-picker-options");
-    const missing = this.querySelector(".discord-picker-missing");
-    if (!status || !options || !missing) return;
+    if (!status || !panel || !options) return;
+
     if (this.error) {
       status.innerHTML = `<div class="alert error">${this.escape(this.error)}</div>`;
+      panel.hidden = true;
       options.innerHTML = "";
       this.drawMissing();
       return;
     }
+
     status.textContent = "";
-    const query = (this.querySelector(".discord-picker-search")?.value || "").toLowerCase();
-    const visibleGroups = this.visibleGroups(query);
-    if (!visibleGroups.length) {
-      options.innerHTML = `<div class="empty-state">No matching live Discord ${this.mode}s found.</div>`;
+    const query = this.searchQuery();
+    const shouldShowPanel = this.panelOpen || Boolean(query);
+    panel.hidden = !shouldShowPanel;
+    if (!shouldShowPanel) {
+      options.innerHTML = "";
       this.drawMissing();
       return;
     }
-    options.innerHTML = visibleGroups.map((group) => this.groupHtml(group)).join("");
+
+    const content = this.mode === "channel"
+      ? this.channelGroupsHtml(query)
+      : this.flatGroupsHtml(query);
+    options.innerHTML = content || `<div class="empty-state">No matching live Discord ${this.noun()} found.</div>`;
+    this.bindPanelEvents();
+    this.drawMissing();
+  }
+
+  bindPanelEvents() {
+    const options = this.querySelector(".discord-picker-options");
+    if (!options) return;
     options.querySelectorAll("[data-toggle-group]").forEach((button) => {
       button.addEventListener("click", () => {
         const id = String(button.dataset.toggleGroup);
-        if (this.collapsed.has(id)) this.collapsed.delete(id);
-        else this.collapsed.add(id);
-        this.draw();
-      });
-    });
-    options.querySelectorAll("[data-select-group]").forEach((checkbox) => {
-      checkbox.addEventListener("change", () => {
-        const group = visibleGroups.find((item) => String(item.id) === String(checkbox.dataset.selectGroup));
-        if (!group) return;
-        group.objects.forEach((item) => {
-          if (checkbox.checked) this.selected.add(String(item.id));
-          else this.selected.delete(String(item.id));
-        });
+        if (this.expandedGroups.has(id)) this.expandedGroups.delete(id);
+        else this.expandedGroups.add(id);
         this.draw();
       });
     });
     options.querySelectorAll("[data-clear-group]").forEach((button) => {
       button.addEventListener("click", () => {
-        const group = visibleGroups.find((item) => String(item.id) === String(button.dataset.clearGroup));
+        const group = this.groups.find((item) => String(item.id) === String(button.dataset.clearGroup));
         if (!group) return;
         group.objects.forEach((item) => this.selected.delete(String(item.id)));
+        this.draw();
+      });
+    });
+    options.querySelectorAll("[data-show-more]").forEach((button) => {
+      button.addEventListener("click", () => {
+        this.showAllResults = true;
         this.draw();
       });
     });
@@ -158,72 +183,112 @@ class DiscordObjectPicker extends HTMLElement {
         this.draw();
       });
     });
-    this.drawMissing();
   }
 
-  visibleGroups(query) {
-    return this.groups
-      .map((group) => ({
-        ...group,
-        objects: group.objects.filter((item) => this.matches(item, query)),
-      }))
-      .filter((group) => group.objects.length || !query);
-  }
-
-  matches(item, query) {
-    if (!query) return true;
-    return `${item.name || ""} ${item.id || ""}`.toLowerCase().includes(query);
-  }
-
-  groupHtml(group) {
-    const collapsed = this.collapsed.has(String(group.id));
-    const allSelected = group.objects.length && group.objects.every((item) => this.selected.has(String(item.id)));
-    const rows = collapsed ? "" : group.objects.map((item) => this.optionHtml(item)).join("");
-    const groupControls = this.mode === "channel" ? `
-      <label class="category-select">
-        <input type="checkbox" data-select-group="${this.escape(group.id)}" ${allSelected ? "checked" : ""}>
-        Select all in category
-      </label>
-    ` : "";
+  flatGroupsHtml(query) {
+    const max = this.resultLimit();
+    const matched = this.objects.filter((item) => this.matches(item, query));
+    const limited = this.showAllResults ? matched : matched.slice(0, max);
+    if (!limited.length) return "";
+    const label = this.mode === "role" ? "Roles" : "Categories";
     return `
       <section class="discord-picker-group">
-        <div class="discord-picker-group-header">
-          <button type="button" class="button secondary small" data-toggle-group="${this.escape(group.id)}">${collapsed ? "Expand" : "Collapse"}</button>
-          <strong>${this.escape(group.name)}</strong>
-          ${groupControls}
-          <button type="button" class="button secondary small" data-clear-group="${this.escape(group.id)}">Clear section</button>
+        <div class="discord-picker-group-header simple">
+          <strong>${this.escape(label)}</strong>
+          <span class="muted">${matched.length} match${matched.length === 1 ? "" : "es"}</span>
         </div>
-        <div class="discord-picker-group-rows">${rows}</div>
+        <div class="discord-picker-group-rows">
+          ${limited.map((item) => this.optionHtml(item)).join("")}
+        </div>
+        ${this.moreButton(matched.length, limited.length)}
       </section>
     `;
+  }
+
+  channelGroupsHtml(query) {
+    const searching = Boolean(query);
+    let rendered = 0;
+    const max = this.resultLimit();
+    const groups = [];
+    for (const group of this.groups) {
+      const matchingChildren = group.objects.filter((item) => this.matches(item, query));
+      const categoryMatches = this.matches({ id: group.id, name: group.name }, query);
+      if (searching && !categoryMatches && !matchingChildren.length) continue;
+      if (rendered >= max && !this.showAllResults) continue;
+      groups.push(this.channelGroupHtml(group, searching, matchingChildren, categoryMatches));
+      rendered += 1 + (searching || this.expandedGroups.has(String(group.id)) ? matchingChildren.length : 0);
+    }
+    const totalMatches = groups.length;
+    const more = !this.showAllResults && rendered >= max
+      ? `<button type="button" class="button secondary small picker-more" data-show-more="1">Show more results</button>`
+      : "";
+    return groups.join("") + more;
+  }
+
+  channelGroupHtml(group, searching, matchingChildren, categoryMatches) {
+    const expanded = searching || this.expandedGroups.has(String(group.id));
+    const children = searching ? matchingChildren : group.objects;
+    const visibleChildren = expanded ? children.slice(0, this.showAllResults ? children.length : this.resultLimit()) : [];
+    const selectedCount = group.objects.filter((item) => this.selected.has(String(item.id))).length;
+    return `
+      <section class="discord-picker-group">
+        <div class="discord-picker-category-row">
+          <button type="button" class="category-toggle" data-toggle-group="${this.escape(group.id)}" aria-label="${expanded ? "Hide channels" : "Browse channels"}">${expanded ? "▾" : "▸"}</button>
+          <span class="channel-kind">◇</span>
+          <span class="row-main">
+            <span class="row-title">${this.escape(group.name)}</span>
+            <span class="row-meta">${group.objects.length} channel${group.objects.length === 1 ? "" : "s"}${selectedCount ? ` · ${selectedCount} selected` : ""}</span>
+          </span>
+          <button type="button" class="button secondary small" data-clear-group="${this.escape(group.id)}">Clear category</button>
+        </div>
+        <div class="discord-picker-group-rows ${expanded ? "" : "collapsed"}">
+          ${visibleChildren.map((item) => this.optionHtml(item)).join("")}
+          ${searching && categoryMatches && !matchingChildren.length ? '<p class="muted picker-note">Category matched. Expand it to browse child channels.</p>' : ""}
+        </div>
+      </section>
+    `;
+  }
+
+  moreButton(total, shown) {
+    if (this.showAllResults || total <= shown) return "";
+    return `<button type="button" class="button secondary small picker-more" data-show-more="1">Show more results</button>`;
   }
 
   optionHtml(item) {
     const checked = this.selected.has(String(item.id)) ? "checked" : "";
     const swatch = this.mode === "role"
       ? `<span class="role-swatch" style="background:${this.escape(item.color || "#6b6d78")}"></span>`
-      : `<span class="channel-kind">${this.mode === "category" ? "▸" : this.channelIcon(item)}</span>`;
-    const meta = this.mode === "role"
-      ? [
-          item.member_count !== null && item.member_count !== undefined ? `${item.member_count} members` : "",
-          item.managed ? "managed" : "",
-          item.is_bot_role ? "bot role" : "",
-        ].filter(Boolean).join(" · ")
-      : [
-          item.type || "",
-          item.nsfw ? "NSFW" : "",
-          item.parent_name ? `in ${item.parent_name}` : "",
-        ].filter(Boolean).join(" · ");
+      : `<span class="channel-kind">${this.mode === "category" ? "◇" : this.channelIcon(item)}</span>`;
+    const meta = this.metaText(item);
     return `
       <label class="discord-picker-option">
         <input type="checkbox" data-object-id="${this.escape(item.id)}" ${checked}>
         ${swatch}
-        <span>
-          ${this.escape(this.displayName(item))}
-          <small>${this.escape(meta)}${meta ? " · " : ""}${this.escape(item.id)}</small>
+        <span class="row-main">
+          <span class="row-title">${this.escape(this.displayName(item))}</span>
+          <span class="row-meta">${this.escape(meta)}${meta ? " · " : ""}${this.escape(item.id)}</span>
         </span>
       </label>
     `;
+  }
+
+  metaText(item) {
+    if (this.mode === "role") {
+      return [
+        item.member_count !== null && item.member_count !== undefined ? `${item.member_count} members` : "",
+        item.managed ? "managed" : "",
+        item.is_bot_role ? "bot role" : "",
+      ].filter(Boolean).join(" · ");
+    }
+    if (this.mode === "category") {
+      const count = Array.isArray(item.child_channel_ids) ? item.child_channel_ids.length : 0;
+      return `${count} channel${count === 1 ? "" : "s"}`;
+    }
+    return [
+      item.type || "",
+      item.nsfw ? "NSFW" : "",
+      item.parent_name ? `in ${item.parent_name}` : "",
+    ].filter(Boolean).join(" · ");
   }
 
   channelIcon(item) {
@@ -236,9 +301,8 @@ class DiscordObjectPicker extends HTMLElement {
 
   displayName(item) {
     if (this.mode === "role") return item.name || `Role ${item.id}`;
-    if (this.mode === "category") return item.name || `Category ${item.id}`;
-    const prefix = this.channelIcon(item);
-    return `${prefix}${prefix === "#" ? "" : " "}${item.name || item.id}`;
+    if (this.mode === "category") return `Category: ${item.name || item.id}`;
+    return `${this.channelIcon(item)} ${item.name || item.id}`;
   }
 
   drawSelected() {
@@ -251,7 +315,7 @@ class DiscordObjectPicker extends HTMLElement {
       const label = item ? this.displayName(item) : `Missing: ${id}`;
       return `
         <button class="discord-picker-chip ${item ? "" : "missing-chip"}" type="button" data-remove-id="${this.escape(id)}">
-          ${this.escape(label)} <span>×</span>
+          ${this.escape(label)} <span aria-hidden="true">×</span>
         </button>
       `;
     }).join("");
@@ -276,10 +340,9 @@ class DiscordObjectPicker extends HTMLElement {
       missing.innerHTML = "";
       return;
     }
-    const noun = this.mode === "role" ? "roles" : this.mode === "category" ? "categories" : "channels";
     missing.innerHTML = `
       <div class="missing-panel">
-        <p class="label">Missing saved ${noun}</p>
+        <p class="label">Missing saved ${this.noun()}s</p>
         ${missingIds.map((id) => `
           <div class="missing-row">
             <code>${this.escape(id)}</code>
@@ -294,6 +357,41 @@ class DiscordObjectPicker extends HTMLElement {
         this.draw();
       });
     });
+  }
+
+  updateBrowseButton() {
+    const button = this.querySelector(".picker-browse");
+    if (!button) return;
+    const label = this.mode === "role" ? "roles" : this.mode === "category" ? "categories" : "channels";
+    button.textContent = this.panelOpen ? `Hide ${label}` : `Browse ${label}`;
+  }
+
+  visibleGroups(query) {
+    return this.groups
+      .map((group) => ({
+        ...group,
+        objects: group.objects.filter((item) => this.matches(item, query)),
+      }))
+      .filter((group) => group.objects.length || !query);
+  }
+
+  matches(item, query) {
+    if (!query) return true;
+    return `${item.name || ""} ${item.id || ""}`.toLowerCase().includes(query);
+  }
+
+  searchQuery() {
+    return (this.querySelector(".discord-picker-search")?.value || "").trim().toLowerCase();
+  }
+
+  resultLimit() {
+    return this.mode === "role" ? 25 : 50;
+  }
+
+  noun() {
+    if (this.mode === "role") return "role";
+    if (this.mode === "category") return "category";
+    return "channel";
   }
 
   escape(value) {
