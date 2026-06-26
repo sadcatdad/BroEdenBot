@@ -1323,16 +1323,18 @@ class VCStats(commands.Cog):
                 self._pulses_in_progress.discard(key)
 
     async def _run_automatic_pulses(self) -> None:
-        if not self.vcxp_enabled or not self.vcxp_trigger_role_id:
+        vcxp_enabled = self.vcxp_enabled
+        trigger_role_id = self.vcxp_trigger_role_id
+        if not vcxp_enabled or not trigger_role_id:
             return
         pulse_tasks = []
         for guild in self.bot.guilds:
-            role = guild.get_role(self.vcxp_trigger_role_id)
+            role = guild.get_role(trigger_role_id)
             if role is None:
                 logger.warning(
                     "VC XP trigger role not found: guild=%s role=%s",
                     guild.id,
-                    self.vcxp_trigger_role_id,
+                    trigger_role_id,
                 )
                 continue
             await self._sync_xp_states(guild.id)

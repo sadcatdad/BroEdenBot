@@ -5,6 +5,7 @@ from __future__ import annotations
 import os
 import re
 import sqlite3
+import logging
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -12,9 +13,30 @@ from typing import Optional
 
 from utils.sqlite import configure_sync_connection
 
+logger = logging.getLogger(__name__)
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 FORBIDDEN_KEY_PARTS = ("TOKEN", "API_KEY", "PASSWORD", "SECRET")
 SNOWFLAKE_RE = re.compile(r"^\d{17,20}$")
+_SETTING_CACHE: dict[tuple[str, str], str] = {}
+_SETTING_READ_WARNINGS: set[tuple[str, str, str]] = set()
+
+
+def _warn_setting_read_failure(
+    cache_key: tuple[str, str],
+    key: str,
+    fallback: str,
+    exc: sqlite3.Error,
+) -> None:
+    warning_key = (cache_key[0], key, fallback)
+    if warning_key in _SETTING_READ_WARNINGS:
+        return
+    _SETTING_READ_WARNINGS.add(warning_key)
+    logger.warning(
+        "Settings database read failed for %s; falling back to %s: %s",
+        key,
+        fallback,
+        type(exc).__name__,
+    )
 
 
 @dataclass(frozen=True)
@@ -434,6 +456,7 @@ def get_setting(key: str, default: Optional[str] = None) -> Optional[str]:
         return default
     definition = DEFINITIONS_BY_KEY.get(key)
     if definition and definition.editable:
+        cache_key = (str(settings_database_path()), key)
         try:
             with _connect(readonly=True) as connection:
                 row = connection.execute(
@@ -441,9 +464,16 @@ def get_setting(key: str, default: Optional[str] = None) -> Optional[str]:
                     (key,),
                 ).fetchone()
             if row is not None:
-                return str(row["value"])
-        except sqlite3.Error:
-            pass
+                value = str(row["value"])
+                _SETTING_CACHE[cache_key] = value
+                return value
+            _SETTING_CACHE.pop(cache_key, None)
+        except sqlite3.Error as exc:
+            cached = _SETTING_CACHE.get(cache_key)
+            if cached is not None:
+                _warn_setting_read_failure(cache_key, key, "cached value", exc)
+                return cached
+            _warn_setting_read_failure(cache_key, key, "environment", exc)
     value = os.getenv(key)
     if value is not None:
         return value
@@ -581,6 +611,7 @@ def set_setting(key: str, value: str, *, changed_by: str = "system") -> str:
             (key, old_value, normalized, changed_by, now),
         )
         connection.commit()
+    _SETTING_CACHE[(str(settings_database_path()), key)] = normalized
     return normalized
 
 

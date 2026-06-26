@@ -5,6 +5,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
+import utils.settings as settings
 from utils.settings import (
     get_bool_setting,
     get_csv_ids_setting,
@@ -125,6 +126,24 @@ class SettingsDatabaseTests(unittest.TestCase):
             get_csv_ids_setting("VCXP_EXCLUDED_ROLE_IDS"),
             [34567890123456789],
         )
+
+    def test_database_read_error_uses_cached_value(self):
+        initialize_settings_from_env()
+        set_setting("VCXP_TRIGGER_ROLE_ID", "12345678901234567")
+
+        with patch.object(
+            settings,
+            "_connect",
+            side_effect=sqlite3.OperationalError("database is locked"),
+        ):
+            self.assertEqual(
+                get_setting("VCXP_TRIGGER_ROLE_ID"),
+                "12345678901234567",
+            )
+            self.assertEqual(
+                get_csv_ids_setting("VCXP_TRIGGER_ROLE_ID"),
+                [12345678901234567],
+            )
 
     def test_audit_skips_unchanged_values(self):
         initialize_settings_from_env()
