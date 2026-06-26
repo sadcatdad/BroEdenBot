@@ -108,11 +108,25 @@ class ReminderParsingTests(unittest.TestCase):
 
         iso_style = parse_local_datetime("2026-07-01 7:30 PM", timezone_value)
         slash_style = parse_local_datetime("07/01/2026 7:30 PM", timezone_value)
+        compact_meridiem = parse_local_datetime("2026-07-01 7:30PM", timezone_value)
+        lowercase_meridiem = parse_local_datetime("2026-07-01 7:30 pm", timezone_value)
 
         self.assertEqual(iso_style, slash_style)
+        self.assertEqual(iso_style, compact_meridiem)
+        self.assertEqual(iso_style, lowercase_meridiem)
         self.assertEqual(
             iso_style.astimezone(timezone.utc).isoformat(),
             "2026-07-02T00:30:00+00:00",
+        )
+
+    def test_parse_local_datetime_accepts_date_only_at_default_time(self):
+        timezone_value = ZoneInfo("America/Chicago")
+
+        parsed = parse_local_datetime("2026-07-01", timezone_value)
+
+        self.assertEqual(
+            parsed.astimezone(timezone.utc).isoformat(),
+            "2026-07-01T14:00:00+00:00",
         )
 
     def test_parse_id_set_accepts_csv_and_dashboard_json(self):

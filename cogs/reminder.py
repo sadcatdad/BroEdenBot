@@ -21,6 +21,7 @@ from utils.ui import SUCCESS_COLOR, branded_embed, error_embed, truncate
 logger = logging.getLogger(__name__)
 
 DEFAULT_TIMEZONE = "America/Chicago"
+DEFAULT_DATE_ONLY_TIME = "9:00 AM"
 REMINDER_CHECK_SECONDS = 45
 MAX_REMINDER_MESSAGE_LENGTH = 4_000
 MAX_REMINDERS_PER_MANAGE = 25
@@ -39,9 +40,13 @@ DATETIME_FORMATS = (
     "%m/%d/%Y %I %p",
     "%m/%d/%Y %H:%M",
 )
+DATE_ONLY_FORMATS = (
+    "%Y-%m-%d",
+    "%m/%d/%Y",
+)
 HELPFUL_DATE_ERROR = (
-    "I could not understand that date/time. Try `2026-07-01 7:30 PM` "
-    "or `07/01/2026 7:30 PM`."
+    "I could not understand that date/time. Try `2026-07-01`, "
+    "`2026-07-01 7:30 PM`, or `07/01/2026 7:30 PM`."
 )
 
 
@@ -87,12 +92,28 @@ def parse_local_datetime(value: str, tz: ZoneInfo) -> datetime:
     text = " ".join(str(value or "").strip().split())
     if not text:
         raise ValueError(HELPFUL_DATE_ERROR)
+    text = (
+        text.replace("\u2010", "-")
+        .replace("\u2011", "-")
+        .replace("\u2012", "-")
+        .replace("\u2013", "-")
+        .replace("\u2014", "-")
+    )
+    text = re.sub(r"(?i)(\d)(am|pm)\b", r"\1 \2", text)
     for date_format in DATETIME_FORMATS:
         try:
             parsed = datetime.strptime(text, date_format)
         except ValueError:
             continue
         local_value = parsed.replace(tzinfo=tz)
+        return local_value.astimezone(timezone.utc)
+    for date_format in DATE_ONLY_FORMATS:
+        try:
+            parsed_date = datetime.strptime(text, date_format).date()
+            parsed_time = datetime.strptime(DEFAULT_DATE_ONLY_TIME, "%I:%M %p").time()
+        except ValueError:
+            continue
+        local_value = datetime.combine(parsed_date, parsed_time, tzinfo=tz)
         return local_value.astimezone(timezone.utc)
     raise ValueError(HELPFUL_DATE_ERROR)
 
@@ -202,7 +223,7 @@ class ReminderEditModal(discord.ui.Modal):
         self.date_time = discord.ui.TextInput(
             label="Date/time",
             default=local_datetime_input(row["scheduled_at_utc"], reminder_timezone()),
-            placeholder="2026-07-01 7:30 PM",
+            placeholder="2026-07-01 or 2026-07-01 7:30 PM",
             max_length=80,
         )
         self.add_item(self.message)
@@ -908,7 +929,7 @@ class ReminderCog(commands.Cog):
     @app_commands.describe(
         who="Member to remind. Defaults to you.",
         message="Reminder message",
-        date_time="Local date/time, like 2026-07-01 7:30 PM",
+        date_time="Local date/time, like 2026-07-01 or 2026-07-01 7:30 PM",
         channel="Channel where the reminder should be posted",
     )
     @app_commands.guild_only()

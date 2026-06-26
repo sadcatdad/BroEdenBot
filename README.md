@@ -63,7 +63,8 @@ forever.
 
 - `/reminder add [who] <message> <date_time> <channel>` — Schedule a reminder.
   `who` defaults to the caller. Use local community time; supported formats
-  include `2026-07-01 7:30 PM` and `07/01/2026 7:30 PM`.
+  include `2026-07-01`, `2026-07-01 7:30 PM`, and
+  `07/01/2026 7:30 PM`. Date-only reminders default to 9:00 AM local time.
 - `/reminder manage` — Privately list pending reminders created by you or aimed
   at you. The panel supports selecting a reminder, editing message/time,
   editing the channel, editing the target when permitted, and deleting the
