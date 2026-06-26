@@ -407,11 +407,12 @@ class ReminderManageView(discord.ui.View):
         interaction: discord.Interaction,
         _button: discord.ui.Button,
     ) -> None:
+        await self.cog.defer_private(interaction, thinking=True)
         reminder_id = self.selected_reminder_id
         if reminder_id is None:
-            await interaction.response.send_message(
+            await self.cog.send_private(
+                interaction,
                 "Choose a reminder first.",
-                ephemeral=True,
             )
             return
         deleted = await self.cog.soft_delete_reminder(
@@ -420,15 +421,15 @@ class ReminderManageView(discord.ui.View):
             reminder_id,
         )
         if not deleted:
-            await interaction.response.send_message(
+            await self.cog.send_private(
+                interaction,
                 "That pending reminder was not found.",
-                ephemeral=True,
             )
             return
         logger.info("Reminder deleted: id=%s user_id=%s", reminder_id, interaction.user.id)
-        await interaction.response.send_message(
+        await self.cog.send_private(
+            interaction,
             f"Reminder #{reminder_id} was deleted.",
-            ephemeral=True,
         )
 
     async def on_error(
@@ -534,11 +535,28 @@ class ReminderCog(commands.Cog):
         if self.has_staff_access(interaction):
             return True
         message = "Reminders are limited to internal staff."
-        if interaction.response.is_done():
-            await interaction.followup.send(message, ephemeral=True)
-        else:
-            await interaction.response.send_message(message, ephemeral=True)
+        await self.send_private(interaction, message)
         return False
+
+    async def defer_private(
+        self,
+        interaction: discord.Interaction,
+        *,
+        thinking: bool = False,
+    ) -> None:
+        if not interaction.response.is_done():
+            await interaction.response.defer(ephemeral=True, thinking=thinking)
+
+    async def send_private(
+        self,
+        interaction: discord.Interaction,
+        content: Optional[str] = None,
+        **kwargs: Any,
+    ) -> None:
+        if interaction.response.is_done():
+            await interaction.followup.send(content, ephemeral=True, **kwargs)
+        else:
+            await interaction.response.send_message(content, ephemeral=True, **kwargs)
 
     def can_target_user(
         self,
@@ -759,17 +777,18 @@ class ReminderCog(commands.Cog):
         reminder_id: int,
         channel: Any,
     ) -> None:
+        await self.defer_private(interaction, thinking=True)
         if not await self.ensure_staff_access(interaction):
             return
         if getattr(channel, "guild", None) and channel.guild.id != interaction.guild_id:
-            await interaction.response.send_message(
+            await self.send_private(
+                interaction,
                 "Choose a channel in this server.",
-                ephemeral=True,
             )
             return
         permission_error = send_permission_error(self.bot, channel)
         if permission_error:
-            await interaction.response.send_message(permission_error, ephemeral=True)
+            await self.send_private(interaction, permission_error)
             return
         row = await self.update_pending_reminder(
             reminder_id,
@@ -778,14 +797,14 @@ class ReminderCog(commands.Cog):
             channel_id=str(channel.id),
         )
         if row is None:
-            await interaction.response.send_message(
+            await self.send_private(
+                interaction,
                 "That pending reminder was not found.",
-                ephemeral=True,
             )
             return
-        await interaction.response.send_message(
+        await self.send_private(
+            interaction,
             embed=self.detail_embed(row),
-            ephemeral=True,
         )
 
     async def update_reminder_target(
@@ -794,12 +813,13 @@ class ReminderCog(commands.Cog):
         reminder_id: int,
         target: discord.abc.User,
     ) -> None:
+        await self.defer_private(interaction, thinking=True)
         if not await self.ensure_staff_access(interaction):
             return
         if not self.can_target_user(interaction, target):
-            await interaction.response.send_message(
+            await self.send_private(
+                interaction,
                 "Reminders are limited to internal staff.",
-                ephemeral=True,
             )
             return
         row = await self.update_pending_reminder(
@@ -809,14 +829,14 @@ class ReminderCog(commands.Cog):
             target_user_id=str(target.id),
         )
         if row is None:
-            await interaction.response.send_message(
+            await self.send_private(
+                interaction,
                 "That pending reminder was not found.",
-                ephemeral=True,
             )
             return
-        await interaction.response.send_message(
+        await self.send_private(
+            interaction,
             embed=self.detail_embed(row),
-            ephemeral=True,
         )
 
     async def apply_modal_edit(
@@ -827,24 +847,25 @@ class ReminderCog(commands.Cog):
         message: str,
         date_time: str,
     ) -> None:
+        await self.defer_private(interaction, thinking=True)
         if not await self.ensure_staff_access(interaction):
             return
         try:
             scheduled_at = parse_local_datetime(date_time, reminder_timezone())
         except ValueError as exc:
-            await interaction.response.send_message(str(exc), ephemeral=True)
+            await self.send_private(interaction, str(exc))
             return
         if scheduled_at <= utc_now():
-            await interaction.response.send_message(
+            await self.send_private(
+                interaction,
                 "Reminder date/time must be in the future.",
-                ephemeral=True,
             )
             return
         cleaned_message = message.strip()
         if not cleaned_message:
-            await interaction.response.send_message(
+            await self.send_private(
+                interaction,
                 "Reminder message cannot be blank.",
-                ephemeral=True,
             )
             return
         row = await self.update_pending_reminder(
@@ -855,12 +876,12 @@ class ReminderCog(commands.Cog):
             scheduled_at_utc=scheduled_at.isoformat(),
         )
         if row is None:
-            await interaction.response.send_message(
+            await self.send_private(
+                interaction,
                 "That pending reminder was not found.",
-                ephemeral=True,
             )
             return
-        await interaction.response.send_message(embed=self.detail_embed(row), ephemeral=True)
+        await self.send_private(interaction, embed=self.detail_embed(row))
 
     async def handle_component_error(
         self,
@@ -899,41 +920,42 @@ class ReminderCog(commands.Cog):
         channel: discord.TextChannel,
         who: Optional[discord.Member] = None,
     ) -> None:
+        await self.defer_private(interaction, thinking=True)
         target = who or interaction.user
         if not await self.ensure_staff_access(interaction):
             return
         cleaned_message = str(message).strip()
         if not cleaned_message:
-            await interaction.response.send_message(
+            await self.send_private(
+                interaction,
                 "Reminder message cannot be blank.",
-                ephemeral=True,
             )
             return
         if not self.can_target_user(interaction, target):
-            await interaction.response.send_message(
+            await self.send_private(
+                interaction,
                 "Reminders are limited to internal staff.",
-                ephemeral=True,
             )
             return
         if getattr(channel, "guild", None) and channel.guild.id != interaction.guild_id:
-            await interaction.response.send_message(
+            await self.send_private(
+                interaction,
                 "Choose a channel in this server.",
-                ephemeral=True,
             )
             return
         permission_error = send_permission_error(self.bot, channel)
         if permission_error:
-            await interaction.response.send_message(permission_error, ephemeral=True)
+            await self.send_private(interaction, permission_error)
             return
         try:
             scheduled_at = parse_local_datetime(date_time, reminder_timezone())
         except ValueError as exc:
-            await interaction.response.send_message(str(exc), ephemeral=True)
+            await self.send_private(interaction, str(exc))
             return
         if scheduled_at <= utc_now():
-            await interaction.response.send_message(
+            await self.send_private(
+                interaction,
                 "Reminder date/time must be in the future.",
-                ephemeral=True,
             )
             return
         try:
@@ -951,12 +973,12 @@ class ReminderCog(commands.Cog):
                 type(exc).__name__,
                 exc_info=(type(exc), exc, exc.__traceback__),
             )
-            await interaction.response.send_message(
+            await self.send_private(
+                interaction,
                 embed=error_embed(
                     "Reminder Not Saved",
                     "The reminder could not be saved. Please try again later.",
                 ),
-                ephemeral=True,
             )
             return
         logger.info(
@@ -968,14 +990,15 @@ class ReminderCog(commands.Cog):
             channel.id,
             row["scheduled_at_utc"],
         )
-        await interaction.response.send_message(
+        await self.send_private(
+            interaction,
             embed=self.confirmation_embed(row, channel),
-            ephemeral=True,
         )
 
     @reminder.command(name="manage", description="Privately manage your pending reminders")
     @app_commands.guild_only()
     async def manage(self, interaction: discord.Interaction) -> None:
+        await self.defer_private(interaction, thinking=True)
         if not await self.ensure_staff_access(interaction):
             return
         rows = await self.fetch_all(
@@ -996,15 +1019,15 @@ class ReminderCog(commands.Cog):
             ),
         )
         if not rows:
-            await interaction.response.send_message(
+            await self.send_private(
+                interaction,
                 "No pending reminders found for you.",
-                ephemeral=True,
             )
             return
-        await interaction.response.send_message(
+        await self.send_private(
+            interaction,
             embed=self.list_embed(rows),
             view=ReminderManageView(self, interaction.user.id, rows),
-            ephemeral=True,
         )
 
     @tasks.loop(seconds=REMINDER_CHECK_SECONDS)

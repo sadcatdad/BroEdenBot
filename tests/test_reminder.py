@@ -45,13 +45,50 @@ class FakeInteraction:
         self.user = user
 
 
+class FakeResponse:
+    def __init__(self):
+        self.deferred = False
+        self.sent_messages = []
+
+    def is_done(self):
+        return self.deferred or bool(self.sent_messages)
+
+    async def defer(self, *, ephemeral=False, thinking=False):
+        self.deferred = True
+        self.defer_ephemeral = ephemeral
+        self.defer_thinking = thinking
+
+    async def send_message(self, *args, **kwargs):
+        self.sent_messages.append((args, kwargs))
+
+
+class FakeFollowup:
+    def __init__(self):
+        self.sent_messages = []
+
+    async def send(self, *args, **kwargs):
+        self.sent_messages.append((args, kwargs))
+
+
+class FakeCommandInteraction(FakeInteraction):
+    def __init__(self, user):
+        super().__init__(user)
+        self.guild = SimpleNamespace(id=123)
+        self.response = FakeResponse()
+        self.followup = FakeFollowup()
+
+
 class FakeChannel:
     id = 456
     type = reminder.discord.ChannelType.text
 
     def __init__(self):
         self.sent_messages = []
-        self.guild = SimpleNamespace(me=object(), get_member=lambda _user_id: object())
+        self.guild = SimpleNamespace(
+            id=123,
+            me=object(),
+            get_member=lambda _user_id: object(),
+        )
 
     def permissions_for(self, _member):
         return SimpleNamespace(
@@ -149,6 +186,31 @@ class ReminderDatabaseTests(unittest.IsolatedAsyncioTestCase):
             (row["id"],),
         )
         self.assertEqual(stored["status"], "deleted")
+
+    async def test_add_command_defers_before_private_confirmation(self):
+        staff = FakeMember(10, roles=[FakeRole(55)])
+        interaction = FakeCommandInteraction(staff)
+        channel = FakeChannel()
+
+        with patch.object(reminder.discord, "Member", FakeMember):
+            with patch(
+                "cogs.reminder.get_csv_ids_setting",
+                side_effect=lambda key: [55] if key == "REMINDER_ALLOWED_ROLE_IDS" else [],
+            ):
+                with patch("cogs.reminder.get_setting", return_value="America/Chicago"):
+                    await ReminderCog.reminder.get_command("add").callback(
+                        self.cog,
+                        interaction,
+                        "Submit the event plan",
+                        "2026-07-01 7:30 PM",
+                        channel,
+                    )
+
+        self.assertTrue(interaction.response.deferred)
+        self.assertTrue(interaction.response.defer_ephemeral)
+        self.assertTrue(interaction.followup.sent_messages)
+        _args, kwargs = interaction.followup.sent_messages[0]
+        self.assertEqual(kwargs["embed"].title, "Reminder Scheduled")
 
     async def test_send_one_reminder_mentions_target_and_marks_sent(self):
         scheduled_at = parse_local_datetime(
