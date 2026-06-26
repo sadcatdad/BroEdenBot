@@ -56,6 +56,7 @@ def picker_metadata() -> dict[str, Any]:
         "staff_role_ids",
         "bot_role_ids_excluded_from_stats",
         "bank_allowed_role_ids",
+        "VCXP_EXCLUDED_ROLE_IDS",
     )
     channel_keys = (
         "analytics_excluded_channel_ids",

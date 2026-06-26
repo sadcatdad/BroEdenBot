@@ -18,9 +18,10 @@ maintenance.
 - `dashboard/` — FastAPI dashboard with signed sessions, password-owner
   bootstrap, allowlisted Discord OAuth identities, role-aware write
   protection, safe configuration, fixed service controls, redacted logs,
-  SQLite backups, stats management, an allowlisted Knowledge Manager, and
-  aggregate server analytics. Discord role/channel pickers read a live-guild
-  metadata snapshot written by the bot, not historical import tables.
+  SQLite backups, a VC XP role-pulse readiness summary, stats management, an
+  allowlisted Knowledge Manager, and aggregate server analytics. Discord
+  role/channel pickers read a live-guild metadata snapshot written by the bot,
+  not historical import tables.
 - `dashboard/users.py` — Dashboard user schema, PBKDF2 password bootstrap,
   Discord identity linking, active/disabled status, and owner/admin/viewer
   roles.
@@ -49,7 +50,9 @@ maintenance.
   staff-only search, summaries, user/channel reviews, and timelines.
 - `cogs/staff_notes.py` — Manual private staff records.
 - `cogs/stats.py` — Live/imported activity reports and roster graphics.
-- `cogs/vc_stats.py` — Voice-session tracking and VC XP accounting.
+- `cogs/vc_stats.py` — Voice-session tracking, muted/deafened interval
+  exclusion for VC XP, VC XP accounting, XP-only role exclusions, and temporary
+  trigger-role pulses for external MEE6 automation.
 
 ## Shared helpers
 

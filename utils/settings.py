@@ -142,6 +142,12 @@ SETTING_DEFINITIONS = (
         "Discord role ID used for the temporary XP pulse.",
     ),
     SettingDefinition(
+        "VCXP_EXCLUDED_ROLE_IDS",
+        "vcxp",
+        "csv_ids",
+        "Roles excluded from VC XP pulses while remaining visible in VC stats.",
+    ),
+    SettingDefinition(
         "VCXP_MINUTES_PER_PULSE",
         "vcxp",
         "int",

@@ -110,6 +110,7 @@ class SettingsDatabaseTests(unittest.TestCase):
         initialize_settings_from_env()
         set_setting("VCXP_ENABLED", "true")
         set_setting("VCXP_MINUTES_PER_PULSE", "35")
+        set_setting("VCXP_EXCLUDED_ROLE_IDS", "34567890123456789")
         set_setting(
             "VCSTATS_ALLOWED_ROLE_IDS",
             "12345678901234567,23456789012345678",
@@ -119,6 +120,10 @@ class SettingsDatabaseTests(unittest.TestCase):
         self.assertEqual(
             get_csv_ids_setting("VCSTATS_ALLOWED_ROLE_IDS"),
             [12345678901234567, 23456789012345678],
+        )
+        self.assertEqual(
+            get_csv_ids_setting("VCXP_EXCLUDED_ROLE_IDS"),
+            [34567890123456789],
         )
 
     def test_audit_skips_unchanged_values(self):
@@ -163,6 +168,17 @@ class SettingsValidationTests(unittest.TestCase):
             with self.subTest(value=value):
                 with self.assertRaisesRegex(ValueError, "17 to 20 digits"):
                     normalize_setting_value("BANK_ALLOWED_ROLE_IDS", value)
+
+    def test_vcxp_trigger_role_requires_one_role_id(self):
+        self.assertEqual(
+            normalize_setting_value("VCXP_TRIGGER_ROLE_ID", "12345678901234567"),
+            "12345678901234567",
+        )
+        with self.assertRaisesRegex(ValueError, "one Discord role ID"):
+            normalize_setting_value(
+                "VCXP_TRIGGER_ROLE_ID",
+                "12345678901234567,23456789012345678",
+            )
 
     def test_forbidden_and_unknown_keys_are_rejected(self):
         for key in (

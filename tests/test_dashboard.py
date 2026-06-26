@@ -11,8 +11,8 @@ from unittest.mock import patch
 from fastapi.testclient import TestClient
 
 from dashboard.app import app, validate_dashboard_config
-from dashboard.db import bank_overview, import_history
-from utils.settings import get_setting, initialize_settings_from_env
+from dashboard.db import bank_overview, import_history, vcxp_overview
+from utils.settings import get_setting, initialize_settings_from_env, set_setting
 
 
 class DashboardRouteTests(unittest.TestCase):
@@ -30,6 +30,10 @@ class DashboardRouteTests(unittest.TestCase):
                 "STAFF_AI_ALLOWED_ROLE_IDS": "11111111111111111",
                 "MESSAGE_CONTEXT_ALLOWED_ROLE_IDS": "22222222222222222",
                 "BOT_OWNER_USER_IDS": "33333333333333333",
+                "VCXP_TRIGGER_ROLE_ID": "44444444444444444",
+                "VCXP_EXCLUDED_ROLE_IDS": "55555555555555555",
+                "VCXP_MINUTES_PER_PULSE": "30",
+                "VCXP_ROLE_REMOVE_DELAY_SECONDS": "30",
                 "DISCORD_TOKEN": "discord-super-secret-value",
                 "GEMINI_API_KEY": "gemini-super-secret-value",
             },
@@ -80,10 +84,26 @@ class DashboardRouteTests(unittest.TestCase):
         self.assertNotIn("discord-super-secret-value", settings.text)
         self.assertNotIn("gemini-super-secret-value", settings.text)
         overview = self.client.get("/")
+        self.assertIn("VC XP Role-Pulse Readiness", overview.text)
+        self.assertIn("44444444444444444", overview.text)
         self.assertNotIn("test-password", overview.text)
         self.assertNotIn("test-session-signing-key", overview.text)
         self.assertNotIn("discord-super-secret-value", overview.text)
         self.assertNotIn("gemini-super-secret-value", overview.text)
+
+    def test_vcxp_trigger_role_uses_single_role_picker(self):
+        self.login()
+        settings = self.client.get("/settings")
+        self.assertEqual(settings.status_code, 200)
+        self.assertIn("VCXP_TRIGGER_ROLE_ID", settings.text)
+        self.assertIn("<role-single-select", settings.text)
+
+    def test_vcxp_excluded_roles_use_csv_role_picker(self):
+        self.login()
+        settings = self.client.get("/settings")
+        self.assertEqual(settings.status_code, 200)
+        self.assertIn("VCXP_EXCLUDED_ROLE_IDS", settings.text)
+        self.assertIn('value-format="csv"', settings.text)
 
     def test_unauthenticated_user_cannot_update_settings(self):
         response = self.client.post(
@@ -225,6 +245,74 @@ class DashboardDatabaseTests(unittest.TestCase):
 
             self.assertFalse(result["tables_found"])
             self.assertEqual(result["imports"], [])
+
+    def test_vcxp_overview_summarizes_role_and_pulse_state(self):
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            database = Path(temporary_directory) / "data.db"
+            with patch.dict(os.environ, {"DATABASE_PATH": str(database)}):
+                initialize_settings_from_env()
+                set_setting("VCXP_TRIGGER_ROLE_ID", "44444444444444444")
+                set_setting("VCXP_ENABLED", "true")
+                connection = sqlite3.connect(database)
+                connection.execute(
+                    """
+                    CREATE TABLE dashboard_discord_roles (
+                        id TEXT PRIMARY KEY,
+                        name TEXT NOT NULL,
+                        managed INTEGER NOT NULL DEFAULT 0
+                    )
+                    """
+                )
+                connection.execute(
+                    """
+                    INSERT INTO dashboard_discord_roles (id, name, managed)
+                    VALUES ('44444444444444444', 'pulse', 0)
+                    """
+                )
+                connection.execute(
+                    """
+                    CREATE TABLE vc_xp_user_state (
+                        guild_id INTEGER,
+                        user_id INTEGER,
+                        pulses_earned INTEGER,
+                        pulses_paid INTEGER
+                    )
+                    """
+                )
+                connection.execute(
+                    """
+                    INSERT INTO vc_xp_user_state
+                    VALUES (1, 10, 5, 3), (1, 11, 1, 1)
+                    """
+                )
+                connection.execute(
+                    """
+                    CREATE TABLE vc_xp_pulses (
+                        id INTEGER PRIMARY KEY,
+                        status TEXT,
+                        error TEXT,
+                        granted_at TEXT
+                    )
+                    """
+                )
+                connection.execute(
+                    """
+                    INSERT INTO vc_xp_pulses (status, error, granted_at)
+                    VALUES ('paid', NULL, ?), ('pending', NULL, ?)
+                    """,
+                    ("2099-01-01T00:00:00+00:00", "2099-01-01T00:01:00+00:00"),
+                )
+                connection.commit()
+                connection.close()
+
+                result = vcxp_overview()
+
+            self.assertEqual(result["status"], "Enabled")
+            self.assertEqual(result["trigger_role_name"], "pulse")
+            self.assertEqual(result["unpaid_users"], 1)
+            self.assertEqual(result["unpaid_pulses"], 2)
+            self.assertEqual(result["active_pulses"], 1)
+            self.assertEqual(result["paid_24h"], 1)
 
 
 if __name__ == "__main__":

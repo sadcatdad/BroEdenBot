@@ -98,6 +98,10 @@ class VCStats(commands.Cog):
     def excluded_role_ids(self) -> set[int]:
         return set(get_csv_ids_setting("VC_EXCLUDED_ROLE_IDS"))
 
+    @property
+    def vcxp_excluded_role_ids(self) -> set[int]:
+        return set(get_csv_ids_setting("VCXP_EXCLUDED_ROLE_IDS"))
+
     def _member_excluded(self, member: Optional[discord.Member]) -> bool:
         return bool(
             member
@@ -105,6 +109,18 @@ class VCStats(commands.Cog):
                 member,
                 user_ids=self.excluded_user_ids,
                 role_ids=self.excluded_role_ids,
+            )
+        )
+
+    def _member_xp_excluded(self, member: Optional[discord.Member]) -> bool:
+        if self._member_excluded(member):
+            return True
+        return bool(
+            member
+            and member_is_excluded(
+                member,
+                user_ids=set(),
+                role_ids=self.vcxp_excluded_role_ids,
             )
         )
 
@@ -116,6 +132,17 @@ class VCStats(commands.Cog):
         if guild and self.excluded_role_ids:
             for member in guild.members:
                 if self._member_excluded(member):
+                    excluded.add(member.id)
+        return excluded
+
+    def _xp_excluded_user_ids_for_guild(
+        self,
+        guild: Optional[discord.Guild],
+    ) -> set[int]:
+        excluded = set(self.excluded_user_ids)
+        if guild and (self.excluded_role_ids or self.vcxp_excluded_role_ids):
+            for member in guild.members:
+                if self._member_xp_excluded(member):
                     excluded.add(member.id)
         return excluded
 
@@ -138,19 +165,19 @@ class VCStats(commands.Cog):
 
     @property
     def vcxp_minutes_per_pulse(self) -> int:
-        return get_int_setting("VCXP_MINUTES_PER_PULSE", 30)
+        return max(1, get_int_setting("VCXP_MINUTES_PER_PULSE", 30))
 
     @property
     def vcxp_role_remove_delay_seconds(self) -> int:
-        return get_int_setting("VCXP_ROLE_REMOVE_DELAY_SECONDS", 30)
+        return max(0, get_int_setting("VCXP_ROLE_REMOVE_DELAY_SECONDS", 30))
 
     @property
     def vcxp_daily_pulse_cap(self) -> int:
-        return get_int_setting("VCXP_DAILY_PULSE_CAP", 4)
+        return max(0, get_int_setting("VCXP_DAILY_PULSE_CAP", 4))
 
     @property
     def vcxp_weekly_pulse_cap(self) -> int:
-        return get_int_setting("VCXP_WEEKLY_PULSE_CAP", 20)
+        return max(0, get_int_setting("VCXP_WEEKLY_PULSE_CAP", 20))
 
     async def cog_load(self) -> None:
         await self._create_tables()
@@ -207,6 +234,8 @@ class VCStats(commands.Cog):
                 self_deafened_entire INTEGER DEFAULT 0,
                 server_muted_entire INTEGER DEFAULT 0,
                 server_deafened_entire INTEGER DEFAULT 0,
+                reward_blocked_seconds INTEGER DEFAULT 0,
+                reward_state_started_at TEXT,
                 PRIMARY KEY (guild_id, user_id)
             )
             """
@@ -331,6 +360,8 @@ class VCStats(commands.Cog):
             "self_deafened_entire": "INTEGER DEFAULT 0",
             "server_muted_entire": "INTEGER DEFAULT 0",
             "server_deafened_entire": "INTEGER DEFAULT 0",
+            "reward_blocked_seconds": "INTEGER DEFAULT 0",
+            "reward_state_started_at": "TEXT",
         }
         for name, definition in additions.items():
             if name not in existing:
@@ -392,6 +423,19 @@ class VCStats(commands.Cog):
         )
 
     @staticmethod
+    def _voice_reward_blocked(flags: Tuple[int, int, int, int]) -> bool:
+        return any(bool(flag) for flag in flags)
+
+    @staticmethod
+    def _elapsed_seconds(started_at_raw: Optional[str], ended_at: datetime) -> int:
+        if not started_at_raw:
+            return 0
+        started_at = parse_timestamp(started_at_raw)
+        if ended_at < started_at:
+            return 0
+        return max(0, int((ended_at - started_at).total_seconds()))
+
+    @staticmethod
     def _non_bot_members(channel: discord.abc.Connectable) -> List[discord.Member]:
         return [member for member in channel.members if not member.bot]
 
@@ -425,8 +469,9 @@ class VCStats(commands.Cog):
                 channel_id, channel_name, joined_at, last_seen_at,
                 self_muted, self_deafened, server_muted, server_deafened,
                 alone_entire, self_muted_entire, self_deafened_entire,
-                server_muted_entire, server_deafened_entire
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                server_muted_entire, server_deafened_entire,
+                reward_blocked_seconds, reward_state_started_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(guild_id, user_id) DO NOTHING
             """,
             (
@@ -441,6 +486,8 @@ class VCStats(commands.Cog):
                 *flags,
                 alone,
                 *flags,
+                0,
+                timestamp,
             ),
         )
 
@@ -454,7 +501,24 @@ class VCStats(commands.Cog):
         if self._member_excluded(member):
             await self._discard_active_session(member.guild.id, member.id)
             return
+        cursor = await self.bot.db.execute(
+            """
+            SELECT self_muted, self_deafened, server_muted, server_deafened,
+                   reward_blocked_seconds, reward_state_started_at
+            FROM vc_active_sessions
+            WHERE guild_id = ? AND user_id = ? AND channel_id = ?
+            """,
+            (member.guild.id, member.id, channel.id),
+        )
+        row = await cursor.fetchone()
+        await cursor.close()
+        if row is None:
+            return
         flags = self._voice_flags(state)
+        previous_flags = tuple(int(row[index] or 0) for index in range(4))
+        blocked_seconds = int(row[4] or 0)
+        if self._voice_reward_blocked(previous_flags):
+            blocked_seconds += self._elapsed_seconds(row[5], observed_at)
         alone = int(len(self._tracked_voice_members(channel)) <= 1)
         await self.bot.db.execute(
             """
@@ -471,7 +535,9 @@ class VCStats(commands.Cog):
                 self_muted_entire = self_muted_entire AND ?,
                 self_deafened_entire = self_deafened_entire AND ?,
                 server_muted_entire = server_muted_entire AND ?,
-                server_deafened_entire = server_deafened_entire AND ?
+                server_deafened_entire = server_deafened_entire AND ?,
+                reward_blocked_seconds = ?,
+                reward_state_started_at = ?
             WHERE guild_id = ? AND user_id = ? AND channel_id = ?
             """,
             (
@@ -482,6 +548,8 @@ class VCStats(commands.Cog):
                 *flags,
                 alone,
                 *flags,
+                blocked_seconds,
+                observed_at.isoformat(),
                 member.guild.id,
                 member.id,
                 channel.id,
@@ -520,7 +588,9 @@ class VCStats(commands.Cog):
             SELECT display_name, username, channel_id, channel_name,
                    joined_at, last_seen_at,
                    alone_entire, self_muted_entire, self_deafened_entire,
-                   server_muted_entire, server_deafened_entire
+                   server_muted_entire, server_deafened_entire,
+                   self_muted, self_deafened, server_muted, server_deafened,
+                   reward_blocked_seconds, reward_state_started_at
             FROM vc_active_sessions
             WHERE guild_id = ? AND user_id = ?
             """,
@@ -543,6 +613,12 @@ class VCStats(commands.Cog):
             was_self_deafened,
             was_server_muted,
             was_server_deafened,
+            current_self_muted,
+            current_self_deafened,
+            current_server_muted,
+            current_server_deafened,
+            reward_blocked_seconds,
+            reward_state_started_at,
         ) = row
         joined_at = parse_timestamp(joined_at_raw)
         safe_last_seen = parse_timestamp(last_seen_at_raw or joined_at_raw)
@@ -550,16 +626,29 @@ class VCStats(commands.Cog):
         if left_at < joined_at:
             left_at = joined_at
         duration = max(0, int((left_at - joined_at).total_seconds()))
+        current_flags = (
+            int(current_self_muted or 0),
+            int(current_self_deafened or 0),
+            int(current_server_muted or 0),
+            int(current_server_deafened or 0),
+        )
+        blocked_seconds = int(reward_blocked_seconds or 0)
+        if self._voice_reward_blocked(current_flags):
+            blocked_seconds += self._elapsed_seconds(
+                reward_state_started_at,
+                left_at,
+            )
+        blocked_seconds = min(duration, max(0, blocked_seconds))
+        eligible_seconds = max(0, duration - blocked_seconds)
 
         guild = self.bot.get_guild(guild_id)
         afk_channel_id = guild.afk_channel.id if guild and guild.afk_channel else None
         reward_eligible = int(
-            duration >= MINIMUM_ELIGIBLE_SECONDS
+            eligible_seconds >= MINIMUM_ELIGIBLE_SECONDS
             and channel_id != afk_channel_id
             and not was_alone
-            and not was_self_deafened
         )
-        counted_seconds = duration if reward_eligible else 0
+        counted_seconds = eligible_seconds if reward_eligible else 0
 
         await self.bot.db.execute(
             """
@@ -744,7 +833,7 @@ class VCStats(commands.Cog):
     ) -> Tuple[int, int, int]:
         guild = self.bot.get_guild(guild_id)
         member = guild.get_member(user_id) if guild else None
-        if user_id in self.excluded_user_ids or self._member_excluded(member):
+        if user_id in self.excluded_user_ids or self._member_xp_excluded(member):
             eligible_seconds = 0
         else:
             cursor = await self.bot.db.execute(
@@ -787,7 +876,7 @@ class VCStats(commands.Cog):
     async def _sync_xp_states(self, guild_id: int) -> None:
         guild = self.bot.get_guild(guild_id)
         excluded_sql, excluded_parameters = self._excluded_user_sql(
-            self._excluded_user_ids_for_guild(guild)
+            self._xp_excluded_user_ids_for_guild(guild)
         )
         rows = await self._fetchall(
             f"""
@@ -985,8 +1074,8 @@ class VCStats(commands.Cog):
         try:
             if member.bot:
                 return False, "Bots cannot receive VC XP pulses."
-            if self._member_excluded(member):
-                return False, "That member is excluded from VC stats and rewards."
+            if self._member_xp_excluded(member):
+                return False, "That member is excluded from VC XP pulses."
             if role.managed:
                 return False, "The configured trigger role is managed by an integration."
             bot_member = member.guild.me
@@ -1180,7 +1269,7 @@ class VCStats(commands.Cog):
                         user_id,
                     )
                     continue
-                if self._member_excluded(member):
+                if self._member_xp_excluded(member):
                     logger.info(
                         "VC XP pulse skipped: excluded member guild=%s user=%s",
                         guild.id,
@@ -1824,8 +1913,7 @@ class VCStats(commands.Cog):
             f"Minimum eligible session: **{format_duration(minimum)}**\n"
             f"Exclude AFK channel: **{enabled('exclude_afk_channel')}**\n"
             f"Exclude alone sessions: **{enabled('exclude_alone_sessions')}**\n"
-            f"Exclude self-deafened sessions: "
-            f"**{enabled('exclude_self_deafened_sessions')}**",
+            "Muted/deafened time earns XP: **No**",
             ephemeral=True,
         )
 
@@ -1837,7 +1925,7 @@ class VCStats(commands.Cog):
     ) -> List[Tuple[int, str, str, int, int, int, int, int, bool]]:
         await self._sync_xp_states(guild.id)
         excluded_sql, excluded_parameters = self._excluded_user_sql(
-            self._excluded_user_ids_for_guild(guild)
+            self._xp_excluded_user_ids_for_guild(guild)
         )
         period_rows = await self._fetchall(
             f"""
@@ -1865,7 +1953,7 @@ class VCStats(commands.Cog):
         preview = []
         for user_id, eligible_total, pulses_earned, pulses_paid in state_rows:
             member = current_member(guild, user_id)
-            if user_id in self.excluded_user_ids or self._member_excluded(member):
+            if user_id in self.excluded_user_ids or self._member_xp_excluded(member):
                 continue
             if member is None and not include_left_members:
                 continue
@@ -1930,6 +2018,7 @@ class VCStats(commands.Cog):
             f"Daily pulse cap: **{self.vcxp_daily_pulse_cap}**\n"
             f"Weekly pulse cap: **{self.vcxp_weekly_pulse_cap}** "
             "(rolling seven days)\n"
+            f"VC XP excluded roles: **{len(self.vcxp_excluded_role_ids)} configured**\n"
             f"Status: {issue or '**Ready**'}\n\n"
             "BroEdenBot only adds and removes the configured role. It does not "
             "call MEE6 or grant MEE6 XP directly.",
@@ -1972,7 +2061,7 @@ class VCStats(commands.Cog):
 
         state_exists = await self._table_exists("vc_xp_user_state")
         pulses_exists = await self._table_exists("vc_xp_pulses")
-        excluded_ids = self._excluded_user_ids_for_guild(guild)
+        excluded_ids = self._xp_excluded_user_ids_for_guild(guild)
         unpaid_users = 0
         paid_last_day = 0
         recent_rows = []
@@ -2056,7 +2145,8 @@ class VCStats(commands.Cog):
                 f"Minutes per pulse: **{self.vcxp_minutes_per_pulse}**\n"
                 f"Role removal delay: **{self.vcxp_role_remove_delay_seconds}s**\n"
                 f"Daily cap: **{self.vcxp_daily_pulse_cap}**\n"
-                f"Weekly cap: **{self.vcxp_weekly_pulse_cap}**"
+                f"Weekly cap: **{self.vcxp_weekly_pulse_cap}**\n"
+                f"XP excluded roles: **{len(self.vcxp_excluded_role_ids)}**"
             ),
             inline=True,
         )
@@ -2190,7 +2280,7 @@ class VCStats(commands.Cog):
         filtered_rows = []
         for row in rows:
             member = current_member(interaction.guild, row[0])
-            if row[0] in self.excluded_user_ids or self._member_excluded(member):
+            if row[0] in self.excluded_user_ids or self._member_xp_excluded(member):
                 continue
             if member is None and not include_left_members:
                 continue
@@ -2240,9 +2330,9 @@ class VCStats(commands.Cog):
                 ephemeral=True,
             )
             return
-        if self._member_excluded(user):
+        if self._member_xp_excluded(user):
             await interaction.response.send_message(
-                "That member is excluded from VC stats and rewards.",
+                "That member is excluded from VC XP pulses.",
                 ephemeral=True,
             )
             return
@@ -2288,9 +2378,9 @@ class VCStats(commands.Cog):
                 ephemeral=True,
             )
             return
-        if self._member_excluded(user):
+        if self._member_xp_excluded(user):
             await interaction.response.send_message(
-                "That member is excluded from VC stats and rewards.",
+                "That member is excluded from VC XP pulses.",
                 ephemeral=True,
             )
             return

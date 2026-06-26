@@ -491,10 +491,12 @@ All `/vcstats` and `/vcrewards` responses are ephemeral. The module records all
 completed sessions but separately calculates reward-eligible time for future
 use. It does not call MEE6, run MEE6 commands, or grant MEE6 XP directly.
 
-A session is reward-eligible when it lasts at least five minutes and the member
-was not in the server's configured AFK channel, alone for the entire session,
-or self-deafened for the entire session. A best-effort heartbeat updates active
-sessions once per minute. Time while the bot is offline is not counted.
+A session can earn reward-eligible time when the member was not in the
+server's configured AFK channel and was not alone for the entire session.
+Self-muted, self-deafened, server-muted, and server-deafened intervals are
+subtracted before the five-minute minimum is checked. A best-effort heartbeat
+updates active sessions once per minute. Time while the bot is offline is not
+counted.
 
 Historical imports are included by default in tracked-time totals. They are not
 reward eligible and cannot generate VC XP pulses because old logs cannot prove
@@ -567,8 +569,8 @@ tables, imported historical sessions, or VC XP pulse/accounting tables.
 
 ### `/vcstats settings`
 
-Shows the current reward-preparation rules, including minimum session length
-and the AFK, alone, and self-deafened exclusions.
+Shows the current reward-preparation rules, including minimum eligible session
+length, AFK and alone-session exclusions, and the muted/deafened XP exclusion.
 
 ## VC XP role-pulse commands
 
@@ -581,6 +583,9 @@ Automatic pulses are disabled by default. When enabled and configured, the bot
 checks every five minutes for unpaid pulses and processes at most one pulse per
 member during each check. A pulse adds the configured trigger role, waits for
 the configured delay, removes the role, and records the result in `data.db`.
+Muted or deafened VC time does not earn VC XP. The bot subtracts self-muted,
+self-deafened, server-muted, and server-deafened intervals from the session's
+eligible seconds before calculating earned pulses.
 
 If role removal fails after a successful add, the pulse is counted as paid to
 prevent an accidental duplicate MEE6 trigger. Staff should then remove the
@@ -590,7 +595,8 @@ stuck role manually and inspect the bot logs.
 
 Shows whether automatic pulses are enabled, the configured trigger role,
 eligible minutes per pulse, removal delay, daily cap, weekly cap, and current
-configuration status.
+configuration status. It also shows how many VCXP-only excluded roles are
+configured.
 
 ### `/vcrewards audit [include_left_members]`
 
@@ -659,7 +665,10 @@ includes an `is_current_member` column.
    workflow.
 
 MEE6 automation is configured separately. A typical automation watches for a
-member receiving `VCxp` and awards a small amount of XP.
+member receiving `VCxp` and awards a small amount of XP. Configure MEE6 to
+trigger on the temporary role being added, not on the role being removed.
+Use `VCXP_ROLE_REMOVE_DELAY_SECONDS` to keep the role present long enough for
+MEE6 to see the change; `30` seconds is the default safe starting point.
 
 ### Testing the VC XP bridge
 
@@ -689,6 +698,13 @@ Restart the bot, then run `/vcrewards pulse user:@me pulses:1`. Verify that
 `VCxp` appears on the member, remains for
 `VCXP_ROLE_REMOVE_DELAY_SECONDS`, and is removed. Run `/vcrewards preview`
 again to confirm the paid pulse count increased.
+
+Before leaving automation on, run `/vcrewards audit` and check the local web
+dashboard Overview page. The dashboard's VC XP readiness card summarizes the
+stored trigger role ID, latest role snapshot name when available, pulse caps,
+VCXP-only excluded-role count, unpaid snapshot, active pulses, and recent
+payout activity. The Discord audit remains the source of truth for live role
+hierarchy and Manage Roles checks.
 
 ## Stats commands
 
@@ -939,6 +955,7 @@ their shared Discord role:
 ```dotenv
 ACTIVITY_EXCLUDED_ROLE_IDS=1282775339566895239
 VC_EXCLUDED_ROLE_IDS=1282775339566895239
+VCXP_EXCLUDED_ROLE_IDS=
 EXCLUDED_VOICE_CHANNEL_IDS=
 VC_EXCLUDED_USER_IDS=983091180885643326,716390085896962058
 ```
@@ -946,9 +963,10 @@ VC_EXCLUDED_USER_IDS=983091180885643326,716390085896962058
 Live message activity ignores bot-authored messages, `ACTIVITY_EXCLUDED_USER_IDS`,
 and members with any `ACTIVITY_EXCLUDED_ROLE_IDS`. Live VC tracking ignores bots,
 `VC_EXCLUDED_USER_IDS`, and members with any `VC_EXCLUDED_ROLE_IDS`; excluded
-members do not receive VC rewards or automatic VC XP pulses. The Voice dashboard
-also ignores `VC_EXCLUDED_USER_IDS`, `EXCLUDED_VOICE_CHANNEL_IDS`, and rows
-marked with `ignored_at`.
+members do not receive VC rewards or automatic VC XP pulses. Use
+`VCXP_EXCLUDED_ROLE_IDS` when a role should be visible in VC stats but should
+not earn VC XP pulses. The Voice dashboard also ignores `VC_EXCLUDED_USER_IDS`,
+`EXCLUDED_VOICE_CHANNEL_IDS`, and rows marked with `ignored_at`.
 
 Historical exports usually do not contain role membership. Generate a current
 role-member cache before importing or cleaning historical data:
@@ -1254,6 +1272,7 @@ updated from the authenticated local dashboard without rewriting `.env`.
 | `EXCLUDED_VOICE_CHANNEL_IDS` | Comma-separated voice channel IDs excluded from dashboard voice analytics and cleanup marking. |
 | `VCREWARDS_ALLOWED_ROLE_IDS` | Optional role IDs allowed to use `/vcrewards audit`. Falls back to `VCSTATS_ALLOWED_ROLE_IDS`. |
 | `VCXP_TRIGGER_ROLE_ID` | Discord role ID temporarily added for each VC XP pulse. |
+| `VCXP_EXCLUDED_ROLE_IDS` | Comma-separated role IDs excluded from VC XP pulses only. Members with these roles remain visible in VC stats unless also excluded by `VC_EXCLUDED_ROLE_IDS`. |
 | `VCXP_MINUTES_PER_PULSE` | Eligible VC minutes required per pulse. Defaults to `30`. |
 | `VCXP_ROLE_REMOVE_DELAY_SECONDS` | Seconds before the trigger role is removed. Defaults to `30`. |
 | `VCXP_DAILY_PULSE_CAP` | Maximum automatic pulses per member per UTC day. Defaults to `4`. |
@@ -1314,9 +1333,10 @@ notify anyone.
 
 The local FastAPI dashboard provides shared-database status, bank overview,
 historical-import status, database-backed editing for an explicit allowlist of
-safe runtime settings, stats graphics management, and an allowlisted local
-Knowledge Base manager. It does not edit `.env`, modify bank records, expose
-Discord or Gemini secrets, or provide public hosting.
+safe runtime settings, a VC XP role-pulse readiness summary, stats graphics
+management, and an allowlisted local Knowledge Base manager. It does not edit
+`.env`, modify bank records, expose Discord or Gemini secrets, or provide
+public hosting.
 
 The top-level dashboard tabs are Overview, Operations, Analytics, Bank, and
 Settings. Stats Graphics lives under Analytics. Knowledge Base, Imports, and
@@ -1417,7 +1437,9 @@ seeding. The bot reads these safe values from SQLite first and falls back to
 `.env` only when a database row is missing.
 
 Editable settings include `/ask` channels and cooldown, staff/owner permission
-IDs, and VC XP role-pulse controls. Discord ID lists accept blank values or
+IDs, and VC XP role-pulse controls. The dashboard Overview page also shows a
+read-only VC XP readiness card using the shared database and latest Discord
+metadata snapshot when available. Discord ID lists accept blank values or
 comma-separated 17-20 digit IDs and remove spaces when saved. Integer and
 boolean values are range-checked. Changes take effect through runtime setting
 lookups; the dashboard does not automatically restart the bot.

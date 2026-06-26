@@ -39,6 +39,7 @@ from dashboard.db import (
     find_bank_database_path,
     find_database_path,
     import_history,
+    vcxp_overview,
 )
 from dashboard.discord_metadata import (
     categories_metadata,
@@ -450,6 +451,7 @@ async def home(request: Request) -> HTMLResponse:
             guild_id=safe_setting("GUILD_ID"),
             database=database,
             bank_database=bank_database,
+            vcxp=vcxp_overview(),
             discord_token_status=safe_setting("DISCORD_TOKEN"),
             gemini_key_status=safe_setting("GEMINI_API_KEY"),
             gemini_models_configured=all(os.getenv(name, "").strip() for name in model_names),

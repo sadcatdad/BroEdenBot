@@ -38,6 +38,46 @@
 <section class="card">
   <div class="section-heading">
     <div>
+      <p class="eyebrow">MEE6 bridge</p>
+      <h2>VC XP Role-Pulse Readiness</h2>
+    </div>
+    <a class="button secondary small" href="{{ url_for('settings') }}">Open VC XP Settings</a>
+  </div>
+  <div class="status-list">
+    <div><span>Status</span><strong class="{{ vcxp.status_class }}">{{ vcxp.status }}</strong></div>
+    <div><span>Automatic pulses</span><strong>{{ "Enabled" if vcxp.enabled else "Disabled" }}</strong></div>
+    <div>
+      <span>Trigger role</span>
+      <strong>
+        {% if vcxp.trigger_role_name %}
+          {{ vcxp.trigger_role_name }} · {{ vcxp.trigger_role_id }}
+        {% elif vcxp.trigger_role_id %}
+          {{ vcxp.trigger_role_id }}
+        {% else %}
+          Not configured
+        {% endif %}
+      </strong>
+    </div>
+    <div><span>Pulse rule</span><strong>{{ vcxp.minutes_per_pulse }} min · remove after {{ vcxp.remove_delay_seconds }}s</strong></div>
+    <div><span>Caps</span><strong>{{ vcxp.daily_cap }}/day · {{ vcxp.weekly_cap }}/7 days</strong></div>
+    <div><span>XP excluded roles</span><strong>{{ vcxp.xp_excluded_role_count }} configured</strong></div>
+    <div><span>Unpaid snapshot</span><strong>{{ vcxp.unpaid_pulses }} pulses · {{ vcxp.unpaid_users }} users</strong></div>
+    <div><span>Recent payout activity</span><strong>{{ vcxp.paid_24h }} paid in 24h · {{ vcxp.active_pulses }} active</strong></div>
+  </div>
+  {% if vcxp.issues %}
+  <div class="alert warning compact-alert">
+    {% for issue in vcxp.issues[:3] %}
+    <div>{{ issue }}</div>
+    {% endfor %}
+  </div>
+  {% else %}
+  <div class="alert success compact-alert">Dashboard checks look clean. Run `/vcrewards audit` in Discord for the live role hierarchy check before enabling automation.</div>
+  {% endif %}
+</section>
+
+<section class="card">
+  <div class="section-heading">
+    <div>
       <p class="eyebrow">Safe configuration check</p>
       <h2>Service status</h2>
     </div>

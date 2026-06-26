@@ -16,6 +16,8 @@ class DiscordObjectPicker extends HTMLElement {
     this.endpoint = this.getAttribute("endpoint") || "/api/discord/guild-structure";
     this.inputName = this.getAttribute("input-name") || this.getAttribute("name") || "";
     this.placeholder = this.getAttribute("placeholder") || "Search Discord objects";
+    this.single = this.hasAttribute("single");
+    this.valueFormat = this.getAttribute("value-format") || "json";
     this.selected = new Set(this.initialValues());
     this.renderShell();
     this.loadObjects();
@@ -178,7 +180,10 @@ class DiscordObjectPicker extends HTMLElement {
     options.querySelectorAll("input[data-object-id]").forEach((checkbox) => {
       checkbox.addEventListener("change", () => {
         const value = String(checkbox.dataset.objectId);
-        if (checkbox.checked) this.selected.add(value);
+        if (checkbox.checked) {
+          if (this.single) this.selected.clear();
+          this.selected.add(value);
+        }
         else this.selected.delete(value);
         this.draw();
       });
@@ -256,13 +261,14 @@ class DiscordObjectPicker extends HTMLElement {
 
   optionHtml(item) {
     const checked = this.selected.has(String(item.id)) ? "checked" : "";
+    const inputType = this.single ? "radio" : "checkbox";
     const swatch = this.mode === "role"
       ? `<span class="role-swatch" style="background:${this.escape(item.color || "#6b6d78")}"></span>`
       : `<span class="channel-kind">${this.mode === "category" ? "◇" : this.channelIcon(item)}</span>`;
     const meta = this.metaText(item);
     return `
       <label class="discord-picker-option">
-        <input type="checkbox" data-object-id="${this.escape(item.id)}" ${checked}>
+        <input type="${inputType}" data-object-id="${this.escape(item.id)}" ${checked}>
         ${swatch}
         <span class="row-main">
           <span class="row-title">${this.escape(this.displayName(item))}</span>
@@ -307,7 +313,11 @@ class DiscordObjectPicker extends HTMLElement {
 
   drawSelected() {
     const hidden = this.querySelector(".discord-picker-value");
-    if (hidden) hidden.value = JSON.stringify([...this.selected]);
+    if (hidden) {
+      hidden.value = this.valueFormat === "csv"
+        ? [...this.selected].join(",")
+        : JSON.stringify([...this.selected]);
+    }
     const selected = this.querySelector(".discord-picker-selected");
     if (!selected) return;
     const chips = [...this.selected].map((id) => {
@@ -411,6 +421,16 @@ customElements.define("role-multi-select", class extends DiscordObjectPicker {
     this.setAttribute("mode", "role");
     this.setAttribute("endpoint", this.getAttribute("endpoint") || "/api/discord/roles");
     this.setAttribute("placeholder", this.getAttribute("placeholder") || "Search roles");
+    super.connectedCallback();
+  }
+});
+customElements.define("role-single-select", class extends DiscordObjectPicker {
+  connectedCallback() {
+    this.setAttribute("mode", "role");
+    this.setAttribute("endpoint", this.getAttribute("endpoint") || "/api/discord/roles");
+    this.setAttribute("placeholder", this.getAttribute("placeholder") || "Search roles");
+    this.setAttribute("single", "");
+    this.setAttribute("value-format", "csv");
     super.connectedCallback();
   }
 });

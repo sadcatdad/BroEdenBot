@@ -65,6 +65,10 @@
           <option value="false" {{ "selected" if setting.value == "false" else "" }}>false</option>
           <option value="true" {{ "selected" if setting.value == "true" else "" }}>true</option>
         </select>
+        {% elif setting.key == "VCXP_TRIGGER_ROLE_ID" %}
+        <role-single-select input-name="value" setting-key="{{ setting.key }}" value="{{ setting.value|e }}"></role-single-select>
+        {% elif setting.key == "VCXP_EXCLUDED_ROLE_IDS" %}
+        <role-multi-select input-name="value" setting-key="{{ setting.key }}" value-format="csv" value="{{ setting.value|e }}"></role-multi-select>
         {% elif setting.key in ["admin_role_ids", "staff_role_ids", "bot_role_ids_excluded_from_stats", "bank_allowed_role_ids"] %}
         <role-multi-select input-name="value" setting-key="{{ setting.key }}" value='{{ setting.value|e }}'></role-multi-select>
         {% elif setting.key in ["analytics_excluded_channel_ids", "knowledge_allowed_channel_ids", "ask_command_allowed_channel_ids", "bank_log_channel_id"] %}
