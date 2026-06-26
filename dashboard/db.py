@@ -287,15 +287,52 @@ def vcxp_overview(limit: int = 5) -> dict[str, Any]:
 
             if "vc_xp_user_state" in tables:
                 result["state_table_found"] = True
-                row = connection.execute(
-                    """
-                    SELECT
-                        COUNT(*) AS users,
-                        COALESCE(SUM(pulses_earned - pulses_paid), 0) AS pulses
-                    FROM vc_xp_user_state
-                    WHERE pulses_earned > pulses_paid
-                    """
-                ).fetchone()
+                if "vc_sessions" in tables and reward_start_at:
+                    row = connection.execute(
+                        """
+                        WITH earned AS (
+                            SELECT
+                                guild_id,
+                                user_id,
+                                CAST(
+                                    COALESCE(SUM(counted_seconds), 0) / ? AS INTEGER
+                                ) AS pulses_earned
+                            FROM vc_sessions
+                            WHERE reward_eligible = 1
+                              AND left_at >= ?
+                            GROUP BY user_id
+                        ),
+                        unpaid AS (
+                            SELECT
+                                earned.user_id,
+                                MAX(
+                                    0,
+                                    earned.pulses_earned
+                                        - COALESCE(state.pulses_paid, 0)
+                                ) AS unpaid_pulses
+                            FROM earned
+                            LEFT JOIN vc_xp_user_state AS state
+                              ON state.guild_id = earned.guild_id
+                             AND state.user_id = earned.user_id
+                        )
+                        SELECT
+                            COUNT(*) AS users,
+                            COALESCE(SUM(unpaid_pulses), 0) AS pulses
+                        FROM unpaid
+                        WHERE unpaid_pulses > 0
+                        """,
+                        (minutes_per_pulse * 60, reward_start_at),
+                    ).fetchone()
+                else:
+                    row = connection.execute(
+                        """
+                        SELECT
+                            COUNT(*) AS users,
+                            COALESCE(SUM(pulses_earned - pulses_paid), 0) AS pulses
+                        FROM vc_xp_user_state
+                        WHERE pulses_earned > pulses_paid
+                        """
+                    ).fetchone()
                 result["unpaid_users"] = int(row["users"] or 0)
                 result["unpaid_pulses"] = int(row["pulses"] or 0)
 

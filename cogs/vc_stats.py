@@ -2100,6 +2100,8 @@ class VCStats(commands.Cog):
 
         state_exists = await self._table_exists("vc_xp_user_state")
         pulses_exists = await self._table_exists("vc_xp_pulses")
+        if state_exists:
+            await self._sync_xp_states(guild.id)
         excluded_ids = self._xp_excluded_user_ids_for_guild(guild)
         unpaid_users = 0
         paid_last_day = 0

@@ -246,6 +246,65 @@ class VCRewardAccountingTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(pulses_earned, 1)
         self.assertEqual(pulses_paid, 0)
 
+    async def test_vcxp_bulk_sync_resets_stale_backpay_state(self):
+        initialize_settings_from_env()
+        set_setting(
+            "VCXP_REWARD_START_AT",
+            "2026-06-25T12:00:00+00:00",
+        )
+        self.guild.members = [DummyMember(10, self.guild)]
+        await self.database.execute(
+            """
+            INSERT INTO vc_sessions (
+                guild_id, user_id, display_name, username,
+                channel_id, channel_name, joined_at, left_at,
+                duration_seconds, counted_seconds, was_alone,
+                was_self_muted, was_self_deafened, was_server_muted,
+                was_server_deafened, reward_eligible, created_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 0, 0, 0, 0, 1, ?)
+            """,
+            (
+                self.guild.id,
+                10,
+                "Member 10",
+                "member10",
+                20,
+                "Lounge",
+                "2026-06-24T11:00:00+00:00",
+                "2026-06-24T12:00:00+00:00",
+                3600,
+                3600,
+                "2026-06-24T12:00:00+00:00",
+            ),
+        )
+        await self.database.execute(
+            """
+            INSERT INTO vc_xp_user_state (
+                guild_id, user_id, eligible_seconds_total,
+                pulses_earned, pulses_paid, updated_at
+            ) VALUES (?, ?, 36000, 120, 0, ?)
+            """,
+            (self.guild.id, 10, "2026-06-25T00:00:00+00:00"),
+        )
+        await self.database.commit()
+
+        await self.cog._sync_xp_states(self.guild.id)
+
+        cursor = await self.database.execute(
+            """
+            SELECT eligible_seconds_total, pulses_earned, pulses_paid
+            FROM vc_xp_user_state
+            WHERE guild_id = ? AND user_id = ?
+            """,
+            (self.guild.id, 10),
+        )
+        row = await cursor.fetchone()
+        await cursor.close()
+
+        self.assertEqual(row[0], 0)
+        self.assertEqual(row[1], 0)
+        self.assertEqual(row[2], 0)
+
     async def test_vcxp_reward_start_defaults_to_startup_time(self):
         value = self.cog.vcxp_reward_start_at
 

@@ -342,6 +342,57 @@ class DashboardDatabaseTests(unittest.TestCase):
             self.assertEqual(result["active_pulses"], 1)
             self.assertEqual(result["paid_24h"], 1)
 
+    def test_vcxp_overview_ignores_stale_unpaid_state_before_reward_start(self):
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            database = Path(temporary_directory) / "data.db"
+            with patch.dict(os.environ, {"DATABASE_PATH": str(database)}):
+                initialize_settings_from_env()
+                set_setting(
+                    "VCXP_REWARD_START_AT",
+                    "2026-06-26T19:28:32+00:00",
+                )
+                connection = sqlite3.connect(database)
+                connection.execute(
+                    """
+                    CREATE TABLE vc_xp_user_state (
+                        guild_id INTEGER,
+                        user_id INTEGER,
+                        pulses_earned INTEGER,
+                        pulses_paid INTEGER
+                    )
+                    """
+                )
+                connection.execute(
+                    """
+                    INSERT INTO vc_xp_user_state
+                    VALUES (1, 10, 120, 0), (1, 11, 80, 10)
+                    """
+                )
+                connection.execute(
+                    """
+                    CREATE TABLE vc_sessions (
+                        guild_id INTEGER,
+                        user_id INTEGER,
+                        left_at TEXT,
+                        counted_seconds INTEGER,
+                        reward_eligible INTEGER
+                    )
+                    """
+                )
+                connection.execute(
+                    """
+                    INSERT INTO vc_sessions
+                    VALUES (1, 10, '2026-06-25T12:00:00+00:00', 3600, 1)
+                    """
+                )
+                connection.commit()
+                connection.close()
+
+                result = vcxp_overview()
+
+            self.assertEqual(result["unpaid_users"], 0)
+            self.assertEqual(result["unpaid_pulses"], 0)
+
 
 if __name__ == "__main__":
     unittest.main()
