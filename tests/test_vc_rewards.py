@@ -174,6 +174,80 @@ class VCRewardAccountingTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(row[1], 0)
         self.assertEqual(row[2], 0)
 
+    async def test_missing_active_row_can_be_restarted(self):
+        now = datetime(2026, 6, 25, 12, tzinfo=timezone.utc)
+        member = DummyMember(10, self.guild)
+        companion = DummyMember(11, self.guild)
+        self.guild.members = [member, companion]
+        channel = DummyChannel(20, [member, companion])
+
+        observed = await self.cog._observe_session(
+            member,
+            channel,
+            DummyState(),
+            now,
+        )
+        if not observed:
+            await self.cog._start_session(member, channel, DummyState(), now)
+        await self.database.commit()
+
+        cursor = await self.database.execute(
+            """
+            SELECT guild_id, user_id, channel_id, reward_blocked_seconds,
+                   reward_state_started_at
+            FROM vc_active_sessions
+            """
+        )
+        row = await cursor.fetchone()
+        await cursor.close()
+
+        self.assertEqual(row[0], self.guild.id)
+        self.assertEqual(row[1], member.id)
+        self.assertEqual(row[2], channel.id)
+        self.assertEqual(row[3], 0)
+        self.assertEqual(row[4], now.isoformat())
+
+    async def test_stale_active_row_can_be_restarted_in_current_channel(self):
+        stale_start = datetime(2026, 6, 25, 11, tzinfo=timezone.utc)
+        now = datetime(2026, 6, 25, 12, tzinfo=timezone.utc)
+        member = DummyMember(10, self.guild)
+        companion = DummyMember(11, self.guild)
+        self.guild.members = [member, companion]
+        stale_channel = DummyChannel(19, [])
+        channel = DummyChannel(20, [member, companion])
+
+        await self.cog._start_session(
+            member,
+            stale_channel,
+            DummyState(),
+            stale_start,
+        )
+        await self.cog._start_session(member, channel, DummyState(), now)
+        await self.database.commit()
+
+        cursor = await self.database.execute(
+            """
+            SELECT channel_id, joined_at, last_seen_at, reward_blocked_seconds,
+                   reward_state_started_at
+            FROM vc_active_sessions
+            WHERE guild_id = ? AND user_id = ?
+            """,
+            (self.guild.id, member.id),
+        )
+        row = await cursor.fetchone()
+        await cursor.close()
+
+        self.assertEqual(row[0], channel.id)
+        self.assertEqual(row[1], now.isoformat())
+        self.assertEqual(row[2], now.isoformat())
+        self.assertEqual(row[3], 0)
+        self.assertEqual(row[4], now.isoformat())
+
+    def test_invalid_reward_state_timestamp_does_not_crash_tracking(self):
+        now = datetime(2026, 6, 25, 12, tzinfo=timezone.utc)
+
+        self.assertEqual(self.cog._elapsed_seconds("not-a-date", now), 0)
+
     def test_vcxp_role_exclusion_is_separate_from_vc_stats_exclusion(self):
         guild = DummyGuild(123)
         member = DummyMember(10, guild, roles=[DummyRole(55555555555555555)])

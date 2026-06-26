@@ -400,6 +400,17 @@ class VCStats(commands.Cog):
                 await self.bot.db.execute(
                     f"ALTER TABLE vc_active_sessions ADD COLUMN {name} {definition}"
                 )
+        await self.bot.db.execute(
+            """
+            UPDATE vc_active_sessions
+            SET reward_blocked_seconds = COALESCE(reward_blocked_seconds, 0),
+                reward_state_started_at = COALESCE(
+                    reward_state_started_at,
+                    last_seen_at,
+                    joined_at
+                )
+            """
+        )
 
     @staticmethod
     def _parse_allowed_role_ids(raw_value: str) -> set:
@@ -462,7 +473,10 @@ class VCStats(commands.Cog):
     def _elapsed_seconds(started_at_raw: Optional[str], ended_at: datetime) -> int:
         if not started_at_raw:
             return 0
-        started_at = parse_timestamp(started_at_raw)
+        try:
+            started_at = parse_timestamp(started_at_raw)
+        except (TypeError, ValueError):
+            return 0
         if ended_at < started_at:
             return 0
         return max(0, int((ended_at - started_at).total_seconds()))
@@ -504,7 +518,24 @@ class VCStats(commands.Cog):
                 server_muted_entire, server_deafened_entire,
                 reward_blocked_seconds, reward_state_started_at
             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            ON CONFLICT(guild_id, user_id) DO NOTHING
+            ON CONFLICT(guild_id, user_id) DO UPDATE SET
+                display_name = excluded.display_name,
+                username = excluded.username,
+                channel_id = excluded.channel_id,
+                channel_name = excluded.channel_name,
+                joined_at = excluded.joined_at,
+                last_seen_at = excluded.last_seen_at,
+                self_muted = excluded.self_muted,
+                self_deafened = excluded.self_deafened,
+                server_muted = excluded.server_muted,
+                server_deafened = excluded.server_deafened,
+                alone_entire = excluded.alone_entire,
+                self_muted_entire = excluded.self_muted_entire,
+                self_deafened_entire = excluded.self_deafened_entire,
+                server_muted_entire = excluded.server_muted_entire,
+                server_deafened_entire = excluded.server_deafened_entire,
+                reward_blocked_seconds = excluded.reward_blocked_seconds,
+                reward_state_started_at = excluded.reward_state_started_at
             """,
             (
                 member.guild.id,
@@ -529,10 +560,10 @@ class VCStats(commands.Cog):
         channel: discord.abc.Connectable,
         state: discord.VoiceState,
         observed_at: datetime,
-    ) -> None:
+    ) -> bool:
         if self._member_excluded(member):
             await self._discard_active_session(member.guild.id, member.id)
-            return
+            return False
         cursor = await self.bot.db.execute(
             """
             SELECT self_muted, self_deafened, server_muted, server_deafened,
@@ -545,7 +576,7 @@ class VCStats(commands.Cog):
         row = await cursor.fetchone()
         await cursor.close()
         if row is None:
-            return
+            return False
         flags = self._voice_flags(state)
         previous_flags = tuple(int(row[index] or 0) for index in range(4))
         blocked_seconds = int(row[4] or 0)
@@ -587,6 +618,7 @@ class VCStats(commands.Cog):
                 channel.id,
             ),
         )
+        return True
 
     async def _mark_channel_has_company(
         self, guild_id: int, channel: discord.abc.Connectable
@@ -778,7 +810,14 @@ class VCStats(commands.Cog):
                 if key not in active:
                     await self._start_session(member, channel, state, now)
                 else:
-                    await self._observe_session(member, channel, state, now)
+                    observed = await self._observe_session(
+                        member,
+                        channel,
+                        state,
+                        now,
+                    )
+                    if not observed:
+                        await self._start_session(member, channel, state, now)
                 await self._mark_channel_has_company(member.guild.id, channel)
             await self.bot.db.commit()
 
@@ -790,8 +829,11 @@ class VCStats(commands.Cog):
         self._last_startup_reconcile = now
         try:
             await self._reconcile_sessions(startup=True)
-        except Exception:
-            logger.exception("VC startup reconciliation failed")
+        except Exception as exc:
+            logger.exception(
+                "VC startup reconciliation failed error_type=%s",
+                type(exc).__name__,
+            )
 
     @commands.Cog.listener()
     async def on_voice_state_update(
@@ -812,9 +854,13 @@ class VCStats(commands.Cog):
             async with self._tracking_lock:
                 if before.channel == after.channel:
                     if after.channel:
-                        await self._observe_session(
+                        observed = await self._observe_session(
                             member, after.channel, after, now
                         )
+                        if not observed:
+                            await self._start_session(
+                                member, after.channel, after, now
+                            )
                         await self._mark_channel_has_company(
                             member.guild.id, after.channel
                         )
@@ -838,19 +884,23 @@ class VCStats(commands.Cog):
                         member.guild.id, before.channel
                     )
                 await self.bot.db.commit()
-        except Exception:
+        except Exception as exc:
             logger.exception(
-                "VC state tracking failed for guild=%s user=%s",
+                "VC state tracking failed for guild=%s user=%s error_type=%s",
                 member.guild.id,
                 member.id,
+                type(exc).__name__,
             )
 
     @tasks.loop(seconds=HEARTBEAT_SECONDS)
     async def _heartbeat(self) -> None:
         try:
             await self._reconcile_sessions(startup=False)
-        except Exception:
-            logger.exception("VC heartbeat reconciliation failed")
+        except Exception as exc:
+            logger.exception(
+                "VC heartbeat reconciliation failed error_type=%s",
+                type(exc).__name__,
+            )
 
     @_heartbeat.before_loop
     async def _before_heartbeat(self) -> None:
