@@ -10,6 +10,7 @@ from utils.settings import (
     get_bool_setting,
     get_csv_ids_setting,
     get_int_setting,
+    get_setting,
     settings_database_path,
 )
 from utils.sqlite import configure_sync_connection
@@ -233,6 +234,7 @@ def vcxp_overview(limit: int = 5) -> dict[str, Any]:
     daily_cap = max(0, get_int_setting("VCXP_DAILY_PULSE_CAP", 4))
     weekly_cap = max(0, get_int_setting("VCXP_WEEKLY_PULSE_CAP", 20))
     xp_excluded_role_ids = get_csv_ids_setting("VCXP_EXCLUDED_ROLE_IDS")
+    reward_start_at = get_setting("VCXP_REWARD_START_AT", "") or ""
     result: dict[str, Any] = {
         "database": database_status(path),
         "enabled": enabled,
@@ -246,6 +248,7 @@ def vcxp_overview(limit: int = 5) -> dict[str, Any]:
         "daily_cap": daily_cap,
         "weekly_cap": weekly_cap,
         "xp_excluded_role_count": len(xp_excluded_role_ids),
+        "reward_start_at": reward_start_at,
         "state_table_found": False,
         "pulses_table_found": False,
         "unpaid_users": 0,

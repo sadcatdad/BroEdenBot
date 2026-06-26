@@ -617,6 +617,12 @@ Muted or deafened VC time does not earn VC XP. The bot subtracts self-muted,
 self-deafened, server-muted, and server-deafened intervals from the session's
 eligible seconds before calculating earned pulses.
 
+VC XP has a reward-start cutoff so old tracked history does not create
+back-pay pulses. On first startup, if `VCXP_REWARD_START_AT` is not already
+set, BroEdenBot stores the current UTC timestamp and only completed sessions
+after that timestamp can earn VC XP. Set `VCXP_REWARD_START_AT` manually only
+when staff intentionally want a different cutoff.
+
 If role removal fails after a successful add, the pulse is counted as paid to
 prevent an accidental duplicate MEE6 trigger. Staff should then remove the
 stuck role manually and inspect the bot logs.
@@ -624,9 +630,9 @@ stuck role manually and inspect the bot logs.
 ### `/vcrewards settings`
 
 Shows whether automatic pulses are enabled, the configured trigger role,
-eligible minutes per pulse, removal delay, daily cap, weekly cap, and current
-configuration status. It also shows how many VCXP-only excluded roles are
-configured.
+reward-start cutoff, eligible minutes per pulse, removal delay, daily cap,
+weekly cap, and current configuration status. It also shows how many
+VCXP-only excluded roles are configured.
 
 ### `/vcrewards audit [include_left_members]`
 
@@ -707,6 +713,7 @@ Start with automatic role changes disabled:
 ```env
 VCXP_ENABLED=false
 VCXP_TRIGGER_ROLE_ID=
+VCXP_REWARD_START_AT=
 VCXP_MINUTES_PER_PULSE=30
 VCXP_ROLE_REMOVE_DELAY_SECONDS=30
 VCXP_DAILY_PULSE_CAP=4
@@ -732,9 +739,9 @@ again to confirm the paid pulse count increased.
 Before leaving automation on, run `/vcrewards audit` and check the local web
 dashboard Overview page. The dashboard's VC XP readiness card summarizes the
 stored trigger role ID, latest role snapshot name when available, pulse caps,
-VCXP-only excluded-role count, unpaid snapshot, active pulses, and recent
-payout activity. The Discord audit remains the source of truth for live role
-hierarchy and Manage Roles checks.
+reward-start cutoff, VCXP-only excluded-role count, unpaid snapshot, active
+pulses, and recent payout activity. The Discord audit remains the source of
+truth for live role hierarchy and Manage Roles checks.
 
 ## Stats commands
 
@@ -1305,6 +1312,7 @@ updated from the authenticated local dashboard without rewriting `.env`.
 | `VCREWARDS_ALLOWED_ROLE_IDS` | Optional role IDs allowed to use `/vcrewards audit`. Falls back to `VCSTATS_ALLOWED_ROLE_IDS`. |
 | `VCXP_TRIGGER_ROLE_ID` | Discord role ID temporarily added for each VC XP pulse. |
 | `VCXP_EXCLUDED_ROLE_IDS` | Comma-separated role IDs excluded from VC XP pulses only. Members with these roles remain visible in VC stats unless also excluded by `VC_EXCLUDED_ROLE_IDS`. |
+| `VCXP_REWARD_START_AT` | ISO timestamp for the earliest completed VC session that can earn VC XP. Defaults to the first bot startup time after this setting exists, preventing historical back-pay pulses. |
 | `VCXP_MINUTES_PER_PULSE` | Eligible VC minutes required per pulse. Defaults to `30`. |
 | `VCXP_ROLE_REMOVE_DELAY_SECONDS` | Seconds before the trigger role is removed. Defaults to `30`. |
 | `VCXP_DAILY_PULSE_CAP` | Maximum automatic pulses per member per UTC day. Defaults to `4`. |

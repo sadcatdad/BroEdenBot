@@ -25,6 +25,9 @@ from utils.settings import (
     get_bool_setting,
     get_csv_ids_setting,
     get_int_setting,
+    get_setting,
+    initialize_settings_from_env,
+    set_setting,
 )
 from utils.vc_history import ensure_vc_history_schema_async
 
@@ -349,6 +352,35 @@ class VCStats(commands.Cog):
             settings.items(),
         )
         await self.bot.db.commit()
+        self._ensure_vcxp_reward_start_setting()
+
+    def _ensure_vcxp_reward_start_setting(self) -> None:
+        if get_setting("VCXP_REWARD_START_AT", ""):
+            return
+        started_at = utc_now().isoformat()
+        try:
+            initialize_settings_from_env()
+            set_setting(
+                "VCXP_REWARD_START_AT",
+                started_at,
+                changed_by="vcxp_startup",
+            )
+        except (OSError, sqlite3.Error, ValueError) as exc:
+            logger.warning(
+                "Could not persist VCXP reward start cutoff; "
+                "using current startup time in memory: %s",
+                type(exc).__name__,
+            )
+
+    @property
+    def vcxp_reward_start_at(self) -> datetime:
+        raw_value = get_setting("VCXP_REWARD_START_AT", "") or ""
+        if raw_value:
+            try:
+                return parse_timestamp(raw_value)
+            except ValueError:
+                logger.warning("Ignoring invalid VCXP_REWARD_START_AT value")
+        return utc_now()
 
     async def _ensure_active_observation_columns(self) -> None:
         cursor = await self.bot.db.execute("PRAGMA table_info(vc_active_sessions)")
@@ -836,13 +868,15 @@ class VCStats(commands.Cog):
         if user_id in self.excluded_user_ids or self._member_xp_excluded(member):
             eligible_seconds = 0
         else:
+            reward_start = self.vcxp_reward_start_at.isoformat()
             cursor = await self.bot.db.execute(
                 """
                 SELECT COALESCE(SUM(counted_seconds), 0)
                 FROM vc_sessions
                 WHERE guild_id = ? AND user_id = ? AND reward_eligible = 1
+                  AND left_at >= ?
                 """,
-                (guild_id, user_id),
+                (guild_id, user_id, reward_start),
             )
             eligible_seconds = int((await cursor.fetchone())[0] or 0)
             await cursor.close()
@@ -875,6 +909,7 @@ class VCStats(commands.Cog):
 
     async def _sync_xp_states(self, guild_id: int) -> None:
         guild = self.bot.get_guild(guild_id)
+        reward_start = self.vcxp_reward_start_at.isoformat()
         excluded_sql, excluded_parameters = self._excluded_user_sql(
             self._xp_excluded_user_ids_for_guild(guild)
         )
@@ -882,10 +917,11 @@ class VCStats(commands.Cog):
             f"""
             SELECT user_id, COALESCE(SUM(counted_seconds), 0)
             FROM vc_sessions
-            WHERE guild_id = ? AND reward_eligible = 1 {excluded_sql}
+            WHERE guild_id = ? AND reward_eligible = 1 AND left_at >= ?
+              {excluded_sql}
             GROUP BY user_id
             """,
-            (guild_id, *excluded_parameters),
+            (guild_id, reward_start, *excluded_parameters),
         )
         now = utc_now().isoformat()
         await self.bot.db.execute(
@@ -1924,6 +1960,7 @@ class VCStats(commands.Cog):
         include_left_members: bool = False,
     ) -> List[Tuple[int, str, str, int, int, int, int, int, bool]]:
         await self._sync_xp_states(guild.id)
+        reward_start = self.vcxp_reward_start_at.isoformat()
         excluded_sql, excluded_parameters = self._excluded_user_sql(
             self._xp_excluded_user_ids_for_guild(guild)
         )
@@ -1933,10 +1970,11 @@ class VCStats(commands.Cog):
                    COALESCE(SUM(counted_seconds), 0)
             FROM vc_sessions
             WHERE guild_id = ? AND reward_eligible = 1 AND left_at >= ?
+              AND left_at >= ?
               {excluded_sql}
             GROUP BY user_id
             """,
-            (guild.id, self._cutoff(days), *excluded_parameters),
+            (guild.id, self._cutoff(days), reward_start, *excluded_parameters),
         )
         period_by_user = {
             row[0]: (row[1] or "", row[2] or "", int(row[3] or 0))
@@ -2014,6 +2052,7 @@ class VCStats(commands.Cog):
             f"Automatic pulses enabled: **{'Yes' if self.vcxp_enabled else 'No'}**\n"
             f"Trigger role: **{role_label}**\n"
             f"Eligible time per pulse: **{self.vcxp_minutes_per_pulse} minutes**\n"
+            f"Reward start: **{self.vcxp_reward_start_at.isoformat()}**\n"
             f"Role removal delay: **{self.vcxp_role_remove_delay_seconds} seconds**\n"
             f"Daily pulse cap: **{self.vcxp_daily_pulse_cap}**\n"
             f"Weekly pulse cap: **{self.vcxp_weekly_pulse_cap}** "

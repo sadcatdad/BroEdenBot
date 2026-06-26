@@ -181,6 +181,12 @@ SETTING_DEFINITIONS = (
         picker="role",
     ),
     SettingDefinition(
+        "VCXP_REWARD_START_AT",
+        "vcxp",
+        "datetime",
+        "Earliest completed VC session timestamp that can earn VC XP.",
+    ),
+    SettingDefinition(
         "VCXP_MINUTES_PER_PULSE",
         "vcxp",
         "int",
@@ -489,6 +495,16 @@ def normalize_setting_value(key: str, value: str) -> str:
         if definition.minimum is not None and parsed < definition.minimum:
             raise ValueError(f"Value must be at least {definition.minimum}.")
         return str(parsed)
+    if definition.value_type == "datetime":
+        if not text:
+            return ""
+        try:
+            parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
+        except ValueError as exc:
+            raise ValueError("Use an ISO 8601 date/time.") from exc
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=timezone.utc)
+        return parsed.astimezone(timezone.utc).isoformat()
     if definition.value_type == "csv_ids":
         if not text:
             return ""

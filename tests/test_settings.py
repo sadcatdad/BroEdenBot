@@ -153,6 +153,17 @@ class SettingsValidationTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "true or false"):
             normalize_setting_value("VCXP_ENABLED", "yes")
 
+    def test_datetime_validation(self):
+        self.assertEqual(
+            normalize_setting_value(
+                "VCXP_REWARD_START_AT",
+                "2026-06-25T12:00:00Z",
+            ),
+            "2026-06-25T12:00:00+00:00",
+        )
+        with self.assertRaisesRegex(ValueError, "ISO 8601"):
+            normalize_setting_value("VCXP_REWARD_START_AT", "yesterday")
+
     def test_csv_ids_normalize_and_allow_blank(self):
         self.assertEqual(
             normalize_setting_value(

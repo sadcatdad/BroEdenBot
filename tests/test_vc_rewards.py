@@ -8,6 +8,7 @@ from unittest.mock import patch
 import aiosqlite
 
 from cogs.vc_stats import VCStats
+from utils.settings import initialize_settings_from_env, set_setting
 from utils.sqlite import configure_connection
 
 
@@ -188,6 +189,71 @@ class VCRewardAccountingTests(unittest.IsolatedAsyncioTestCase):
             cog = VCStats(bot)
             self.assertFalse(cog._member_excluded(member))
             self.assertTrue(cog._member_xp_excluded(member))
+
+    async def test_vcxp_sync_ignores_sessions_before_reward_start(self):
+        initialize_settings_from_env()
+        set_setting(
+            "VCXP_REWARD_START_AT",
+            "2026-06-25T12:00:00+00:00",
+        )
+        self.guild.members = [DummyMember(10, self.guild)]
+        await self.database.executemany(
+            """
+            INSERT INTO vc_sessions (
+                guild_id, user_id, display_name, username,
+                channel_id, channel_name, joined_at, left_at,
+                duration_seconds, counted_seconds, was_alone,
+                was_self_muted, was_self_deafened, was_server_muted,
+                was_server_deafened, reward_eligible, created_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 0, 0, 0, 0, 1, ?)
+            """,
+            [
+                (
+                    self.guild.id,
+                    10,
+                    "Member 10",
+                    "member10",
+                    20,
+                    "Lounge",
+                    "2026-06-24T11:00:00+00:00",
+                    "2026-06-24T12:00:00+00:00",
+                    3600,
+                    3600,
+                    "2026-06-24T12:00:00+00:00",
+                ),
+                (
+                    self.guild.id,
+                    10,
+                    "Member 10",
+                    "member10",
+                    20,
+                    "Lounge",
+                    "2026-06-25T12:00:00+00:00",
+                    "2026-06-25T12:30:00+00:00",
+                    1800,
+                    1800,
+                    "2026-06-25T12:30:00+00:00",
+                ),
+            ],
+        )
+        await self.database.commit()
+
+        eligible_seconds, pulses_earned, pulses_paid = (
+            await self.cog._sync_xp_user_state(self.guild.id, 10)
+        )
+
+        self.assertEqual(eligible_seconds, 1800)
+        self.assertEqual(pulses_earned, 1)
+        self.assertEqual(pulses_paid, 0)
+
+    async def test_vcxp_reward_start_defaults_to_startup_time(self):
+        value = self.cog.vcxp_reward_start_at
+
+        self.assertIsNotNone(value.tzinfo)
+        self.assertGreaterEqual(
+            value,
+            datetime.now(timezone.utc) - timedelta(minutes=1),
+        )
 
 
 if __name__ == "__main__":
