@@ -28,6 +28,21 @@ MAX_DESCRIPTION_LENGTH = 1_000
 MAX_RENDERED_ITEMS = 20
 SELECT_LIMIT = 25
 ALLOWED_MENTIONS = discord.AllowedMentions.none()
+POST_SEND_PERMISSIONS = (
+    ("view_channel", "View Channel"),
+    ("send_messages", "Send Messages"),
+    ("embed_links", "Embed Links"),
+)
+THREAD_SEND_PERMISSIONS = (
+    ("view_channel", "View Channel"),
+    ("send_messages_in_threads", "Send Messages in Threads"),
+    ("embed_links", "Embed Links"),
+)
+POST_UPDATE_PERMISSIONS = (
+    ("view_channel", "View Channel"),
+    ("read_message_history", "Read Message History"),
+    ("embed_links", "Embed Links"),
+)
 
 
 def parse_id_set(value: Optional[str]) -> set[int]:
@@ -63,6 +78,21 @@ def truncate(value: Any, limit: int) -> str:
 
 def checklist_reference(row: dict[str, Any]) -> str:
     return f"#{row['id']} • {truncate(row['name'], 80)}"
+
+
+def human_join(values: list[str]) -> str:
+    if not values:
+        return ""
+    if len(values) == 1:
+        return values[0]
+    return ", ".join(values[:-1]) + f", and {values[-1]}"
+
+
+def channel_reference(channel: Any) -> str:
+    return (
+        getattr(channel, "mention", None)
+        or f"channel {getattr(channel, 'id', 'unknown')}"
+    )
 
 
 class ChecklistModal(discord.ui.Modal):
@@ -295,6 +325,7 @@ class ChecklistChoiceSelect(discord.ui.Select):
             return
         checklist_id = int(self.values[0])
         if self.action == "view":
+            await self.cog.defer_private(interaction)
             await self.cog.send_panel(interaction, checklist_id, edit=True)
             return
         await interaction.response.edit_message(
@@ -776,6 +807,66 @@ class ChecklistCog(commands.Cog):
             )
         return False
 
+    async def defer_private(
+        self,
+        interaction: discord.Interaction,
+        *,
+        thinking: bool = False,
+    ) -> None:
+        if not interaction.response.is_done():
+            await interaction.response.defer(ephemeral=True, thinking=thinking)
+
+    def missing_bot_permissions(
+        self,
+        interaction: discord.Interaction,
+        channel: Any,
+        *,
+        action: str,
+    ) -> list[str]:
+        guild = getattr(channel, "guild", None) or interaction.guild
+        if guild is None or interaction.guild_id is None:
+            return []
+        if guild.id != interaction.guild_id:
+            return ["a channel in this server"]
+        member = getattr(guild, "me", None)
+        bot_user = getattr(self.bot, "user", None)
+        if member is None and bot_user is not None:
+            member = guild.get_member(bot_user.id)
+        if member is None or not hasattr(channel, "permissions_for"):
+            return []
+        permissions = channel.permissions_for(member)
+        if action == "send":
+            required = (
+                THREAD_SEND_PERMISSIONS
+                if isinstance(channel, discord.Thread)
+                else POST_SEND_PERMISSIONS
+            )
+        else:
+            required = POST_UPDATE_PERMISSIONS
+        return [
+            label
+            for name, label in required
+            if not getattr(permissions, name, False)
+        ]
+
+    def permission_failure_message(
+        self,
+        interaction: discord.Interaction,
+        channel: Any,
+        *,
+        action: str,
+    ) -> Optional[str]:
+        missing = self.missing_bot_permissions(interaction, channel, action=action)
+        if not missing:
+            return None
+        if missing == ["a channel in this server"]:
+            return "That checklist can only be posted to a channel in this server."
+        verb = "update the checklist post" if action == "update" else "post the checklist"
+        return (
+            f"I need {human_join(missing)} in {channel_reference(channel)} "
+            f"to {verb}."
+        )
+
     async def handle_component_error(
         self,
         interaction: discord.Interaction,
@@ -1091,6 +1182,13 @@ class ChecklistCog(commands.Cog):
                 (checklist_id, str(channel.id)),
             )
             if existing:
+                missing_permissions = self.permission_failure_message(
+                    interaction,
+                    channel,
+                    action="update",
+                )
+                if missing_permissions:
+                    return missing_permissions
                 try:
                     message = await channel.fetch_message(int(existing["message_id"]))
                     await message.edit(
@@ -1116,14 +1214,29 @@ class ChecklistCog(commands.Cog):
                         (utc_now(), existing["id"]),
                     )
                     await self.bot.db.commit()
-                    return f"Updated the existing checklist post in {channel.mention}."
+                    return (
+                        "Updated the existing checklist post in "
+                        f"{channel_reference(channel)}."
+                    )
+        missing_permissions = self.permission_failure_message(
+            interaction,
+            channel,
+            action="send",
+        )
+        if missing_permissions:
+            return missing_permissions
         try:
             message = await channel.send(
                 embed=embed,
                 view=PostedChecklistView(self, checklist),
                 allowed_mentions=ALLOWED_MENTIONS,
             )
-        except (discord.Forbidden, discord.HTTPException):
+        except discord.Forbidden:
+            return (
+                f"I could not post the checklist in {channel_reference(channel)}. "
+                "Please check the bot's channel permissions."
+            )
+        except discord.HTTPException:
             return "I could not post the checklist in that channel."
         now = utc_now()
         await self.bot.db.execute(
@@ -1144,7 +1257,7 @@ class ChecklistCog(commands.Cog):
             ),
         )
         await self.bot.db.commit()
-        return f"Posted checklist #{checklist_id} in {channel.mention}."
+        return f"Posted checklist #{checklist_id} in {channel_reference(channel)}."
 
     async def add_item(
         self,
@@ -1155,18 +1268,25 @@ class ChecklistCog(commands.Cog):
         *,
         refresh_panel: bool = True,
     ) -> None:
+        await self.defer_private(interaction)
+        content = content.strip()
+        if not content:
+            await interaction.edit_original_response(
+                content="Item text cannot be blank.",
+                view=None,
+            )
+            return
         checklist = await self.get_checklist(
             interaction.guild_id,
             checklist_id,
             statuses=("active",),
         )
         if not checklist:
-            await interaction.response.send_message(
-                "Only active checklists can receive new items.",
-                ephemeral=True,
+            await interaction.edit_original_response(
+                content="Only active checklists can receive new items.",
+                view=None,
             )
             return
-        await interaction.response.defer(ephemeral=True)
         async with self._write_lock:
             items = await self.active_items(checklist_id)
             target = min(position or (len(items) + 1), len(items) + 1)
@@ -1216,7 +1336,7 @@ class ChecklistCog(commands.Cog):
         checklist_id: int,
         action: str,
     ) -> None:
-        await interaction.response.defer(ephemeral=True)
+        await self.defer_private(interaction)
         items = await self.active_items(checklist_id)
         if not items:
             await interaction.followup.send(
@@ -1247,6 +1367,7 @@ class ChecklistCog(commands.Cog):
         checklist_id: int,
         item_id: int,
     ) -> None:
+        await self.defer_private(interaction)
         item = await self.fetch_one(
             """
             SELECT ci.*
@@ -1258,12 +1379,11 @@ class ChecklistCog(commands.Cog):
             (item_id, checklist_id, str(interaction.guild_id)),
         )
         if not item:
-            await interaction.response.send_message(
-                "That active item could not be found.",
-                ephemeral=True,
+            await interaction.edit_original_response(
+                content="That active item could not be found.",
+                view=None,
             )
             return
-        await interaction.response.defer(ephemeral=True)
         completing = item["status"] == "open"
         now = utc_now()
         await self.bot.db.execute(
@@ -1304,6 +1424,7 @@ class ChecklistCog(commands.Cog):
         checklist_id: int,
         item_id: int,
     ) -> None:
+        await self.defer_private(interaction)
         item = await self.fetch_one(
             """
             SELECT ci.*
@@ -1315,12 +1436,11 @@ class ChecklistCog(commands.Cog):
             (item_id, checklist_id, str(interaction.guild_id)),
         )
         if not item:
-            await interaction.response.send_message(
-                "That active item could not be found.",
-                ephemeral=True,
+            await interaction.edit_original_response(
+                content="That active item could not be found.",
+                view=None,
             )
             return
-        await interaction.response.defer(ephemeral=True)
         now = utc_now()
         async with self._write_lock:
             await self.bot.db.execute(
@@ -1357,18 +1477,26 @@ class ChecklistCog(commands.Cog):
         *,
         refresh_panel: bool = True,
     ) -> None:
+        await self.defer_private(interaction)
+        name = name.strip()
+        description = description.strip()
+        if not name:
+            await interaction.edit_original_response(
+                content="Checklist name cannot be blank.",
+                view=None,
+            )
+            return
         checklist = await self.get_checklist(
             interaction.guild_id,
             checklist_id,
             statuses=("active", "archived"),
         )
         if not checklist:
-            await interaction.response.send_message(
-                "That checklist could not be found.",
-                ephemeral=True,
+            await interaction.edit_original_response(
+                content="That checklist could not be found.",
+                view=None,
             )
             return
-        await interaction.response.defer(ephemeral=True)
         now = utc_now()
         await self.bot.db.execute(
             """
@@ -1376,7 +1504,7 @@ class ChecklistCog(commands.Cog):
             SET name = ?, description = ?, updated_at = ?
             WHERE id = ?
             """,
-            (name.strip(), description.strip() or None, now, checklist_id),
+            (name, description or None, now, checklist_id),
         )
         await self.bot.db.commit()
         await self.sync_checklist_posts(checklist_id)
@@ -1395,18 +1523,18 @@ class ChecklistCog(commands.Cog):
         *,
         refresh_panel: bool = True,
     ) -> None:
+        await self.defer_private(interaction)
         checklist = await self.get_checklist(
             interaction.guild_id,
             checklist_id,
             statuses=("active", "archived"),
         )
         if not checklist:
-            await interaction.response.send_message(
-                "That checklist could not be found.",
-                ephemeral=True,
+            await interaction.edit_original_response(
+                content="That checklist could not be found.",
+                view=None,
             )
             return
-        await interaction.response.defer(ephemeral=True)
         status = "active" if checklist["status"] == "archived" else "archived"
         await self.bot.db.execute(
             "UPDATE checklists SET status = ?, updated_at = ? WHERE id = ?",
@@ -1552,14 +1680,17 @@ class ChecklistCog(commands.Cog):
         await self.bot.db.commit()
         checklist_id = int(cursor.lastrowid)
         await cursor.close()
+        post_result = None
         if post_channel:
-            await self.post_checklist(
+            post_result = await self.post_checklist(
                 interaction,
                 checklist_id,
                 post_channel,
                 update_existing=False,
             )
         await self.send_panel(interaction, checklist_id)
+        if post_result:
+            await interaction.followup.send(post_result, ephemeral=True)
 
     @checklist.command(name="view", description="Open a private checklist management panel")
     @app_commands.describe(checklist="Checklist name or ID; omit to choose from a menu")
@@ -1571,6 +1702,7 @@ class ChecklistCog(commands.Cog):
     ) -> None:
         if not await self.ensure_access(interaction):
             return
+        await self.defer_private(interaction, thinking=True)
         if checklist:
             row = await self.resolve_checklist(
                 interaction.guild_id,
@@ -1578,7 +1710,7 @@ class ChecklistCog(commands.Cog):
                 ("active", "archived"),
             )
             if not row:
-                await interaction.response.send_message(
+                await interaction.followup.send(
                     "No matching active or archived checklist was found.",
                     ephemeral=True,
                 )
@@ -1596,7 +1728,7 @@ class ChecklistCog(commands.Cog):
             (str(interaction.guild_id),),
         )
         if not rows:
-            await interaction.response.send_message(
+            await interaction.followup.send(
                 "There are no active checklists.",
                 ephemeral=True,
             )
@@ -1606,7 +1738,7 @@ class ChecklistCog(commands.Cog):
             if len(rows) > SELECT_LIMIT
             else ""
         )
-        await interaction.response.send_message(
+        await interaction.followup.send(
             "Choose a checklist." + note,
             view=ChecklistChoiceView(self, rows, "view"),
             ephemeral=True,
@@ -1629,6 +1761,7 @@ class ChecklistCog(commands.Cog):
     ) -> None:
         if not await self.ensure_access(interaction):
             return
+        await self.defer_private(interaction, thinking=True)
         rows = await self.fetch_all(
             """
             SELECT c.id, c.name, c.created_by_name, c.created_by_user_id,
@@ -1647,7 +1780,7 @@ class ChecklistCog(commands.Cog):
             (str(interaction.guild_id), status),
         )
         if not rows:
-            await interaction.response.send_message(
+            await interaction.followup.send(
                 f"No {status} checklists were found.",
                 ephemeral=True,
             )
@@ -1667,7 +1800,7 @@ class ChecklistCog(commands.Cog):
             color=MUTED_COLOR if status != "active" else INFO_COLOR,
         )
         embed.set_footer(text="At most 50 checklists are shown.")
-        await interaction.response.send_message(
+        await interaction.followup.send(
             embed=embed,
             ephemeral=True,
             allowed_mentions=ALLOWED_MENTIONS,
@@ -1689,18 +1822,18 @@ class ChecklistCog(commands.Cog):
     ) -> None:
         if not await self.ensure_access(interaction):
             return
+        await self.defer_private(interaction, thinking=True)
         row = await self.resolve_checklist(
             interaction.guild_id,
             checklist,
             ("active", "archived"),
         )
         if not row:
-            await interaction.response.send_message(
+            await interaction.followup.send(
                 "No matching active or archived checklist was found.",
                 ephemeral=True,
             )
             return
-        await interaction.response.defer(ephemeral=True, thinking=True)
         result = await self.post_checklist(
             interaction,
             row["id"],
@@ -1719,6 +1852,7 @@ class ChecklistCog(commands.Cog):
     ) -> None:
         if not await self.ensure_access(interaction):
             return
+        await self.defer_private(interaction, thinking=True)
         if checklist:
             row = await self.resolve_checklist(
                 interaction.guild_id,
@@ -1726,12 +1860,12 @@ class ChecklistCog(commands.Cog):
                 ("active",),
             )
             if not row:
-                await interaction.response.send_message(
+                await interaction.followup.send(
                     "No matching active checklist was found.",
                     ephemeral=True,
                 )
                 return
-            await interaction.response.send_message(
+            await interaction.followup.send(
                 f"Confirm deletion of {checklist_reference(row)} and its active posts.",
                 view=ChecklistDeleteConfirmView(self, row["id"]),
                 ephemeral=True,
@@ -1746,12 +1880,12 @@ class ChecklistCog(commands.Cog):
             (str(interaction.guild_id),),
         )
         if not rows:
-            await interaction.response.send_message(
+            await interaction.followup.send(
                 "There are no active checklists to delete.",
                 ephemeral=True,
             )
             return
-        await interaction.response.send_message(
+        await interaction.followup.send(
             "Choose a checklist to delete.",
             view=ChecklistChoiceView(self, rows, "delete"),
             ephemeral=True,
@@ -1773,13 +1907,14 @@ class ChecklistCog(commands.Cog):
     ) -> None:
         if not await self.ensure_access(interaction):
             return
+        await self.defer_private(interaction, thinking=True)
         row = await self.resolve_checklist(
             interaction.guild_id,
             checklist,
             ("active", "archived"),
         )
         if not row:
-            await interaction.response.send_message(
+            await interaction.followup.send(
                 "No matching active or archived checklist was found.",
                 ephemeral=True,
             )
@@ -1805,18 +1940,18 @@ class ChecklistCog(commands.Cog):
     ) -> None:
         if not await self.ensure_access(interaction):
             return
+        await self.defer_private(interaction, thinking=True)
         row = await self.resolve_checklist(
             interaction.guild_id,
             checklist,
             ("active",),
         )
         if not row:
-            await interaction.response.send_message(
+            await interaction.followup.send(
                 "No matching active checklist was found.",
                 ephemeral=True,
             )
             return
-        await interaction.response.defer(ephemeral=True, thinking=True)
         await self.bot.db.execute(
             "UPDATE checklists SET status = 'archived', updated_at = ? WHERE id = ?",
             (utc_now(), row["id"]),
@@ -1846,18 +1981,18 @@ class ChecklistCog(commands.Cog):
     ) -> None:
         if not await self.ensure_access(interaction):
             return
+        await self.defer_private(interaction, thinking=True)
         row = await self.resolve_checklist(
             interaction.guild_id,
             checklist,
             ("archived",),
         )
         if not row:
-            await interaction.response.send_message(
+            await interaction.followup.send(
                 "No matching archived checklist was found.",
                 ephemeral=True,
             )
             return
-        await interaction.response.defer(ephemeral=True, thinking=True)
         await self.bot.db.execute(
             "UPDATE checklists SET status = 'active', updated_at = ? WHERE id = ?",
             (utc_now(), row["id"]),
@@ -1883,18 +2018,18 @@ class ChecklistCog(commands.Cog):
     ) -> None:
         if not await self.ensure_access(interaction):
             return
+        await self.defer_private(interaction, thinking=True)
         row = await self.resolve_checklist(
             interaction.guild_id,
             checklist,
             ("active", "archived"),
         )
         if not row:
-            await interaction.response.send_message(
+            await interaction.followup.send(
                 "No matching active or archived checklist was found.",
                 ephemeral=True,
             )
             return
-        await interaction.response.defer(ephemeral=True, thinking=True)
         summary = await self.sync_checklist_posts(row["id"])
         await interaction.followup.send(
             f"Refreshed {checklist_reference(row)} and reattached its controls. "
@@ -1913,13 +2048,14 @@ class ChecklistCog(commands.Cog):
     ) -> None:
         if not await self.ensure_access(interaction):
             return
+        await self.defer_private(interaction, thinking=True)
         row = await self.resolve_checklist(
             interaction.guild_id,
             checklist,
             ("active", "archived", "deleted"),
         )
         if not row:
-            await interaction.response.send_message(
+            await interaction.followup.send(
                 "No matching checklist was found.",
                 ephemeral=True,
             )
@@ -1955,7 +2091,7 @@ class ChecklistCog(commands.Cog):
             io.BytesIO(output.getvalue().encode("utf-8")),
             filename=f"checklist-{row['id']}.csv",
         )
-        await interaction.response.send_message(
+        await interaction.followup.send(
             content=f"Export for {checklist_reference(row)}.",
             file=file,
             ephemeral=True,

@@ -17,6 +17,13 @@ Users with any configured role can use `/checklist`. Users listed in
 only configured bot owners can use the feature. Every command, button, modal,
 and selector checks permission. Management responses are ephemeral.
 
+The bot also needs channel permissions before it can post or refresh checklist
+copies. New posts require **View Channel**, **Send Messages** (or **Send
+Messages in Threads** for thread posts), and **Embed Links**. Updating an
+existing post requires **View Channel**, **Read Message History**, and **Embed
+Links**. If one is missing, `/checklist post` reports the missing permission in
+the private response.
+
 ## Commands
 
 - `/checklist create <name> [description] [post_channel]` creates a backend
@@ -43,6 +50,11 @@ and selector checks permission. Management responses are ephemeral.
 
 Checklist inputs support autocomplete by ID or name. IDs can also be entered
 directly.
+
+Commands that read or synchronize checklist state acknowledge the interaction
+before doing database or Discord message work. If Discord still shows a stale
+button after a deployment or permission change, use `/checklist refresh` to
+reattach controls to active posts.
 
 ## Management panel
 

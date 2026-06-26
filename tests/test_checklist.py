@@ -1,5 +1,6 @@
 import os
 import unittest
+from types import SimpleNamespace
 from unittest.mock import patch
 
 import aiosqlite
@@ -17,6 +18,34 @@ from cogs.checklist import (
 class DummyBot:
     def __init__(self, database):
         self.db = database
+        self.user = SimpleNamespace(id=999)
+
+
+class FakeGuild:
+    def __init__(self, guild_id=1):
+        self.id = guild_id
+        self.me = object()
+
+    def get_member(self, _user_id):
+        return self.me
+
+
+class FakeChannel:
+    id = 123
+    mention = "<#123>"
+
+    def __init__(self, guild, **permissions):
+        self.guild = guild
+        self.permissions = SimpleNamespace(**permissions)
+
+    def permissions_for(self, _member):
+        return self.permissions
+
+
+class FakeInteraction:
+    def __init__(self, guild):
+        self.guild = guild
+        self.guild_id = guild.id
 
 
 class ChecklistHelperTests(unittest.TestCase):
@@ -45,6 +74,44 @@ class ChecklistHelperTests(unittest.TestCase):
     def test_refresh_fallback_command_is_registered(self):
         command_names = {command.name for command in ChecklistCog.checklist.commands}
         self.assertIn("refresh", command_names)
+
+
+class ChecklistPermissionTests(unittest.IsolatedAsyncioTestCase):
+    async def test_post_permission_message_names_missing_channel_permission(self):
+        cog = ChecklistCog(DummyBot(None))
+        guild = FakeGuild()
+        interaction = FakeInteraction(guild)
+        channel = FakeChannel(
+            guild,
+            view_channel=True,
+            send_messages=False,
+            embed_links=True,
+        )
+
+        message = cog.permission_failure_message(interaction, channel, action="send")
+
+        self.assertEqual(
+            message,
+            "I need Send Messages in <#123> to post the checklist.",
+        )
+
+    async def test_update_permission_message_names_read_history_requirement(self):
+        cog = ChecklistCog(DummyBot(None))
+        guild = FakeGuild()
+        interaction = FakeInteraction(guild)
+        channel = FakeChannel(
+            guild,
+            view_channel=True,
+            read_message_history=False,
+            embed_links=True,
+        )
+
+        message = cog.permission_failure_message(interaction, channel, action="update")
+
+        self.assertEqual(
+            message,
+            "I need Read Message History in <#123> to update the checklist post.",
+        )
 
 
 class ChecklistDatabaseTests(unittest.IsolatedAsyncioTestCase):

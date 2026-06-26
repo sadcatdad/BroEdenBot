@@ -22,6 +22,7 @@ from utils.ui import (
 
 
 logger = logging.getLogger(__name__)
+ALLOWED_MENTIONS = discord.AllowedMentions.none()
 EMOJIS = [
     "🇦", "🇧", "🇨", "🇩", "🇪", "🇫", "🇬", "🇭", "🇮", "🇯",
     "🇰", "🇱", "🇲", "🇳", "🇴", "🇵", "🇶", "🇷", "🇸", "🇹",
@@ -192,11 +193,23 @@ class Poll(commands.Cog):
             0,
         )
         embed, file, view = await self.create_poll(provisional_data)
-        poll_message = await interaction.channel.send(
-            embed=embed,
-            file=file,
-            view=view,
-        )
+        try:
+            poll_message = await interaction.channel.send(
+                embed=embed,
+                file=file,
+                view=view,
+                allowed_mentions=ALLOWED_MENTIONS,
+            )
+        except (discord.Forbidden, discord.HTTPException):
+            await interaction.followup.send(
+                embed=error_embed(
+                    "Poll not posted",
+                    "I could not post the poll in this channel. Please check "
+                    "my channel permissions.",
+                ),
+                ephemeral=True,
+            )
+            return
         poll_data = (
             *provisional_data[:4],
             poll_message.id,
@@ -260,13 +273,24 @@ class Poll(commands.Cog):
         _, _, _, channel_id, message_id = poll_data
         channel = self.bot.get_channel(channel_id)
         try:
+            if channel is None:
+                channel = await self.bot.fetch_channel(channel_id)
             embed, file, view = await self.create_poll(poll_data)
-            if channel is not None:
-                try:
-                    message = await channel.fetch_message(message_id)
-                    await message.edit(embed=embed, attachments=[file], view=view)
-                except discord.NotFound:
-                    await channel.send(embed=embed, file=file, view=view)
+            try:
+                message = await channel.fetch_message(message_id)
+                await message.edit(
+                    embed=embed,
+                    attachments=[file],
+                    view=view,
+                    allowed_mentions=ALLOWED_MENTIONS,
+                )
+            except discord.NotFound:
+                await channel.send(
+                    embed=embed,
+                    file=file,
+                    view=view,
+                    allowed_mentions=ALLOWED_MENTIONS,
+                )
         except ValueError:
             logger.exception("Discarding malformed poll message_id=%s", message_id)
             await self._delete_poll_data(message_id)
@@ -304,6 +328,7 @@ class Poll(commands.Cog):
                 ephemeral=True,
             )
             return
+        await interaction.response.defer(ephemeral=True)
         cursor = await self.bot.db.execute(
             "SELECT title, options, endtime, channel, msg FROM poll WHERE msg = ?",
             (interaction.message.id,),
@@ -311,12 +336,24 @@ class Poll(commands.Cog):
         poll_data = await cursor.fetchone()
         await cursor.close()
         if poll_data is None:
-            await interaction.response.send_message(
+            await interaction.followup.send(
                 embed=warning_embed("Poll closed", "Voting has already ended."),
                 ephemeral=True,
             )
             return
-        options = deserialize_options(poll_data[1])
+        try:
+            options = deserialize_options(poll_data[1])
+        except (SyntaxError, ValueError):
+            logger.exception(
+                "Discarding malformed poll options message_id=%s",
+                interaction.message.id,
+            )
+            await self._delete_poll_data(interaction.message.id)
+            await interaction.followup.send(
+                "That poll is no longer valid and has been closed.",
+                ephemeral=True,
+            )
+            return
         if custom_id.startswith("poll|||"):
             legacy_option = custom_id.split("|||", 1)[1]
             try:
@@ -331,7 +368,7 @@ class Poll(commands.Cog):
                 else -1
             )
         if option_index < 0 or option_index >= len(options):
-            await interaction.response.send_message(
+            await interaction.followup.send(
                 "That poll option is no longer valid.",
                 ephemeral=True,
             )
@@ -346,7 +383,7 @@ class Poll(commands.Cog):
             (interaction.message.id, interaction.user.id, option),
         )
         await self.bot.db.commit()
-        await interaction.response.send_message(
+        await interaction.followup.send(
             embed=success_embed(
                 "Vote recorded",
                 f"You voted for **{discord.utils.escape_markdown(option)}**. "

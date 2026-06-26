@@ -79,7 +79,10 @@ archiving/restoring, and refreshing. Posted checklists include the same
 persistent controls; each click is permission-checked and management prompts
 remain ephemeral. See
 [docs/checklists.md](docs/checklists.md) for storage, synchronization, deletion,
-permission, and Discord-limit details.
+permission, and Discord-limit details. Posting a checklist requires the bot to
+have **View Channel**, **Send Messages** (or **Send Messages in Threads**), and
+**Embed Links** in the target channel; updating an existing copy also requires
+**Read Message History**.
 
 ## Bot management and analytics commands
 
@@ -1148,7 +1151,9 @@ Creates an interactive poll in the current channel.
 Members vote using compact lettered buttons and may change their vote before
 the poll closes. Running the command privately confirms creation; the poll
 itself is public. When time expires, the original message becomes a visual
-results board instead of being deleted and reposted.
+results board instead of being deleted and reposted. Poll posting and result
+updates use no allowed mentions; if the bot cannot post, the private response
+points operators back to channel permissions.
 
 ## Queue slash commands
 
