@@ -27,6 +27,9 @@ class SettingDefinition:
     minimum: Optional[int] = None
     editable: bool = True
     title: str = ""
+    picker: str = ""
+    single: bool = False
+    visible: bool = True
 
 
 SETTING_DEFINITIONS = (
@@ -35,6 +38,7 @@ SETTING_DEFINITIONS = (
         "ask",
         "csv_ids",
         "Comma-separated Discord channel IDs. Spaces will be removed.",
+        picker="channel",
     ),
     SettingDefinition(
         "ASK_COOLDOWN_SECONDS",
@@ -49,36 +53,42 @@ SETTING_DEFINITIONS = (
         "permissions",
         "csv_ids",
         "Roles allowed to use ModAI.",
+        picker="role",
     ),
     SettingDefinition(
         "STAFF_AI_ALLOWED_ROLE_IDS",
         "permissions",
         "csv_ids",
         "Roles allowed to use private staff AI.",
+        picker="role",
     ),
     SettingDefinition(
         "STAFF_NOTES_ALLOWED_ROLE_IDS",
         "permissions",
         "csv_ids",
         "Roles allowed to use staff notes.",
+        picker="role",
     ),
     SettingDefinition(
         "MESSAGE_CONTEXT_ALLOWED_ROLE_IDS",
         "permissions",
         "csv_ids",
         "Roles allowed to use private message context.",
+        picker="role",
     ),
     SettingDefinition(
         "STATS_ALLOWED_ROLE_IDS",
         "permissions",
         "csv_ids",
         "Roles allowed to create and refresh stats.",
+        picker="role",
     ),
     SettingDefinition(
         "ACTIVITY_EXCLUDED_ROLE_IDS",
         "permissions",
         "csv_ids",
         "Roles excluded from message activity stats.",
+        picker="role",
     ),
     SettingDefinition(
         "ACTIVITY_EXCLUDED_USER_IDS",
@@ -91,12 +101,14 @@ SETTING_DEFINITIONS = (
         "permissions",
         "csv_ids",
         "Roles allowed to use VC stats and reward previews.",
+        picker="role",
     ),
     SettingDefinition(
         "VC_EXCLUDED_ROLE_IDS",
         "permissions",
         "csv_ids",
         "Roles excluded from VC stats and rewards.",
+        picker="role",
     ),
     SettingDefinition(
         "VC_EXCLUDED_USER_IDS",
@@ -109,18 +121,22 @@ SETTING_DEFINITIONS = (
         "permissions",
         "csv_ids",
         "Voice channel IDs excluded from dashboard voice analytics.",
+        picker="channel",
     ),
     SettingDefinition(
         "BANK_ALLOWED_ROLE_IDS",
         "permissions",
         "csv_ids",
         "Roles allowed to use bank commands.",
+        picker="role",
     ),
     SettingDefinition(
         "BANK_LOG_CHANNEL_ID",
         "permissions",
         "csv_ids",
         "Discord channel ID used for bank logs.",
+        picker="channel",
+        single=True,
     ),
     SettingDefinition(
         "BOT_OWNER_USER_IDS",
@@ -140,12 +156,15 @@ SETTING_DEFINITIONS = (
         "vcxp",
         "csv_ids",
         "Discord role ID used for the temporary XP pulse.",
+        picker="role",
+        single=True,
     ),
     SettingDefinition(
         "VCXP_EXCLUDED_ROLE_IDS",
         "vcxp",
         "csv_ids",
         "Roles excluded from VC XP pulses while remaining visible in VC stats.",
+        picker="role",
     ),
     SettingDefinition(
         "VCXP_MINUTES_PER_PULSE",
@@ -202,6 +221,8 @@ SETTING_DEFINITIONS = (
         "json_ids",
         "Dashboard-managed Discord role IDs treated as administrators.",
         title="Admin Roles",
+        picker="role",
+        visible=False,
     ),
     SettingDefinition(
         "staff_role_ids",
@@ -209,6 +230,8 @@ SETTING_DEFINITIONS = (
         "json_ids",
         "Dashboard-managed Discord role IDs treated as staff.",
         title="Staff Roles",
+        picker="role",
+        visible=False,
     ),
     SettingDefinition(
         "bot_role_ids_excluded_from_stats",
@@ -216,6 +239,8 @@ SETTING_DEFINITIONS = (
         "json_ids",
         "Bot role IDs excluded from analytics and stats calculations.",
         title="Excluded Bot Roles",
+        picker="role",
+        visible=False,
     ),
     SettingDefinition(
         "analytics_excluded_channel_ids",
@@ -223,6 +248,7 @@ SETTING_DEFINITIONS = (
         "json_ids",
         "Channel IDs excluded from analytics.",
         title="Analytics Excluded Channels",
+        picker="channel",
     ),
     SettingDefinition(
         "analytics_excluded_category_ids",
@@ -230,6 +256,7 @@ SETTING_DEFINITIONS = (
         "json_ids",
         "Category IDs whose child channels are excluded from analytics.",
         title="Analytics Excluded Categories",
+        picker="category",
     ),
     SettingDefinition(
         "bank_allowed_role_ids",
@@ -237,6 +264,8 @@ SETTING_DEFINITIONS = (
         "json_ids",
         "Dashboard-managed roles allowed to use bank tools.",
         title="Bank Allowed Roles",
+        picker="role",
+        visible=False,
     ),
     SettingDefinition(
         "bank_log_channel_id",
@@ -244,6 +273,9 @@ SETTING_DEFINITIONS = (
         "json_ids",
         "Dashboard-managed bank log channel ID.",
         title="Bank Log Channel",
+        picker="channel",
+        single=True,
+        visible=False,
     ),
     SettingDefinition(
         "knowledge_allowed_channel_ids",
@@ -251,6 +283,7 @@ SETTING_DEFINITIONS = (
         "json_ids",
         "Channels allowed to use knowledge features.",
         title="Knowledge Allowed Channels",
+        picker="channel",
     ),
     SettingDefinition(
         "knowledge_allowed_category_ids",
@@ -258,6 +291,7 @@ SETTING_DEFINITIONS = (
         "json_ids",
         "Categories whose child channels are allowed to use knowledge features.",
         title="Knowledge Allowed Categories",
+        picker="category",
     ),
     SettingDefinition(
         "ask_command_allowed_channel_ids",
@@ -265,6 +299,8 @@ SETTING_DEFINITIONS = (
         "json_ids",
         "Channels allowed to use /ask.",
         title="/ask Allowed Channels",
+        picker="channel",
+        visible=False,
     ),
     SettingDefinition(
         "ask_command_allowed_category_ids",
@@ -272,17 +308,19 @@ SETTING_DEFINITIONS = (
         "json_ids",
         "Categories whose child channels are allowed to use /ask.",
         title="/ask Allowed Categories",
+        picker="category",
+        visible=False,
     ),
     SettingDefinition(
         "import_archive_path",
-        "dashboard_json",
+        "advanced",
         "string",
         "Default local archive path for completed imports.",
         title="Import Archive Path",
     ),
     SettingDefinition(
         "import_context_only_default",
-        "dashboard_json",
+        "advanced",
         "bool",
         "Default import mode for context-only imports.",
         default="false",
@@ -523,9 +561,13 @@ def settings_for_dashboard() -> dict[str, list[dict[str, object]]]:
         "vcxp": [],
         "models": [],
         "dashboard_json": [],
+        "advanced": [],
     }
     for definition in SETTING_DEFINITIONS:
+        if not definition.visible:
+            continue
         value = get_setting(definition.key, "") or ""
+        value_format = "json" if definition.value_type == "json_ids" else "csv"
         sections[definition.section].append(
             {
                 "key": definition.key,
@@ -534,6 +576,9 @@ def settings_for_dashboard() -> dict[str, list[dict[str, object]]]:
                 "description": definition.description,
                 "editable": definition.editable,
                 "title": definition.title or definition.key.replace("_", " ").title(),
+                "picker": definition.picker,
+                "single": definition.single,
+                "value_format": value_format,
             }
         )
     return sections

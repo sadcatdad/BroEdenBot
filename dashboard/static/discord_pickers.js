@@ -430,7 +430,7 @@ customElements.define("role-single-select", class extends DiscordObjectPicker {
     this.setAttribute("endpoint", this.getAttribute("endpoint") || "/api/discord/roles");
     this.setAttribute("placeholder", this.getAttribute("placeholder") || "Search roles");
     this.setAttribute("single", "");
-    this.setAttribute("value-format", "csv");
+    this.setAttribute("value-format", this.getAttribute("value-format") || "csv");
     super.connectedCallback();
   }
 });
@@ -439,6 +439,16 @@ customElements.define("channel-multi-select", class extends DiscordObjectPicker 
     this.setAttribute("mode", "channel");
     this.setAttribute("endpoint", this.getAttribute("endpoint") || "/api/discord/guild-structure");
     this.setAttribute("placeholder", this.getAttribute("placeholder") || "Search channels");
+    super.connectedCallback();
+  }
+});
+customElements.define("channel-single-select", class extends DiscordObjectPicker {
+  connectedCallback() {
+    this.setAttribute("mode", "channel");
+    this.setAttribute("endpoint", this.getAttribute("endpoint") || "/api/discord/guild-structure");
+    this.setAttribute("placeholder", this.getAttribute("placeholder") || "Search channels");
+    this.setAttribute("single", "");
+    this.setAttribute("value-format", this.getAttribute("value-format") || "csv");
     super.connectedCallback();
   }
 });

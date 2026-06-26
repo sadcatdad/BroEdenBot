@@ -1437,25 +1437,30 @@ seeding. The bot reads these safe values from SQLite first and falls back to
 `.env` only when a database row is missing.
 
 Editable settings include `/ask` channels and cooldown, staff/owner permission
-IDs, and VC XP role-pulse controls. The dashboard Overview page also shows a
+IDs, voice/channel exclusions, bank access, and VC XP role-pulse controls.
+Role and channel permission settings use the same Discord metadata selectors
+as the Discord Roles & Channels page; user ID allowlists remain plain ID
+fields. The dashboard Overview page also shows a
 read-only VC XP readiness card using the shared database and latest Discord
 metadata snapshot when available. Discord ID lists accept blank values or
 comma-separated 17-20 digit IDs and remove spaces when saved. Integer and
 boolean values are range-checked. Changes take effect through runtime setting
 lookups; the dashboard does not automatically restart the bot.
 
-Dashboard-managed JSON settings are also stored in `bot_settings` for future
-configuration surfaces:
+Dashboard-managed JSON settings for Discord object selectors are also stored
+in `bot_settings`:
 
-- `admin_role_ids`
-- `staff_role_ids`
-- `bot_role_ids_excluded_from_stats`
 - `analytics_excluded_channel_ids`
 - `analytics_excluded_category_ids`
-- `bank_allowed_role_ids`
-- `bank_log_channel_id`
 - `knowledge_allowed_channel_ids`
-- `ask_command_allowed_channel_ids`
+- `knowledge_allowed_category_ids`
+
+Older dashboard-only role, ask, and bank JSON settings remain accepted by the
+settings validator for compatibility, but the normal dashboard UI does not show
+them because the live runtime settings are edited in Bot Configuration or
+Permissions & Access. Advanced settings are limited to miscellaneous local
+operator defaults such as:
+
 - `import_archive_path`
 - `import_context_only_default`
 
@@ -1472,7 +1477,8 @@ does not silently delete saved IDs.
 
 Settings → Discord Roles & Channels includes a Discord Metadata Preview showing
 roles, categories, channels, last refresh time, and the latest refresh error if
-one exists. The Refresh Discord Metadata button queues the fixed
+one exists, plus the remaining dashboard-managed Discord selector settings.
+The Refresh Discord Metadata button queues the fixed
 `refresh_discord_metadata` dashboard action. The live bot process handles that
 action from its existing dashboard action worker and snapshots current guild
 roles/channels/categories into SQLite. The FastAPI dashboard still does not

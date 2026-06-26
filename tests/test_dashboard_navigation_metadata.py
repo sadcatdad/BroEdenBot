@@ -246,7 +246,8 @@ class DashboardNavigationMetadataTests(unittest.TestCase):
         self.assertIn(".settings-menu-item", styles)
         self.assertIn("text-decoration: none", styles)
         base_template = (root / "dashboard/templates/base.html").read_text()
-        self.assertIn("styles.css') }}?v=settings-sidebar1", base_template)
+        self.assertIn("styles.css') }}?v=settings-cleanup1", base_template)
+        self.assertIn("discord_pickers.js') }}?v=settings-cleanup1", base_template)
 
     def test_category_selection_matches_child_channels(self):
         self.assertTrue(

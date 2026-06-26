@@ -105,6 +105,34 @@ class DashboardRouteTests(unittest.TestCase):
         self.assertIn("VCXP_EXCLUDED_ROLE_IDS", settings.text)
         self.assertIn('value-format="csv"', settings.text)
 
+    def test_permission_roles_and_channels_use_discord_pickers(self):
+        self.login()
+        settings = self.client.get("/settings/permissions")
+        self.assertEqual(settings.status_code, 200)
+        self.assertIn("STAFF_AI_ALLOWED_ROLE_IDS", settings.text)
+        self.assertIn('<role-multi-select input-name="value" setting-key="STAFF_AI_ALLOWED_ROLE_IDS"', settings.text)
+        self.assertIn("EXCLUDED_VOICE_CHANNEL_IDS", settings.text)
+        self.assertIn('<channel-multi-select input-name="value" setting-key="EXCLUDED_VOICE_CHANNEL_IDS"', settings.text)
+        self.assertIn("BANK_LOG_CHANNEL_ID", settings.text)
+        self.assertIn('<channel-single-select input-name="value" setting-key="BANK_LOG_CHANNEL_ID"', settings.text)
+
+    def test_discord_settings_omits_duplicate_runtime_settings(self):
+        self.login()
+        settings = self.client.get("/settings/discord")
+        self.assertEqual(settings.status_code, 200)
+        self.assertIn("analytics_excluded_channel_ids", settings.text)
+        self.assertNotIn("bank_allowed_role_ids", settings.text)
+        self.assertNotIn("bank_log_channel_id", settings.text)
+        self.assertNotIn("ask_command_allowed_channel_ids", settings.text)
+
+    def test_advanced_settings_do_not_duplicate_normal_sections(self):
+        self.login()
+        settings = self.client.get("/settings/advanced")
+        self.assertEqual(settings.status_code, 200)
+        self.assertIn("import_archive_path", settings.text)
+        self.assertNotIn("STAFF_AI_ALLOWED_ROLE_IDS", settings.text)
+        self.assertNotIn("VCXP_TRIGGER_ROLE_ID", settings.text)
+
     def test_unauthenticated_user_cannot_update_settings(self):
         response = self.client.post(
             "/settings/update",

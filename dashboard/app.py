@@ -224,6 +224,8 @@ def settings_redirect_for_key(request: Request, key: str) -> str:
         return str(request.url_for("settings_discord"))
     if definition and definition.section == "permissions":
         return str(request.url_for("settings_permissions"))
+    if definition and definition.section == "advanced":
+        return str(request.url_for("settings_advanced"))
     return str(request.url_for("settings"))
 
 
@@ -519,7 +521,7 @@ async def settings_advanced(request: Request) -> HTMLResponse:
     return render_settings_page(
         request,
         page_title="Advanced Settings",
-        visible_sections=("ask", "permissions", "vcxp", "models", "dashboard_json"),
+        visible_sections=("advanced",),
     )
 
 
