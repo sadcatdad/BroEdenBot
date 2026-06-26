@@ -70,6 +70,20 @@ SETTING_DEFINITIONS = (
         picker="role",
     ),
     SettingDefinition(
+        "REMINDER_ALLOWED_ROLE_IDS",
+        "permissions",
+        "csv_ids",
+        "Roles allowed to use internal staff reminders.",
+        picker="role",
+    ),
+    SettingDefinition(
+        "REMINDER_TIMEZONE",
+        "advanced",
+        "string",
+        "IANA timezone used for reminder date/time input.",
+        default="America/Chicago",
+    ),
+    SettingDefinition(
         "MESSAGE_CONTEXT_ALLOWED_ROLE_IDS",
         "permissions",
         "csv_ids",

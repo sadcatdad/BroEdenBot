@@ -27,6 +27,7 @@ For a module-by-module architecture and reliability map, see
 | `/staffai help`, `/staffai status`, `/staffai ask`, `/staffai search`, `/staffai summarize` | Roles listed in `STAFF_AI_ALLOWED_ROLE_IDS` or users listed in `BOT_OWNER_USER_IDS` |
 | `/context help`, `/context status`, `/context search`, `/context summarize`, `/context timeline`, `/context user`, `/context channel` | Roles listed in `MESSAGE_CONTEXT_ALLOWED_ROLE_IDS` or users listed in `BOT_OWNER_USER_IDS` |
 | `/checklist` commands and management controls | Roles listed in `CHECKLIST_ALLOWED_ROLE_IDS` or users listed in `BOT_OWNER_USER_IDS` |
+| `/reminder add`, `/reminder manage` | Internal staff only: administrators, `BOT_OWNER_USER_IDS`, `REMINDER_ALLOWED_ROLE_IDS`, or configured staff/admin roles |
 | ModAI commands and context menus | Administrators or roles listed in `MODAI_ALLOWED_ROLE_IDS` |
 | Staff-note commands | Administrators or roles listed in `STAFF_NOTES_ALLOWED_ROLE_IDS` |
 | `/staffnote delete` | Administrators only |
@@ -48,6 +49,34 @@ For staff-restricted features, an empty role-ID environment variable makes the
 feature effectively administrator-only. This does not apply to `/ask` or the
 `/bot` or `/checklist` groups. Bot management and checklist management are
 owner-only by default when their broader access settings are blank.
+
+## Internal reminder commands
+
+Reminders live in `data.db` and are checked by a background task every 45
+seconds. Pending reminders survive bot restarts because only the database row is
+the source of truth. The command group is for internal staff use only. All setup
+and management responses are private; the fired reminder posts in the selected
+channel, mentions the target member outside the embed so Discord pings them, and
+marks the row as `sent`. If the target channel is missing or the bot cannot send
+there, the reminder is marked `failed` with a short reason instead of retrying
+forever.
+
+- `/reminder add [who] <message> <date_time> <channel>` — Schedule a reminder.
+  `who` defaults to the caller. Use local community time; supported formats
+  include `2026-07-01 7:30 PM` and `07/01/2026 7:30 PM`.
+- `/reminder manage` — Privately list pending reminders created by you or aimed
+  at you. The panel supports selecting a reminder, editing message/time,
+  editing the channel, editing the target when permitted, and deleting the
+  reminder before it fires.
+
+Using reminders requires administrator permission, a user ID in
+`BOT_OWNER_USER_IDS`, a role in `REMINDER_ALLOWED_ROLE_IDS`, or one of the
+dashboard-managed staff/admin roles. Regular members cannot create or manage
+reminders, including self-reminders. The reminder timezone defaults to
+`America/Chicago`; set `REMINDER_TIMEZONE` to another IANA timezone if the
+community standard changes. Reminder sends require the bot to have **View
+Channel**, **Send Messages** or **Send Messages in Threads**, and **Embed
+Links** in the selected channel.
 
 ## Internal checklist commands
 
@@ -1237,6 +1266,8 @@ updated from the authenticated local dashboard without rewriting `.env`.
 | `BOT_OWNER_USER_IDS` | Comma-separated Discord user IDs allowed to use `/bot` commands. |
 | `BOT_OWNER_ALLOW_ADMINS` | Allows server administrators to use `/bot` when `true`. Defaults to `false`. |
 | `CHECKLIST_ALLOWED_ROLE_IDS` | Comma-separated Discord role IDs allowed to use `/checklist`; bot owners are also allowed. Blank makes checklist management owner-only. |
+| `REMINDER_ALLOWED_ROLE_IDS` | Comma-separated Discord role IDs allowed to use internal staff reminders. Administrators, bot owners, and configured staff/admin roles are also allowed. |
+| `REMINDER_TIMEZONE` | IANA timezone used for `/reminder add` and edit date/time input. Defaults to `America/Chicago`. |
 | `GEMINI_API_KEY` | Gemini API key used by `/ask`, `/staffai`, `/context`, and ModAI. |
 | `ASK_MODEL` | Optional primary Gemini model for `/ask`; falls back to `MODAI_MODEL`. |
 | `ASK_FALLBACK_MODEL` | Optional fallback Gemini model for `/ask`; falls back to `MODAI_FALLBACK_MODEL`. |
