@@ -11,7 +11,7 @@ from unittest.mock import patch
 from fastapi.testclient import TestClient
 
 from dashboard.app import app, validate_dashboard_config
-from dashboard.db import bank_overview, import_history, vcxp_overview
+from dashboard.db import ai_usage_overview, bank_overview, import_history, vcxp_overview
 from utils.settings import get_setting, initialize_settings_from_env, set_setting
 
 
@@ -180,6 +180,24 @@ class DashboardRouteTests(unittest.TestCase):
         response = self.client.get("/health")
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.json()["status"], "ok")
+        self.assertIn("ai", response.json())
+
+    def test_ai_dashboard_hides_secrets_and_handles_empty_logs(self):
+        self.login()
+        response = self.client.get("/ai")
+        self.assertEqual(response.status_code, 200)
+        self.assertIn("AI Framework", response.text)
+        self.assertIn("AI settings are currently managed through .env.", response.text)
+        self.assertIn("No AI usage logs found.", response.text)
+        self.assertNotIn("gemini-super-secret-value", response.text)
+
+    def test_ai_dashboard_can_be_hidden_by_env(self):
+        self.login()
+        with patch.dict(os.environ, {"AI_DASHBOARD_VISIBLE": "false"}, clear=False):
+            response = self.client.get("/ai")
+            overview = self.client.get("/")
+        self.assertEqual(response.status_code, 404)
+        self.assertNotIn(">AI</a>", overview.text)
 
 
 class DashboardConfigurationTests(unittest.TestCase):
@@ -272,6 +290,69 @@ class DashboardDatabaseTests(unittest.TestCase):
 
             self.assertFalse(result["tables_found"])
             self.assertEqual(result["imports"], [])
+
+    def test_ai_usage_overview_summarizes_usage_logs(self):
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            database = Path(temporary_directory) / "data.db"
+            connection = sqlite3.connect(database)
+            connection.execute(
+                """
+                CREATE TABLE ai_usage_logs (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    created_at TEXT NOT NULL,
+                    guild_id TEXT,
+                    channel_id TEXT,
+                    user_id TEXT,
+                    source_command TEXT,
+                    task_type TEXT,
+                    requested_tier TEXT,
+                    tier_used TEXT,
+                    model_used TEXT,
+                    input_tokens INTEGER DEFAULT 0,
+                    output_tokens INTEGER DEFAULT 0,
+                    total_tokens INTEGER DEFAULT 0,
+                    estimated_cost_usd REAL DEFAULT 0,
+                    usage_was_estimated INTEGER DEFAULT 0,
+                    success INTEGER DEFAULT 1,
+                    blocked_by_budget INTEGER DEFAULT 0,
+                    error_message TEXT
+                )
+                """
+            )
+            now_prefix = "2099-01-01T00:00:00"
+            connection.execute(
+                """
+                INSERT INTO ai_usage_logs (
+                    created_at, user_id, source_command, task_type, requested_tier,
+                    tier_used, model_used, input_tokens, output_tokens,
+                    total_tokens, estimated_cost_usd, success, error_message
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    now_prefix,
+                    "123",
+                    "/ai test",
+                    "framework_test",
+                    "default",
+                    "default",
+                    "gemini-2.5-flash",
+                    10,
+                    5,
+                    15,
+                    0.0001,
+                    1,
+                    None,
+                ),
+            )
+            connection.commit()
+            connection.close()
+
+            with patch.dict(os.environ, {"DATABASE_PATH": str(database)}):
+                result = ai_usage_overview(command="/ai test")
+
+            self.assertTrue(result["tables_found"])
+            self.assertEqual(result["recent_logs"][0]["source_command"], "/ai test")
+            self.assertEqual(result["recent_logs"][0]["user_id"], "123")
 
     def test_vcxp_overview_summarizes_role_and_pulse_state(self):
         with tempfile.TemporaryDirectory() as temporary_directory:

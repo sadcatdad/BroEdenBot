@@ -15,6 +15,12 @@ import discord
 from discord import app_commands
 from discord.ext import commands
 
+from utils.ai_config import get_ai_config
+from utils.ai_service import (
+    get_daily_ai_usage_usd,
+    get_monthly_ai_usage_usd,
+    initialize_ai_usage_schema,
+)
 from utils.settings import (
     EDITABLE_SETTING_KEYS,
     get_bool_setting,
@@ -45,6 +51,21 @@ UNAUTHORIZED_MESSAGE = "You do not have permission to use bot management command
 
 STATUS_ENV_VARS = (
     "GEMINI_API_KEY",
+    "AI_ENABLED",
+    "AI_MODEL_FAST",
+    "AI_MODEL_DEFAULT",
+    "AI_MODEL_ADVANCED",
+    "AI_ENABLE_ADVANCED_MODEL",
+    "AI_DAILY_BUDGET_USD",
+    "AI_MONTHLY_BUDGET_USD",
+    "AI_MAX_INPUT_TOKENS",
+    "AI_MAX_OUTPUT_TOKENS",
+    "AI_DEFAULT_TEMPERATURE",
+    "AI_MEMBER_COOLDOWN_SECONDS",
+    "AI_STAFF_COOLDOWN_SECONDS",
+    "AI_LOG_PROMPTS",
+    "AI_LOG_RESPONSES",
+    "AI_DASHBOARD_VISIBLE",
     "MODAI_MODEL",
     "MODAI_FALLBACK_MODEL",
     "ASK_MODEL",
@@ -629,6 +650,21 @@ class BotAdmin(commands.Cog):
                 f"Trigger role found: **{'Yes' if trigger_role else 'No'}**\n"
                 f"Bot can manage role: **{'Yes' if can_manage_role else 'No'}**"
             ),
+            inline=False,
+        )
+        ai_config = get_ai_config()
+        await initialize_ai_usage_schema(self.bot.db)
+        daily_ai_spend = await get_daily_ai_usage_usd(self.bot.db)
+        monthly_ai_spend = await get_monthly_ai_usage_usd(self.bot.db)
+        configuration.add_field(
+            name="AI framework",
+            value=(
+                f"Enabled: **{'Yes' if ai_config.enabled else 'No'}**\n"
+                f"Gemini API key present: **{'Yes' if ai_config.api_key_present else 'No'}**\n"
+                f"Default model: `{ai_config.models.default}`\n"
+                f"Daily spend: **${daily_ai_spend:.4f}** / ${ai_config.budgets.daily_usd:.2f}\n"
+                f"Monthly spend: **${monthly_ai_spend:.4f}** / ${ai_config.budgets.monthly_usd:.2f}"
+            )[:1024],
             inline=False,
         )
 

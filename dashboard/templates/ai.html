@@ -1,0 +1,143 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="page-heading">
+  <div>
+    <p class="eyebrow">Gemini foundation</p>
+    <h1>AI Framework</h1>
+  </div>
+</div>
+
+{% if ai.error %}<div class="alert error">{{ ai.error }}</div>{% endif %}
+
+<section class="card-grid three">
+  <article class="card">
+    <p class="label">AI status</p>
+    <p class="metric {{ 'good' if ai.config.available else 'warning-text' }}">
+      {{ "Ready" if ai.config.available else "Disabled" }}
+    </p>
+    <p class="muted">Gemini API key: {{ "configured" if ai.config.api_key_present else "missing" }}</p>
+  </article>
+  <article class="card">
+    <p class="label">Today</p>
+    <p class="metric">${{ "{:.4f}".format(ai.daily_spend_usd) }}</p>
+    <p class="muted">{{ ai.daily_requests }} requests · budget ${{ "{:.2f}".format(ai.config.daily_budget_usd) }}</p>
+  </article>
+  <article class="card">
+    <p class="label">This month</p>
+    <p class="metric">${{ "{:.4f}".format(ai.monthly_spend_usd) }}</p>
+    <p class="muted">{{ ai.monthly_requests }} requests · budget ${{ "{:.2f}".format(ai.config.monthly_budget_usd) }}</p>
+  </article>
+</section>
+
+<section class="two-column operations-columns">
+  <article class="card">
+    <p class="eyebrow">Configuration</p>
+    <h2>Models & Limits</h2>
+    <div class="status-list">
+      <div><span>AI enabled</span><strong>{{ "true" if ai.config.enabled else "false" }}</strong></div>
+      <div><span>Gemini API key present</span><strong>{{ "yes" if ai.config.api_key_present else "no" }}</strong></div>
+      <div><span>Fast model</span><strong>{{ ai.config.fast_model }}</strong></div>
+      <div><span>Default model</span><strong>{{ ai.config.default_model }}</strong></div>
+      <div><span>Advanced model</span><strong>{{ ai.config.advanced_model }}</strong></div>
+      <div><span>Advanced enabled</span><strong>{{ "true" if ai.config.advanced_enabled else "false" }}</strong></div>
+      <div><span>Max input tokens</span><strong>{{ "{:,}".format(ai.config.max_input_tokens) }}</strong></div>
+      <div><span>Max output tokens</span><strong>{{ "{:,}".format(ai.config.max_output_tokens) }}</strong></div>
+      <div><span>Temperature</span><strong>{{ ai.config.default_temperature }}</strong></div>
+      <div><span>Cooldowns</span><strong>{{ ai.config.member_cooldown_seconds }}s member · {{ ai.config.staff_cooldown_seconds }}s staff</strong></div>
+      <div><span>Prompt logging</span><strong>{{ "on" if ai.config.log_prompts else "off" }}</strong></div>
+      <div><span>Response logging</span><strong>{{ "on" if ai.config.log_responses else "off" }}</strong></div>
+    </div>
+    <div class="alert warning compact-alert">AI settings are currently managed through .env.</div>
+  </article>
+
+  <article class="card">
+    <p class="eyebrow">Recent health</p>
+    <h2>Last Results</h2>
+    <div class="status-list">
+      <div><span>Usage table</span><strong>{{ "present" if ai.tables_found else "empty or missing" }}</strong></div>
+      <div><span>Last successful request</span><strong>{{ ai.last_success_at or "None recorded" }}</strong></div>
+      <div>
+        <span>Last AI error</span>
+        <strong>
+          {% if ai.last_error %}
+            {{ ai.last_error.created_at }} · {{ ai.last_error.error_message }}
+          {% else %}
+            None recorded
+          {% endif %}
+        </strong>
+      </div>
+    </div>
+  </article>
+</section>
+
+<section class="card">
+  <div class="section-heading">
+    <div>
+      <p class="eyebrow">Usage logs</p>
+      <h2>Recent AI Requests</h2>
+    </div>
+  </div>
+  <form class="filter-grid" method="get" action="{{ url_for('ai_page') }}">
+    <label>
+      <span>Command</span>
+      <input name="command" value="{{ ai.filters.command }}" placeholder="/ai test">
+    </label>
+    <label>
+      <span>Model</span>
+      <input name="model" value="{{ ai.filters.model }}" placeholder="gemini-2.5-flash">
+    </label>
+    <label>
+      <span>Status</span>
+      <select name="status_filter">
+        <option value="" {{ "selected" if not ai.filters.status else "" }}>All</option>
+        <option value="success" {{ "selected" if ai.filters.status == "success" else "" }}>Success</option>
+        <option value="failed" {{ "selected" if ai.filters.status == "failed" else "" }}>Failed</option>
+        <option value="blocked" {{ "selected" if ai.filters.status == "blocked" else "" }}>Budget blocked</option>
+      </select>
+    </label>
+    <button class="button" type="submit">Filter</button>
+  </form>
+  <div class="table-wrap">
+    <table>
+      <thead>
+        <tr>
+          <th>Timestamp</th>
+          <th>Command</th>
+          <th>Task</th>
+          <th>User</th>
+          <th>Model</th>
+          <th>Tier</th>
+          <th>Tokens</th>
+          <th>Cost</th>
+          <th>Status</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for row in ai.recent_logs %}
+        <tr>
+          <td>{{ row.created_at }}</td>
+          <td>{{ row.source_command or "unknown" }}</td>
+          <td>{{ row.task_type or "unknown" }}</td>
+          <td>{{ row.user_id or "unknown" }}</td>
+          <td>{{ row.model_used or "unknown" }}</td>
+          <td>{{ row.tier_used or "unknown" }}</td>
+          <td>{{ "{:,}".format(row.input_tokens or 0) }} in / {{ "{:,}".format(row.output_tokens or 0) }} out{% if row.usage_was_estimated %} · est{% endif %}</td>
+          <td>${{ "{:.6f}".format(row.estimated_cost_usd or 0) }}</td>
+          <td>
+            {% if row.blocked_by_budget %}
+              <span class="badge status-empty">budget blocked</span>
+            {% elif row.success %}
+              <span class="badge status-active">success</span>
+            {% else %}
+              <span class="badge status-failed">failed</span>
+            {% endif %}
+          </td>
+        </tr>
+        {% else %}
+        <tr><td colspan="9" class="muted">No AI usage logs found.</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</section>
+{% endblock %}

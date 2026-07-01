@@ -34,6 +34,8 @@ from dashboard.oauth import (
     fetch_discord_identity,
 )
 from dashboard.db import (
+    ai_dashboard_visible,
+    ai_usage_overview,
     bank_overview,
     database_status,
     find_bank_database_path,
@@ -182,6 +184,7 @@ def template_context(request: Request, **values: Any) -> dict[str, Any]:
         "current_user": current_user(request) if is_authenticated(request) else None,
         "can_write": has_write_access(request),
         "can_manage_users": is_admin(request),
+        "ai_dashboard_visible": ai_dashboard_visible(),
         "csrf_token": csrf_token(request),
         **values,
     }
@@ -430,6 +433,7 @@ async def home(request: Request) -> HTMLResponse:
         return redirect
     database = database_status(find_database_path())
     bank_database = database_status(find_bank_database_path())
+    ai_usage = ai_usage_overview(limit=5) if ai_dashboard_visible() else None
     model_names = (
         "MODAI_MODEL",
         "MODAI_FALLBACK_MODEL",
@@ -454,10 +458,37 @@ async def home(request: Request) -> HTMLResponse:
             database=database,
             bank_database=bank_database,
             vcxp=vcxp_overview(),
+            ai_usage=ai_usage,
             discord_token_status=safe_setting("DISCORD_TOKEN"),
             gemini_key_status=safe_setting("GEMINI_API_KEY"),
             gemini_models_configured=all(os.getenv(name, "").strip() for name in model_names),
             current_time=datetime.now().astimezone(),
+        ),
+    )
+
+
+@app.get("/ai", response_class=HTMLResponse, name="ai_page")
+async def ai_page(
+    request: Request,
+    command: Optional[str] = None,
+    model: Optional[str] = None,
+    status_filter: Optional[str] = None,
+) -> HTMLResponse:
+    if redirect := login_redirect(request):
+        return redirect
+    if not ai_dashboard_visible():
+        raise HTTPException(status_code=404, detail="AI dashboard is hidden.")
+    return templates.TemplateResponse(
+        request=request,
+        name="ai.html",
+        context=template_context(
+            request,
+            page_title="AI Framework",
+            ai=ai_usage_overview(
+                command=(command or "").strip(),
+                model=(model or "").strip(),
+                status_filter=(status_filter or "").strip().casefold(),
+            ),
         ),
     )
 
@@ -1331,10 +1362,20 @@ async def api_discord_guild_structure(request: Request) -> JSONResponse:
 @app.get("/health", response_class=JSONResponse)
 async def health() -> JSONResponse:
     database = database_status(find_database_path())
+    ai_usage = ai_usage_overview(limit=1)
     return JSONResponse(
         {
             "status": "ok" if dashboard_enabled() else "disabled",
             "dashboard_enabled": dashboard_enabled(),
+            "ai": {
+                "enabled": ai_usage["config"]["enabled"],
+                "api_key_present": ai_usage["config"]["api_key_present"],
+                "default_model": ai_usage["config"]["default_model"],
+                "daily_spend_usd": ai_usage["daily_spend_usd"],
+                "monthly_spend_usd": ai_usage["monthly_spend_usd"],
+                "last_success_at": ai_usage["last_success_at"],
+                "last_error": ai_usage["last_error"],
+            },
             "database": {
                 "exists": database["exists"],
                 "readable": database["readable"],

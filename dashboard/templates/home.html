@@ -33,6 +33,15 @@
     </p>
     <p class="path">{{ bank_database.path }}</p>
   </article>
+  {% if ai_usage %}
+  <article class="card">
+    <p class="label">AI framework</p>
+    <p class="metric {{ 'good' if ai_usage.config.available else 'warning-text' }}">
+      {{ "Ready" if ai_usage.config.available else "Disabled" }}
+    </p>
+    <p class="muted">${{ "%.4f"|format(ai_usage.daily_spend_usd) }} today · {{ ai_usage.daily_requests }} requests</p>
+  </article>
+  {% endif %}
 </section>
 
 <section class="card">
@@ -86,6 +95,10 @@
     <div><span>Discord token</span><strong>{{ discord_token_status }}</strong></div>
     <div><span>Gemini API key</span><strong>{{ gemini_key_status }}</strong></div>
     <div><span>Gemini model values</span><strong>{{ "configured" if gemini_models_configured else "missing" }}</strong></div>
+    {% if ai_usage %}
+    <div><span>AI default model</span><strong>{{ ai_usage.config.default_model }}</strong></div>
+    <div><span>AI dashboard</span><strong>{{ "visible" if ai_usage.config.dashboard_visible else "hidden" }}</strong></div>
+    {% endif %}
     <div><span>Database file</span><strong>{{ "configured" if database.exists else "missing" }}</strong></div>
   </div>
 </section>

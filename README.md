@@ -24,6 +24,7 @@ For a module-by-module architecture and reliability map, see
 | `/ask` | All server members |
 | `/guide search` | All server members |
 | `/bot help`, `/bot status`, `/bot logs`, `/bot restart`, `/bot deploy` | Users listed in `BOT_OWNER_USER_IDS`; administrators only when `BOT_OWNER_ALLOW_ADMINS=true` |
+| `/ai test`, `/ai status` | Users listed in `BOT_OWNER_USER_IDS`; administrators only when `BOT_OWNER_ALLOW_ADMINS=true` |
 | `/staffai help`, `/staffai status`, `/staffai ask`, `/staffai search`, `/staffai summarize` | Roles listed in `STAFF_AI_ALLOWED_ROLE_IDS` or users listed in `BOT_OWNER_USER_IDS` |
 | `/context help`, `/context status`, `/context search`, `/context summarize`, `/context timeline`, `/context user`, `/context channel` | Roles listed in `MESSAGE_CONTEXT_ALLOWED_ROLE_IDS` or users listed in `BOT_OWNER_USER_IDS` |
 | `/checklist` commands and management controls | Roles listed in `CHECKLIST_ALLOWED_ROLE_IDS` or users listed in `BOT_OWNER_USER_IDS` |
@@ -118,10 +119,13 @@ have **View Channel**, **Send Messages** (or **Send Messages in Threads**), and
 
 - `/bot help` — Private command guide and terminal-import reminders.
 - `/bot status` — Private bot, database, configuration, import-folder,
-  systemd, VCXP-role, and Git health report.
+  systemd, VCXP-role, AI framework, and Git health report.
 - `/bot logs [lines]` — Private, redacted recent `broedenbot` systemd logs.
 - `/bot restart` — Confirmation-gated systemd restart.
 - `/bot deploy` — Confirmation-gated detached deployment.
+- `/ai test` — Private owner/admin AI framework smoke test using the default
+  routed Gemini model.
+- `/ai status` — Private AI framework configuration and budget-spend summary.
 - `/stats activity trends [period] [source] [channel]` — Compares a fixed
   period with the immediately preceding period.
 - `/stats activity categories [period] [source] [limit] [channel]` — Groups
@@ -259,6 +263,37 @@ and then the built-in default. The fallback follows the same order using
 the primary model once before trying the fallback model. Provider failures are
 logged using only sanitized metadata such as stage, model, error type, code,
 and status.
+
+## AI framework foundation
+
+Phase 0 adds a shared AI framework for future commands without replacing the
+existing `/ask`, `/staffai`, `/context`, or ModAI feature behavior yet. The
+framework lives in `utils/ai_config.py`, `utils/ai_costs.py`, and
+`utils/ai_service.py`.
+
+- Model tiers are `fast`, `default`, and `advanced`. `advanced` falls back to
+  `default` unless `AI_ENABLE_ADVANCED_MODEL=true`.
+- Gemini 2.5 Flash remains the default model. Flash-Lite is available as the
+  fast tier for cheaper/simple future tasks.
+- Requests are checked against daily and monthly budget limits before calling
+  Gemini. The preflight check estimates worst-case cost from prompt size and
+  configured output limit.
+- Usage is logged to `ai_usage_logs` with metadata, token counts, estimated
+  cost, success/failure, and budget-block state.
+- Prompts and responses are not stored. They are not logged unless
+  `AI_LOG_PROMPTS=true` or `AI_LOG_RESPONSES=true`.
+- Reusable cooldown helpers are available for future member and staff AI
+  commands.
+
+`/ai test` sends a tiny private framework request through the default tier and
+reports model, token usage, estimated cost, and daily/monthly spend. `/ai
+status` reports configuration and budget totals without showing secrets.
+
+The framework accepts future task types such as `ask_server_guide`,
+`staff_context_user`, `staff_context_channel`, `staff_context_topic`,
+`rulecard_draft`, `ticket_summary`, `event_assistant`,
+`moderation_classification`, `weekly_recap`, and `onboarding_helper`, but those
+features are not implemented in Phase 0.
 
 ## Private staff-context commands
 
@@ -1252,6 +1287,21 @@ updated from the authenticated local dashboard without rewriting `.env`.
 | `REMINDER_ALLOWED_ROLE_IDS` | Comma-separated Discord role IDs allowed to use internal staff reminders. Administrators, bot owners, and configured staff/admin roles are also allowed. |
 | `REMINDER_TIMEZONE` | IANA timezone used for `/reminder add` and edit date/time input. Defaults to `America/Chicago`. |
 | `GEMINI_API_KEY` | Gemini API key used by `/ask`, `/staffai`, `/context`, and ModAI. |
+| `AI_ENABLED` | Enables shared AI framework calls when `true`. Missing `GEMINI_API_KEY` still disables framework calls. Defaults to `true`. |
+| `AI_MODEL_FAST` | Fast/cheap framework model tier. Defaults to `gemini-2.5-flash-lite`. |
+| `AI_MODEL_DEFAULT` | Default framework model tier. Defaults to `gemini-2.5-flash`. |
+| `AI_MODEL_ADVANCED` | Advanced framework model tier. Defaults to `gemini-3-flash-preview`. |
+| `AI_ENABLE_ADVANCED_MODEL` | Allows the advanced tier when `true`; otherwise advanced requests fall back to default. Defaults to `false`. |
+| `AI_DAILY_BUDGET_USD` | Daily estimated AI framework budget. Defaults to `0.35`. |
+| `AI_MONTHLY_BUDGET_USD` | Monthly estimated AI framework budget. Defaults to `10.00`. |
+| `AI_MAX_INPUT_TOKENS` | Maximum estimated framework input tokens. Defaults to `12000`. |
+| `AI_MAX_OUTPUT_TOKENS` | Maximum framework output tokens. Defaults to `1200`. |
+| `AI_DEFAULT_TEMPERATURE` | Default framework generation temperature. Defaults to `0.4`. |
+| `AI_MEMBER_COOLDOWN_SECONDS` | Reusable member-facing AI cooldown helper value. Defaults to `20`. |
+| `AI_STAFF_COOLDOWN_SECONDS` | Reusable staff/admin AI cooldown helper value. Defaults to `5`. |
+| `AI_LOG_PROMPTS` | Logs full framework prompts only when explicitly `true`. Defaults to `false`. |
+| `AI_LOG_RESPONSES` | Logs full framework responses only when explicitly `true`. Defaults to `false`. |
+| `AI_DASHBOARD_VISIBLE` | Shows the dashboard AI page/tab when `true`. Defaults to `true`. |
 | `ASK_MODEL` | Optional primary Gemini model for `/ask`; falls back to `MODAI_MODEL`. |
 | `ASK_FALLBACK_MODEL` | Optional fallback Gemini model for `/ask`; falls back to `MODAI_FALLBACK_MODEL`. |
 | `ASK_ALLOWED_CHANNEL_IDS` | Optional comma- or space-separated channel IDs where `/ask` may be used. Blank allows all channels. |
@@ -1345,13 +1395,14 @@ notify anyone.
 
 The local FastAPI dashboard provides shared-database status, bank overview,
 historical-import status, database-backed editing for an explicit allowlist of
-safe runtime settings, a VC XP role-pulse readiness summary, stats graphics
-management, and an allowlisted local Knowledge Base manager. It does not edit
-`.env`, modify bank records, expose Discord or Gemini secrets, or provide
-public hosting.
+safe runtime settings, AI framework status/usage, a VC XP role-pulse readiness
+summary, stats graphics management, and an allowlisted local Knowledge Base
+manager. It does not edit `.env`, modify bank records, expose Discord or Gemini
+secrets, or provide public hosting.
 
-The top-level dashboard tabs are Overview, Operations, Analytics, Bank, and
-Settings. Stats Graphics lives under Analytics. Knowledge Base, Imports, and
+The top-level dashboard tabs are Overview, Operations, AI, Analytics, Bank, and
+Settings when `AI_DASHBOARD_VISIBLE=true`; the AI tab is hidden when that flag
+is false. Stats Graphics lives under Analytics. Knowledge Base, Imports, and
 Dashboard Users live under Settings. The older `/stats`, `/knowledge`,
 `/imports`, and `/users` links redirect to their new locations so existing
 bookmarks remain usable.

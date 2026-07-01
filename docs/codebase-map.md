@@ -19,9 +19,9 @@ maintenance.
   bootstrap, allowlisted Discord OAuth identities, role-aware write
   protection, safe configuration, fixed service controls, redacted logs,
   SQLite backups, a VC XP role-pulse readiness summary, stats management, an
-  allowlisted Knowledge Manager, and aggregate server analytics. Discord
-  role/channel pickers read a live-guild metadata snapshot written by the bot,
-  not historical import tables.
+  AI framework status/usage page, an allowlisted Knowledge Manager, and
+  aggregate server analytics. Discord role/channel pickers read a live-guild
+  metadata snapshot written by the bot, not historical import tables.
 - `dashboard/users.py` — Dashboard user schema, PBKDF2 password bootstrap,
   Discord identity linking, active/disabled status, and owner/admin/viewer
   roles.
@@ -43,6 +43,7 @@ maintenance.
 
 - `cogs/bot_admin.py` — Owner-only private status, logs, restart, and deploy
   controls. Historical imports remain terminal-only.
+- `cogs/ai.py` — Owner/admin-only AI framework test and status commands.
 - `cogs/mod_ai.py` — Private Gemini-assisted moderation guidance.
 - `cogs/staff_ai.py` — Role/owner-restricted historical/live staff-context
   capture, status, search, questions, and scoped summaries.
@@ -80,6 +81,14 @@ maintenance.
   storage, display, and Gemini retrieval.
 - `utils/sqlite.py` — Shared WAL, busy-timeout, synchronization, and optional
   foreign-key setup for async SQLite connections.
+- `utils/ai_config.py` — Environment-backed shared AI configuration, model
+  tier defaults, budget limits, token limits, cooldown values, logging flags,
+  and dashboard visibility.
+- `utils/ai_costs.py` — Static Gemini pricing map plus rough token and cost
+  estimation helpers.
+- `utils/ai_service.py` — Reusable Gemini model router, budget guardrails,
+  `ai_usage_logs` schema/logging, cooldown helpers, and normalized result
+  objects for future AI commands.
 - `utils/settings.py` — Allowlisted, validated runtime settings stored in
   `data.db`, with environment fallback and a non-secret dashboard audit trail.
 - `utils/discord_metadata.py` — Shared SQLite snapshot and fixed dashboard

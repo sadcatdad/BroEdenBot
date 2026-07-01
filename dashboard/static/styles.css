@@ -333,6 +333,13 @@ details summary { color: var(--muted); cursor: pointer; }
   gap: .8rem;
   margin-bottom: 1rem;
 }
+.filter-grid {
+  display: grid;
+  grid-template-columns: minmax(180px, 1fr) minmax(180px, 1fr) minmax(150px, .7fr) auto;
+  gap: .8rem;
+  align-items: end;
+  margin-bottom: 1rem;
+}
 .document-preview {
   max-height: 48rem;
   margin: 0;
@@ -567,6 +574,7 @@ details summary { color: var(--muted); cursor: pointer; }
   .discord-picker-category-row .row-main { flex-basis: calc(100% - 5rem); }
   .operation-actions { align-items: flex-start; flex-direction: column; }
   .knowledge-filters { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .filter-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 }
 
 @media (max-width: 540px) {
@@ -579,5 +587,6 @@ details summary { color: var(--muted); cursor: pointer; }
   .row-title { white-space: normal; }
   .detail-grid { grid-template-columns: 1fr; }
   .knowledge-filters { grid-template-columns: 1fr; }
+  .filter-grid { grid-template-columns: 1fr; }
   .bar-row { grid-template-columns: 5.8rem minmax(5rem, 1fr) 4rem; gap: .4rem; }
 }

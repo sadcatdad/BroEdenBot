@@ -98,7 +98,7 @@ class DashboardNavigationMetadataTests(unittest.TestCase):
         self.login()
         response = self.client.get("/")
         self.assertEqual(response.status_code, 200)
-        for label in ("Overview", "Operations", "Analytics", "Bank", "Settings"):
+        for label in ("Overview", "Operations", "AI", "Analytics", "Bank", "Settings"):
             self.assertIn(label, response.text)
         self.assertNotIn(">Stats</a>", response.text)
         self.assertNotIn(">Knowledge</a>", response.text)

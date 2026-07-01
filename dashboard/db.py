@@ -13,6 +13,7 @@ from utils.settings import (
     get_setting,
     settings_database_path,
 )
+from utils.ai_config import get_ai_config
 from utils.sqlite import configure_sync_connection
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
@@ -359,4 +360,170 @@ def vcxp_overview(limit: int = 5) -> dict[str, Any]:
         result["status"] = "Ready to test"
         result["status_class"] = "warning-text"
 
+    return result
+
+
+def ai_dashboard_visible() -> bool:
+    return get_ai_config().dashboard_visible
+
+
+def _current_day_prefix() -> str:
+    return datetime.now().astimezone().date().isoformat()
+
+
+def _current_month_prefix() -> str:
+    return datetime.now().astimezone().strftime("%Y-%m")
+
+
+def ai_usage_overview(
+    *,
+    limit: int = 50,
+    command: str = "",
+    model: str = "",
+    status_filter: str = "",
+) -> dict[str, Any]:
+    path = find_database_path()
+    ai_config = get_ai_config()
+    result: dict[str, Any] = {
+        "database": database_status(path),
+        "config": {
+            "enabled": ai_config.enabled,
+            "available": ai_config.available,
+            "api_key_present": ai_config.api_key_present,
+            "fast_model": ai_config.models.fast,
+            "default_model": ai_config.models.default,
+            "advanced_model": ai_config.models.advanced,
+            "advanced_enabled": ai_config.advanced_enabled,
+            "daily_budget_usd": ai_config.budgets.daily_usd,
+            "monthly_budget_usd": ai_config.budgets.monthly_usd,
+            "max_input_tokens": ai_config.token_limits.max_input_tokens,
+            "max_output_tokens": ai_config.token_limits.max_output_tokens,
+            "default_temperature": ai_config.default_temperature,
+            "member_cooldown_seconds": ai_config.cooldowns.member_seconds,
+            "staff_cooldown_seconds": ai_config.cooldowns.staff_seconds,
+            "log_prompts": ai_config.logging.log_prompts,
+            "log_responses": ai_config.logging.log_responses,
+            "dashboard_visible": ai_config.dashboard_visible,
+        },
+        "tables_found": False,
+        "daily_spend_usd": 0.0,
+        "monthly_spend_usd": 0.0,
+        "daily_requests": 0,
+        "monthly_requests": 0,
+        "last_error": None,
+        "last_success_at": None,
+        "recent_logs": [],
+        "filters": {
+            "command": command,
+            "model": model,
+            "status": status_filter,
+        },
+        "error": None,
+    }
+    if not path.is_file():
+        return result
+
+    try:
+        with readonly_connection(path) as connection:
+            if "ai_usage_logs" not in table_names(connection):
+                return result
+            result["tables_found"] = True
+            day_prefix = _current_day_prefix()
+            month_prefix = _current_month_prefix()
+            result["daily_spend_usd"] = float(
+                connection.execute(
+                    """
+                    SELECT COALESCE(SUM(estimated_cost_usd), 0)
+                    FROM ai_usage_logs
+                    WHERE created_at LIKE ?
+                    """,
+                    (day_prefix + "%",),
+                ).fetchone()[0]
+                or 0
+            )
+            result["monthly_spend_usd"] = float(
+                connection.execute(
+                    """
+                    SELECT COALESCE(SUM(estimated_cost_usd), 0)
+                    FROM ai_usage_logs
+                    WHERE created_at LIKE ?
+                    """,
+                    (month_prefix + "%",),
+                ).fetchone()[0]
+                or 0
+            )
+            result["daily_requests"] = int(
+                connection.execute(
+                    "SELECT COUNT(*) FROM ai_usage_logs WHERE created_at LIKE ?",
+                    (day_prefix + "%",),
+                ).fetchone()[0]
+                or 0
+            )
+            result["monthly_requests"] = int(
+                connection.execute(
+                    "SELECT COUNT(*) FROM ai_usage_logs WHERE created_at LIKE ?",
+                    (month_prefix + "%",),
+                ).fetchone()[0]
+                or 0
+            )
+            last_error = connection.execute(
+                """
+                SELECT created_at, error_message
+                FROM ai_usage_logs
+                WHERE success = 0
+                  AND error_message IS NOT NULL
+                  AND error_message != ''
+                ORDER BY created_at DESC, id DESC
+                LIMIT 1
+                """
+            ).fetchone()
+            if last_error is not None:
+                result["last_error"] = dict(last_error)
+            last_success = connection.execute(
+                """
+                SELECT created_at
+                FROM ai_usage_logs
+                WHERE success = 1
+                ORDER BY created_at DESC, id DESC
+                LIMIT 1
+                """
+            ).fetchone()
+            if last_success is not None:
+                result["last_success_at"] = str(last_success["created_at"])
+
+            clauses = []
+            params: list[Any] = []
+            if command:
+                clauses.append("source_command = ?")
+                params.append(command)
+            if model:
+                clauses.append("model_used = ?")
+                params.append(model)
+            if status_filter == "success":
+                clauses.append("success = 1")
+            elif status_filter == "failed":
+                clauses.append("success = 0 AND blocked_by_budget = 0")
+            elif status_filter == "blocked":
+                clauses.append("blocked_by_budget = 1")
+            where_sql = "WHERE " + " AND ".join(clauses) if clauses else ""
+            params.append(max(1, min(limit, 200)))
+            result["recent_logs"] = [
+                dict(row)
+                for row in connection.execute(
+                    f"""
+                    SELECT
+                        created_at, source_command, task_type, user_id,
+                        model_used, tier_used, input_tokens, output_tokens,
+                        total_tokens, estimated_cost_usd, usage_was_estimated,
+                        success, blocked_by_budget, error_message
+                    FROM ai_usage_logs
+                    {where_sql}
+                    ORDER BY created_at DESC, id DESC
+                    LIMIT ?
+                    """,
+                    tuple(params),
+                ).fetchall()
+            ]
+    except (OSError, sqlite3.Error) as exc:
+        result["error"] = str(exc)
     return result

@@ -9,6 +9,7 @@ from discord import app_commands
 from discord.ext import commands
 
 from config import COLOR, TOKEN
+from utils.ai_service import initialize_ai_usage_schema
 from utils.settings import initialize_settings_from_env, settings_database_path
 from utils.sqlite import configure_connection
 from utils.ui import error_embed
@@ -135,6 +136,7 @@ class BotClient(commands.Bot):
                 "Shared database journal mode is %s instead of WAL",
                 journal_mode,
             )
+        await initialize_ai_usage_schema(self.db)
 
     async def close(self):
         try:
