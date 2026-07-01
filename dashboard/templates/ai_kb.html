@@ -1,0 +1,96 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="page-heading">
+  <div>
+    <p class="eyebrow">Editable AI sources</p>
+    <h1>AI Knowledge Base</h1>
+  </div>
+  <a class="button" href="{{ url_for('ai_kb_new') }}">Add source</a>
+</div>
+<p class="muted">Public sources can be used by member-facing /ask responses. Staff-only sources are only available to staff tools like context summaries and rulecard drafting.</p>
+{% if message %}<div class="alert success">{{ message }}</div>{% endif %}
+{% if error %}<div class="alert error">{{ error }}</div>{% endif %}
+
+<section class="card-grid">
+  <article class="card"><p class="label">Sources</p><p class="metric">{{ kb_status.total_sources }}</p></article>
+  <article class="card"><p class="label">Chunks</p><p class="metric">{{ kb_status.total_chunks }}</p></article>
+  <article class="card"><p class="label">Public chunks</p><p class="metric">{{ kb_status.public_chunks }}</p></article>
+  <article class="card"><p class="label">Staff chunks</p><p class="metric">{{ kb_status.staff_chunks }}</p></article>
+</section>
+
+<section class="card">
+  <div class="section-heading">
+    <div>
+      <p class="eyebrow">Sources</p>
+      <h2>Managed KB Sources</h2>
+    </div>
+  </div>
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>Name</th><th>Type</th><th>Visibility</th><th>Chunks</th><th>Updated</th><th>Actions</th></tr></thead>
+      <tbody>
+      {% for source in sources %}
+      <tr>
+        <td><strong>{{ source.source_name }}</strong></td>
+        <td><span class="badge">{{ source.source_type }}</span></td>
+        <td><span class="badge visibility-{{ source.source_visibility }}">{{ source.source_visibility }}</span></td>
+        <td>{{ source.chunk_count }}</td>
+        <td>{{ source.updated_at }}</td>
+        <td>
+          <div class="table-actions">
+            <a class="button secondary small" href="{{ url_for('ai_kb_edit', source_name=source.source_name) }}">Edit</a>
+            <form method="post" action="{{ url_for('ai_kb_delete', source_name=source.source_name) }}">
+              <input type="hidden" name="csrf" value="{{ csrf_token }}">
+              <input type="hidden" name="confirm" value="{{ source.source_name }}">
+              <button class="button danger small" type="submit">Delete</button>
+            </form>
+          </div>
+        </td>
+      </tr>
+      {% else %}
+      <tr><td colspan="6" class="muted">No AI KB sources found.</td></tr>
+      {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</section>
+
+<section class="card">
+  <p class="eyebrow">Test retrieval</p>
+  <h2>Search KB</h2>
+  <form class="filter-grid" method="get" action="{{ url_for('ai_kb_page') }}">
+    <label><span>Query</span><input name="query" value="{{ filters.query }}" placeholder="server rules, intro channels, roles"></label>
+    <label>
+      <span>Visibility</span>
+      <select name="visibility">
+        <option value="all" {{ "selected" if filters.visibility == "all" else "" }}>All</option>
+        <option value="public" {{ "selected" if filters.visibility == "public" else "" }}>Public</option>
+        <option value="staff" {{ "selected" if filters.visibility == "staff" else "" }}>Staff</option>
+      </select>
+    </label>
+    <label>
+      <span>Type</span>
+      <select name="source_type">
+        <option value="">All types</option>
+        {% for type in source_types %}
+        <option value="{{ type }}" {{ "selected" if filters.source_type == type else "" }}>{{ type }}</option>
+        {% endfor %}
+      </select>
+    </label>
+    <label><span>Limit</span><input type="number" min="1" max="25" name="limit" value="{{ filters.limit }}"></label>
+    <button class="button" type="submit">Search</button>
+  </form>
+  {% if search_results %}
+  <div class="status-list">
+    {% for result in search_results %}
+    <div>
+      <span>{{ result.source_name }} / {{ result.section_title or "General" }}<br><small>{{ result.source_type }} · {{ result.source_visibility }} · score {{ result.score }}</small></span>
+      <strong>{{ result.excerpt }}</strong>
+    </div>
+    {% endfor %}
+  </div>
+  {% elif filters.query %}
+  <p class="muted">No chunks matched that query.</p>
+  {% endif %}
+</section>
+{% endblock %}

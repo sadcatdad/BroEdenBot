@@ -10,6 +10,14 @@ from discord.ext import commands
 from google import genai
 from google.genai import errors, types
 
+from utils.ai_kb import format_kb_context, search_kb
+from utils.ai_service import (
+    AI_BUDGET_MESSAGE,
+    AI_DISABLED_MESSAGE,
+    check_ai_cooldown,
+    generate_ai_response,
+    set_ai_cooldown,
+)
 from utils.knowledge import build_public_ask_context, search_server_knowledge
 from utils.settings import get_csv_ids_setting, get_int_setting
 from utils.ui import SUCCESS_COLOR, branded_embed
@@ -40,6 +48,11 @@ OUTSIDE_SCOPE_MESSAGE = (
 RATE_LIMIT_MESSAGE = "Please wait a bit before using /ask again."
 MAX_QUESTION_LENGTH = 1_000
 EMBED_DESCRIPTION_LIMIT = 4_096
+NO_KB_MATCH_MESSAGE = (
+    "I could not find an answer in the server guide or rules. "
+    f"For anything unclear, please open a support ticket in {SUPPORT_CHANNEL} "
+    "or ask staff."
+)
 
 logger = logging.getLogger(__name__)
 
@@ -105,7 +118,9 @@ def _is_server_help_question(question: str) -> bool:
     normalized = question.casefold()
     if any(term in normalized for term in SERVER_SCOPE_TERMS):
         return True
-    return bool(search_server_knowledge(question, max_results=1))
+    return bool(search_server_knowledge(question, max_results=1)) or bool(
+        search_kb(query=question, visibility="public", limit=1)
+    )
 
 
 def _format_public_response(question: str, answer: str) -> discord.Embed:
@@ -331,7 +346,7 @@ class Ask(commands.Cog):
     def _build_prompt(question: str, context: str) -> str:
         return f"""
 You are BroEdenBot, answering general Bro Eden server questions for members.
-Use only the provided Survival Guide and Rules context.
+Use only the provided AI Knowledge Base context.
 If the answer is not clearly supported by the provided context, say you are
 not fully sure and direct the user to submit a ticket in {SUPPORT_CHANNEL}.
 Do not invent policies, punishments, staff decisions, channel IDs, or
@@ -345,10 +360,10 @@ optionally 2-4 bullets. Mention relevant Discord channel links only when they
 appear in the provided context. When support is appropriate, end with:
 "If you still need help, please submit a ticket in {SUPPORT_CHANNEL}."
 
-PUBLIC SURVIVAL GUIDE AND RULES:
-<public_context>
+PUBLIC AI KNOWLEDGE BASE CONTEXT:
+<public_kb_context>
 {context}
-</public_context>
+</public_kb_context>
 
 MEMBER QUESTION:
 <member_question>
@@ -386,9 +401,13 @@ MEMBER QUESTION:
                 ephemeral=True,
             )
             return
-        if await self._is_rate_limited(interaction.user.id):
+        cooldown_ok, retry_after = await check_ai_cooldown(
+            interaction.user.id,
+            "member",
+        )
+        if not cooldown_ok:
             await interaction.response.send_message(
-                RATE_LIMIT_MESSAGE,
+                f"{RATE_LIMIT_MESSAGE} Try again in {max(1, int(retry_after))} seconds.",
                 ephemeral=True,
             )
             return
@@ -406,42 +425,77 @@ MEMBER QUESTION:
                 allowed_mentions=discord.AllowedMentions.none(),
             )
             return
-        if self.client is None:
-            await interaction.response.send_message(
-                "/ask is not configured yet.",
-                ephemeral=True,
-            )
-            return
-
         # TODO: A future opt-in "Post Publicly" button could publish a safe copy.
         await interaction.response.defer(thinking=True, ephemeral=True)
-        context = build_public_ask_context(question)
-        if not context:
+        chunks = search_kb(
+            query=question,
+            visibility="public",
+            limit=6,
+        )
+        if not chunks:
             await interaction.followup.send(
-                embed=_format_public_response(question, GEMINI_FAILURE_MESSAGE),
+                embed=_format_public_response(question, NO_KB_MATCH_MESSAGE),
                 ephemeral=True,
                 allowed_mentions=discord.AllowedMentions.none(),
             )
             return
 
-        try:
-            answer = await self._generate_answer(
-                self._build_prompt(question, context)
-            )
-        except GeminiNoUsableResponseError:
+        context = format_kb_context(chunks)
+        result = await generate_ai_response(
+            task_type="ask_server_guide",
+            prompt=self._build_prompt(question, context),
+            requested_tier="default",
+            max_output_tokens=750,
+            temperature=0.25,
+            user_id=interaction.user.id,
+            guild_id=interaction.guild_id,
+            channel_id=interaction.channel_id,
+            source_command="/ask",
+            metadata={"kb_sources": [chunk["source_name"] for chunk in chunks[:3]]},
+            db=getattr(self.bot, "db", None),
+        )
+        if result.ok:
+            await set_ai_cooldown(interaction.user.id, "member")
+        if result.blocked_by_budget:
             await interaction.followup.send(
-                embed=_format_public_response(question, UNSAFE_RESPONSE_MESSAGE),
+                embed=_format_public_response(question, AI_BUDGET_MESSAGE),
                 ephemeral=True,
                 allowed_mentions=discord.AllowedMentions.none(),
             )
             return
-        except Exception:
+        if result.error == AI_DISABLED_MESSAGE:
             await interaction.followup.send(
-                embed=_format_public_response(question, GEMINI_FAILURE_MESSAGE),
+                embed=_format_public_response(question, AI_DISABLED_MESSAGE),
                 ephemeral=True,
                 allowed_mentions=discord.AllowedMentions.none(),
             )
             return
+        if not result.ok or not result.text:
+            await interaction.followup.send(
+                embed=_format_public_response(
+                    question,
+                    result.error or GEMINI_FAILURE_MESSAGE,
+                ),
+                ephemeral=True,
+                allowed_mentions=discord.AllowedMentions.none(),
+            )
+            return
+        source_lines = []
+        seen_sources = set()
+        for chunk in chunks:
+            label = f"{chunk['source_name']} / {chunk.get('section_title') or 'General'}"
+            if label in seen_sources:
+                continue
+            seen_sources.add(label)
+            source_lines.append(label)
+            if len(source_lines) >= 3:
+                break
+        answer = (
+            f"{result.text.strip()}\n\n"
+            f"Source: {'; '.join(source_lines)}\n"
+            f"For anything unclear, open a support ticket in {SUPPORT_CHANNEL} "
+            "or ask staff."
+        )
 
         await interaction.followup.send(
             embed=_format_public_response(question, answer),

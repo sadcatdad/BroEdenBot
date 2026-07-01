@@ -5,6 +5,7 @@
     <p class="eyebrow">Gemini foundation</p>
     <h1>AI Framework</h1>
   </div>
+  <a class="button" href="{{ url_for('ai_kb_page') }}">AI Knowledge Base</a>
 </div>
 
 {% if ai.error %}<div class="alert error">{{ ai.error }}</div>{% endif %}
@@ -27,6 +28,22 @@
     <p class="metric">${{ "{:.4f}".format(ai.monthly_spend_usd) }}</p>
     <p class="muted">{{ ai.monthly_requests }} requests · budget ${{ "{:.2f}".format(ai.config.monthly_budget_usd) }}</p>
   </article>
+</section>
+
+<section class="card-grid">
+  <article class="card">
+    <p class="label">KB sources</p>
+    <p class="metric">{{ ai.kb_status.total_sources }}</p>
+    <p class="muted">{{ ai.kb_status.public_chunks }} public chunks · {{ ai.kb_status.staff_chunks }} staff chunks</p>
+  </article>
+  {% for command in ["/ask", "/context channel", "/context user", "/rulecard draft"] %}
+  {% set usage = (ai.command_usage | selectattr("source_command", "equalto", command) | list | first) %}
+  <article class="card">
+    <p class="label">{{ command }}</p>
+    <p class="metric">{{ usage.today_count if usage else 0 }}</p>
+    <p class="muted">Month: {{ usage.month_count if usage else 0 }} · ${{ "{:.4f}".format(usage.month_cost if usage else 0) }}</p>
+  </article>
+  {% endfor %}
 </section>
 
 <section class="two-column operations-columns">
@@ -139,5 +156,34 @@
       </tbody>
     </table>
   </div>
+</section>
+
+<section class="two-column operations-columns">
+  <article class="card">
+    <p class="eyebrow">Cost</p>
+    <h2>Top Commands This Month</h2>
+    <div class="status-list">
+      {% for row in ai.top_commands_by_cost %}
+      <div><span>{{ row.source_command or "unknown" }}<br><small>{{ row.request_count }} requests</small></span><strong>${{ "{:.6f}".format(row.total_cost or 0) }}</strong></div>
+      {% else %}
+      <p class="muted">No AI command usage recorded.</p>
+      {% endfor %}
+    </div>
+  </article>
+  <article class="card">
+    <p class="eyebrow">Attention</p>
+    <h2>Recent Failures & Budget Blocks</h2>
+    <div class="status-list">
+      {% for row in ai.recent_failures %}
+      <div><span>{{ row.created_at }} · {{ row.source_command or "unknown" }}</span><strong>{{ row.error_message or "failed" }}</strong></div>
+      {% endfor %}
+      {% for row in ai.recent_budget_blocks %}
+      <div><span>{{ row.created_at }} · {{ row.source_command or "unknown" }}</span><strong>budget blocked</strong></div>
+      {% endfor %}
+      {% if not ai.recent_failures and not ai.recent_budget_blocks %}
+      <p class="muted">No recent failures or budget blocks.</p>
+      {% endif %}
+    </div>
+  </article>
 </section>
 {% endblock %}

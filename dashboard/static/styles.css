@@ -354,6 +354,7 @@ details summary { color: var(--muted); cursor: pointer; }
   font: .86rem/1.6 ui-monospace, SFMono-Regular, Menlo, monospace;
 }
 .knowledge-editor { min-height: 34rem; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; line-height: 1.55; }
+.ai-kb-editor { min-height: 32rem; }
 .visibility-public { color: var(--good); }
 .visibility-staff { color: var(--warning); background: #322817; }
 .visibility-internal { color: var(--muted); background: var(--panel-soft); }

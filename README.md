@@ -24,9 +24,10 @@ For a module-by-module architecture and reliability map, see
 | `/ask` | All server members |
 | `/guide search` | All server members |
 | `/bot help`, `/bot status`, `/bot logs`, `/bot restart`, `/bot deploy` | Users listed in `BOT_OWNER_USER_IDS`; administrators only when `BOT_OWNER_ALLOW_ADMINS=true` |
-| `/ai test`, `/ai status` | Users listed in `BOT_OWNER_USER_IDS`; administrators only when `BOT_OWNER_ALLOW_ADMINS=true` |
+| `/ai test`, `/ai status`, `/ai kb` commands | Users listed in `BOT_OWNER_USER_IDS`; administrators only when `BOT_OWNER_ALLOW_ADMINS=true` |
 | `/staffai help`, `/staffai status`, `/staffai ask`, `/staffai search`, `/staffai summarize` | Roles listed in `STAFF_AI_ALLOWED_ROLE_IDS` or users listed in `BOT_OWNER_USER_IDS` |
 | `/context help`, `/context status`, `/context search`, `/context summarize`, `/context timeline`, `/context user`, `/context channel` | Roles listed in `MESSAGE_CONTEXT_ALLOWED_ROLE_IDS` or users listed in `BOT_OWNER_USER_IDS` |
+| `/rulecard draft` and **Draft Rule Reminder** message action | Administrators or roles listed in `MODAI_ALLOWED_ROLE_IDS` |
 | `/checklist` commands and management controls | Roles listed in `CHECKLIST_ALLOWED_ROLE_IDS` or users listed in `BOT_OWNER_USER_IDS` |
 | `/reminder add`, `/reminder manage` | Internal staff only: administrators, `BOT_OWNER_USER_IDS`, `REMINDER_ALLOWED_ROLE_IDS`, or configured staff/admin roles |
 | ModAI commands and context menus | Administrators or roles listed in `MODAI_ALLOWED_ROLE_IDS` |
@@ -126,6 +127,8 @@ have **View Channel**, **Send Messages** (or **Send Messages in Threads**), and
 - `/ai test` — Private owner/admin AI framework smoke test using the default
   routed Gemini model.
 - `/ai status` — Private AI framework configuration and budget-spend summary.
+- `/ai kb import`, `/ai kb status`, `/ai kb search`, `/ai kb delete` —
+  Owner/admin AI Knowledge Base management.
 - `/stats activity trends [period] [source] [channel]` — Compares a fixed
   period with the immediately preceding period.
 - `/stats activity categories [period] [source] [limit] [channel]` — Groups
@@ -141,6 +144,7 @@ have **View Channel**, **Send Messages** (or **Send Messages in Threads**), and
 - `/context help`, `/context status`, `/context search`, `/context summarize`,
   `/context timeline`, `/context user`, `/context channel` — Private
   full-server message archive, search, and timeline tools.
+- `/rulecard draft` — AI-drafted rule reminder preview for staff review.
 - `/vcrewards audit` — Runs a private, read-only VCXP safety audit.
 
 ### `/bot` management group
@@ -219,20 +223,20 @@ events, verification, NSFW access, server features, and support.
 - Successful answers include `Open Ticket`, `Search Guide`, `This Helped`, and
   `Still Confused` buttons. Only the member who ran `/ask` can use them.
 
-`/ask` uses Gemini with only the local public knowledge in:
-
-- `data/knowledge/survival_guide.md`
-- `data/knowledge/rules.md`
+`/ask` uses Gemini with only `public` sources in the AI Knowledge Base
+(`ai_kb_sources` and `ai_kb_chunks`). Import public rules, guides, FAQs, role
+guides, or channel guides through `/ai kb import` or the dashboard AI Knowledge
+Base editor.
 
 It does not read `staff_notes.py`, staff-note records, ModAI prompts, moderation
 logs, private incident records, imported Discord history, message history,
 member activity stats, or other private data. It does not store member
 questions or Gemini responses.
 
-The prompt requires Gemini to stay grounded in the provided Survival Guide and
-Rules, avoid inventing policies or permissions, and keep replies concise. When
-the answer is uncertain, Gemini directs the member to submit a ticket in
-<#1300632962127368283>.
+The prompt requires Gemini to stay grounded in the retrieved public KB chunks,
+avoid inventing policies or permissions, and keep replies concise. When no
+public KB source matches, `/ask` says it could not find an answer and directs
+the member to submit a ticket in <#1300632962127368283>.
 
 Questions involving personal disputes, accusations, harassment, reports,
 appeals, staff complaints, moderation actions, rule-enforcement decisions,
@@ -241,9 +245,9 @@ are not sent to Gemini. The member is privately directed to the support-ticket
 channel instead. Clearly unrelated questions are also redirected rather than
 answered.
 
-The command has a per-user cooldown of 30 seconds by default. If Gemini returns
-an empty or blocked response, the private embed says it cannot answer safely. If
-Gemini fails, the private embed directs the member to the support-ticket
+The command uses `AI_MEMBER_COOLDOWN_SECONDS`. If Gemini returns an empty or
+blocked response, the private embed says it cannot answer safely. If Gemini
+fails, the private embed directs the member to the support-ticket
 channel. Missing `GEMINI_API_KEY` configuration is reported ephemerally.
 
 ### `/guide search <query>`
@@ -266,10 +270,8 @@ and status.
 
 ## AI framework foundation
 
-Phase 0 adds a shared AI framework for future commands without replacing the
-existing `/ask`, `/staffai`, `/context`, or ModAI feature behavior yet. The
-framework lives in `utils/ai_config.py`, `utils/ai_costs.py`, and
-`utils/ai_service.py`.
+The shared AI framework lives in `utils/ai_config.py`, `utils/ai_costs.py`,
+`utils/ai_service.py`, and `utils/ai_kb.py`.
 
 - Model tiers are `fast`, `default`, and `advanced`. `advanced` falls back to
   `default` unless `AI_ENABLE_ADVANCED_MODEL=true`.
@@ -280,6 +282,8 @@ framework lives in `utils/ai_config.py`, `utils/ai_costs.py`, and
   configured output limit.
 - Usage is logged to `ai_usage_logs` with metadata, token counts, estimated
   cost, success/failure, and budget-block state.
+- Editable AI KB source text is stored in `ai_kb_sources`; searchable chunks
+  are stored in `ai_kb_chunks`.
 - Prompts and responses are not stored. They are not logged unless
   `AI_LOG_PROMPTS=true` or `AI_LOG_RESPONSES=true`.
 - Reusable cooldown helpers are available for future member and staff AI
@@ -289,11 +293,20 @@ framework lives in `utils/ai_config.py`, `utils/ai_costs.py`, and
 reports model, token usage, estimated cost, and daily/monthly spend. `/ai
 status` reports configuration and budget totals without showing secrets.
 
-The framework accepts future task types such as `ask_server_guide`,
+`/ai kb import` accepts pasted text or a `.txt`, `.md`, or `.markdown`
+attachment, chunks it, and replaces any existing source with the same name.
+`/ai kb search` returns short excerpts only. `/ai kb delete` removes a source
+and its chunks.
+
+Phase 1 `/ask` uses only `public` AI KB chunks, sends the top matching context
+through the shared AI router, and refuses to invent an answer when no public KB
+match exists. Staff-only KB chunks are available only to staff tools such as
+context summaries and rulecard drafting.
+
+The framework accepts task types such as `ask_server_guide`,
 `staff_context_user`, `staff_context_channel`, `staff_context_topic`,
-`rulecard_draft`, `ticket_summary`, `event_assistant`,
-`moderation_classification`, `weekly_recap`, and `onboarding_helper`, but those
-features are not implemented in Phase 0.
+`rulecard_draft`, `ticket_summary`, `moderation_classification`,
+`weekly_recap`, and `onboarding_helper`.
 
 ## Private staff-context commands
 
@@ -350,9 +363,12 @@ Markdown is escaped, and only Discord message URLs become jump links.
   [include_links]` — Chunked Gemini summary of a bounded scope.
 - `/context timeline <after> [before] [channel] [topic] [granularity]` —
   Chronological staff narrative.
-- `/context user <user> [after] [before] [channel] [summarize]` — Neutral
-  member participation review.
-- `/context channel <channel> [after] [before] [summarize]` — Channel recap.
+- `/context user <user> <timeframe> [channel] [include_bots] [max_messages]`
+  — Neutral member participation review. Timeframes include `24h`, `3d`,
+  `7d`, `14d`, `30d`, `60d`, and `90d`.
+- `/context channel <channel> <timeframe> [topic] [include_bots] [max_messages]`
+  — Channel recap. Timeframes include `1h`, `6h`, `12h`, `24h`, `3d`, `7d`,
+  `14d`, and `30d`.
 
 Access requires `MESSAGE_CONTEXT_ALLOWED_ROLE_IDS` or `BOT_OWNER_USER_IDS`.
 All replies are ephemeral. Full privacy, Message Content Intent, retention,
@@ -453,6 +469,19 @@ they receive a notification.
 Only the staff member who generated the card or an administrator can click the
 send button. The public reminder always starts with `RULE REMINDER!` and ends
 with a link to the rules channel.
+
+### `/rulecard draft <topic_or_issue> [mentioned_user] [tone] [channel] [source_message_link]`
+
+Creates an AI-assisted rule reminder draft using public and staff AI KB chunks.
+The preview is ephemeral and includes the public card, private staff note,
+matched sources, target channel, and mention behavior. It never posts
+automatically.
+
+The preview buttons are `Post without mention`, `Post with mention(s)`, and
+`Discard`. The **Draft Rule Reminder** message context menu starts the same
+flow from a selected Discord message and defaults the selected message author
+as the optional mention target. The selected message is private AI context only
+and is not quoted publicly in the posted card.
 
 ### `/modai patterncheck <user>`
 
@@ -1395,15 +1424,19 @@ notify anyone.
 
 The local FastAPI dashboard provides shared-database status, bank overview,
 historical-import status, database-backed editing for an explicit allowlist of
-safe runtime settings, AI framework status/usage, a VC XP role-pulse readiness
-summary, stats graphics management, and an allowlisted local Knowledge Base
-manager. It does not edit `.env`, modify bank records, expose Discord or Gemini
-secrets, or provide public hosting.
+safe runtime settings, AI framework status/usage, an AI Knowledge Base editor,
+a VC XP role-pulse readiness summary, stats graphics management, and an
+allowlisted local Knowledge Base manager. It does not edit `.env`, modify bank
+records, expose Discord or Gemini secrets, or provide public hosting.
 
 The top-level dashboard tabs are Overview, Operations, AI, Analytics, Bank, and
 Settings when `AI_DASHBOARD_VISIBLE=true`; the AI tab is hidden when that flag
-is false. Stats Graphics lives under Analytics. Knowledge Base, Imports, and
-Dashboard Users live under Settings. The older `/stats`, `/knowledge`,
+is false. The AI tab links to the AI Knowledge Base editor where dashboard
+admins can create, edit, search, and delete `public` or `staff` KB sources in
+`ai_kb_sources` and `ai_kb_chunks`. Paste/edit textareas support markdown or
+plain text up to 2 MB per source; dashboard file upload is intentionally not
+enabled in Phase 1. Stats Graphics lives under Analytics. Knowledge Base,
+Imports, and Dashboard Users live under Settings. The older `/stats`, `/knowledge`,
 `/imports`, and `/users` links redirect to their new locations so existing
 bookmarks remain usable.
 

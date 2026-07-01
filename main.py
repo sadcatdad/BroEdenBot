@@ -9,6 +9,7 @@ from discord import app_commands
 from discord.ext import commands
 
 from config import COLOR, TOKEN
+from utils.ai_kb import initialize_ai_kb_schema_async
 from utils.ai_service import initialize_ai_usage_schema
 from utils.settings import initialize_settings_from_env, settings_database_path
 from utils.sqlite import configure_connection
@@ -137,6 +138,7 @@ class BotClient(commands.Bot):
                 journal_mode,
             )
         await initialize_ai_usage_schema(self.db)
+        await initialize_ai_kb_schema_async(self.db)
 
     async def close(self):
         try:

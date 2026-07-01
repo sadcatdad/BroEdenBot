@@ -73,6 +73,18 @@ from utils.knowledge_manager import (
     recent_knowledge_audit,
     save_document,
 )
+from utils.ai_kb import (
+    MAX_SOURCE_CHARS,
+    SOURCE_TYPES,
+    VISIBILITIES,
+    delete_kb_source,
+    get_kb_source,
+    get_kb_status,
+    initialize_ai_kb_schema,
+    list_kb_sources,
+    search_kb,
+    upsert_kb_source,
+)
 from utils.analytics import (
     LIMITS,
     RANGES,
@@ -155,6 +167,7 @@ if dashboard_enabled():
     initialize_settings_from_env()
     initialize_stats_manager_schema()
     initialize_knowledge_schema()
+    initialize_ai_kb_schema()
     initialize_dashboard_users()
 
 app = FastAPI(
@@ -490,6 +503,162 @@ async def ai_page(
                 status_filter=(status_filter or "").strip().casefold(),
             ),
         ),
+    )
+
+
+@app.get("/ai/kb", response_class=HTMLResponse, name="ai_kb_page")
+async def ai_kb_page(
+    request: Request,
+    query: Optional[str] = None,
+    visibility: Optional[str] = None,
+    source_type: Optional[str] = None,
+    limit: int = 5,
+) -> HTMLResponse:
+    if redirect := login_redirect(request):
+        return redirect
+    if not is_admin(request):
+        raise HTTPException(status_code=403, detail="Admin access is required.")
+    source_types = [source_type] if source_type else None
+    search_results = (
+        search_kb(
+            query=query,
+            visibility=visibility or "all",
+            source_types=source_types,
+            limit=limit,
+        )
+        if query
+        else []
+    )
+    return templates.TemplateResponse(
+        request=request,
+        name="ai_kb.html",
+        context=template_context(
+            request,
+            page_title="AI Knowledge Base",
+            kb_status=get_kb_status(),
+            sources=list_kb_sources(),
+            source_types=sorted(SOURCE_TYPES),
+            visibilities=sorted(VISIBILITIES),
+            search_results=search_results,
+            filters={
+                "query": query or "",
+                "visibility": visibility or "all",
+                "source_type": source_type or "",
+                "limit": max(1, min(limit, 25)),
+            },
+            message=request.session.pop("ai_kb_message", None),
+            error=request.session.pop("ai_kb_error", None),
+        ),
+    )
+
+
+@app.get("/ai/kb/new", response_class=HTMLResponse, name="ai_kb_new")
+async def ai_kb_new(request: Request) -> HTMLResponse:
+    if redirect := login_redirect(request):
+        return redirect
+    if not is_admin(request):
+        raise HTTPException(status_code=403, detail="Admin access is required.")
+    return templates.TemplateResponse(
+        request=request,
+        name="ai_kb_edit.html",
+        context=template_context(
+            request,
+            page_title="New AI KB Source",
+            source=None,
+            source_types=sorted(SOURCE_TYPES),
+            visibilities=sorted(VISIBILITIES),
+            max_source_chars=MAX_SOURCE_CHARS,
+            error=request.session.pop("ai_kb_error", None),
+        ),
+    )
+
+
+@app.get("/ai/kb/{source_name}/edit", response_class=HTMLResponse, name="ai_kb_edit")
+async def ai_kb_edit(request: Request, source_name: str) -> HTMLResponse:
+    if redirect := login_redirect(request):
+        return redirect
+    if not is_admin(request):
+        raise HTTPException(status_code=403, detail="Admin access is required.")
+    source = get_kb_source(source_name)
+    if source is None:
+        raise HTTPException(status_code=404, detail="KB source was not found.")
+    return templates.TemplateResponse(
+        request=request,
+        name="ai_kb_edit.html",
+        context=template_context(
+            request,
+            page_title=f"Edit {source_name}",
+            source=source,
+            source_types=sorted(SOURCE_TYPES),
+            visibilities=sorted(VISIBILITIES),
+            max_source_chars=MAX_SOURCE_CHARS,
+            error=request.session.pop("ai_kb_error", None),
+        ),
+    )
+
+
+@app.post("/ai/kb/save", name="ai_kb_save")
+async def ai_kb_save(request: Request) -> RedirectResponse:
+    if redirect := login_redirect(request):
+        return redirect
+    await require_action_csrf(request)
+    if not is_admin(request):
+        raise HTTPException(status_code=403, detail="Admin access is required.")
+    form = await request.form()
+    source_name = str(form.get("source_name", "")).strip()
+    try:
+        result = upsert_kb_source(
+            source_name=source_name,
+            source_type=str(form.get("source_type", "")),
+            visibility=str(form.get("source_visibility", "")),
+            raw_text=str(form.get("raw_content", "")),
+            metadata={
+                "source": "dashboard",
+                "changed_by": str(request.session.get("dashboard_user", "dashboard")),
+            },
+        )
+    except ValueError as exc:
+        request.session["ai_kb_error"] = str(exc)
+        target = (
+            request.url_for("ai_kb_edit", source_name=source_name)
+            if source_name and get_kb_source(source_name)
+            else request.url_for("ai_kb_new")
+        )
+        return RedirectResponse(url=target, status_code=status.HTTP_303_SEE_OTHER)
+    request.session["ai_kb_message"] = (
+        f"{result['source_name']} saved with {result['chunk_count']} chunk(s)."
+    )
+    return RedirectResponse(
+        url=request.url_for("ai_kb_page"),
+        status_code=status.HTTP_303_SEE_OTHER,
+    )
+
+
+@app.post("/ai/kb/{source_name}/delete", name="ai_kb_delete")
+async def ai_kb_delete(request: Request, source_name: str) -> RedirectResponse:
+    if redirect := login_redirect(request):
+        return redirect
+    await require_action_csrf(request)
+    if not is_admin(request):
+        raise HTTPException(status_code=403, detail="Admin access is required.")
+    form = await request.form()
+    if str(form.get("confirm", "")).strip() != source_name:
+        request.session["ai_kb_error"] = "Type the source name to confirm deletion."
+        return RedirectResponse(
+            url=request.url_for("ai_kb_page"),
+            status_code=status.HTTP_303_SEE_OTHER,
+        )
+    try:
+        deleted = delete_kb_source(source_name)
+    except ValueError as exc:
+        request.session["ai_kb_error"] = str(exc)
+    else:
+        request.session["ai_kb_message"] = (
+            f"{source_name} deleted with {deleted} chunk(s)."
+        )
+    return RedirectResponse(
+        url=request.url_for("ai_kb_page"),
+        status_code=status.HTTP_303_SEE_OTHER,
     )
 
 

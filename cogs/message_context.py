@@ -17,6 +17,12 @@ from discord.ext import commands, tasks
 from google import genai
 from google.genai import types
 
+from utils.ai_service import (
+    AI_BUDGET_MESSAGE,
+    check_ai_cooldown,
+    generate_ai_response,
+    set_ai_cooldown,
+)
 from utils.message_context import (
     MESSAGE_CONTEXT_FTS_SQL,
     MESSAGE_CONTEXT_FTS_TRIGGER_SQL,
@@ -47,6 +53,18 @@ MAX_RETRIEVAL_ROWS = 600
 MAX_GEMINI_ROWS_PER_CHUNK = 80
 MAX_CHUNK_CHARS = 24_000
 MAX_OUTPUT_CHARS = 3_900
+TIMEFRAME_SECONDS = {
+    "1h": 60 * 60,
+    "6h": 6 * 60 * 60,
+    "12h": 12 * 60 * 60,
+    "24h": 24 * 60 * 60,
+    "3d": 3 * 24 * 60 * 60,
+    "7d": 7 * 24 * 60 * 60,
+    "14d": 14 * 24 * 60 * 60,
+    "30d": 30 * 24 * 60 * 60,
+    "60d": 60 * 24 * 60 * 60,
+    "90d": 90 * 24 * 60 * 60,
+}
 SYSTEM_INSTRUCTION = """
 You analyze private Discord server message context for authorized staff.
 Be neutral, concise, and evidence-based. Do not infer malicious intent without
@@ -456,6 +474,7 @@ class MessageContext(commands.Cog):
         after: Optional[str] = None,
         before: Optional[str] = None,
         source: str = "all",
+        include_bots: bool = True,
     ) -> tuple[list[str], list[object]]:
         conditions = ["m.guild_id = ?"]
         parameters: list[object] = [str(guild_id)]
@@ -474,6 +493,8 @@ class MessageContext(commands.Cog):
         if source != "all":
             conditions.append("m.source = ?")
             parameters.append(source)
+        if not include_bots:
+            conditions.append("COALESCE(m.is_bot, 0) = 0")
         return conditions, parameters
 
     async def _search_rows(
@@ -486,6 +507,7 @@ class MessageContext(commands.Cog):
         after: Optional[str] = None,
         before: Optional[str] = None,
         source: str = "all",
+        include_bots: bool = True,
         limit: int = 10,
     ) -> list[aiosqlite.Row]:
         conditions, parameters = self._filters(
@@ -495,6 +517,7 @@ class MessageContext(commands.Cog):
             after=after,
             before=before,
             source=source,
+            include_bots=include_bots,
         )
         where = " AND ".join(conditions)
         match = fts_query(query)
@@ -543,6 +566,8 @@ class MessageContext(commands.Cog):
         after: Optional[str] = None,
         before: Optional[str] = None,
         topic: Optional[str] = None,
+        include_bots: bool = True,
+        max_messages: int = MAX_RETRIEVAL_ROWS,
     ) -> list[aiosqlite.Row]:
         if topic:
             rows = await self._search_rows(
@@ -552,15 +577,17 @@ class MessageContext(commands.Cog):
                 user_id=user_id,
                 after=after,
                 before=before,
+                include_bots=include_bots,
                 limit=MAX_RETRIEVAL_ROWS,
             )
-            return sorted(rows, key=lambda row: row["timestamp"])
+            return sorted(rows, key=lambda row: row["timestamp"])[:max_messages]
         conditions, parameters = self._filters(
             guild_id,
             channel_id=channel_id,
             user_id=user_id,
             after=after,
             before=before,
+            include_bots=include_bots,
         )
         return await self._fetchall(
             f"""
@@ -568,7 +595,7 @@ class MessageContext(commands.Cog):
             WHERE {" AND ".join(conditions)}
             ORDER BY m.timestamp ASC LIMIT ?
             """,
-            (*parameters, MAX_RETRIEVAL_ROWS),
+            (*parameters, max_messages),
         )
 
     @staticmethod
@@ -645,13 +672,17 @@ class MessageContext(commands.Cog):
         task: str,
         request: str,
         include_links: bool,
+        interaction: discord.Interaction,
+        source_command: str,
+        task_type: str,
+        max_output_tokens: int = 1_250,
     ) -> str:
         chunks = self._chunks(rows, include_links=include_links)
         partials = []
         for number, chunk in enumerate(chunks, start=1):
-            partials.append(
-                await self._generate(
-                    f"""
+            result = await generate_ai_response(
+                task_type=task_type,
+                prompt=f"""
 Task: Create an evidence-based intermediate recap for {task}.
 Request: {request}
 Chunk: {number} of {len(chunks)}
@@ -663,13 +694,25 @@ Chunk: {number} of {len(chunks)}
 Capture key events, initiators only when clear, channel and time references,
 topic shifts, escalation or de-escalation, possible moderation concerns,
 unresolved questions, and uncertainty. Do not quote long passages.
-""".strip()
-                )
+""".strip(),
+                system_instruction=SYSTEM_INSTRUCTION,
+                requested_tier="default",
+                max_output_tokens=max_output_tokens,
+                temperature=0.2,
+                user_id=interaction.user.id,
+                guild_id=interaction.guild_id,
+                channel_id=interaction.channel_id,
+                source_command=source_command,
+                db=getattr(self.bot, "db", None),
             )
+            if not result.ok or not result.text:
+                raise RuntimeError(result.error or "AI summary failed.")
+            partials.append(result.text)
         combined = "\n\n--- CHUNK ---\n\n".join(partials)
         coverage = self._coverage(rows)
-        return await self._generate(
-            f"""
+        result = await generate_ai_response(
+            task_type=task_type,
+            prompt=f"""
 Task: {task}
 Request: {request}
 Coverage: {coverage}
@@ -682,8 +725,20 @@ Produce concise staff-facing Markdown. Include Overview, Main conversations,
 initiators when clear, channels, escalation/tension, possible moderation
 concerns, unresolved questions, suggested follow-up when appropriate, and a
 final Source coverage section. Do not overclaim.
-""".strip()
+""".strip(),
+            system_instruction=SYSTEM_INSTRUCTION,
+            requested_tier="default",
+            max_output_tokens=max_output_tokens,
+            temperature=0.2,
+            user_id=interaction.user.id,
+            guild_id=interaction.guild_id,
+            channel_id=interaction.channel_id,
+            source_command=source_command,
+            db=getattr(self.bot, "db", None),
         )
+        if not result.ok or not result.text:
+            raise RuntimeError(result.error or "AI summary failed.")
+        return result.text
 
     @staticmethod
     def _coverage(rows: list[aiosqlite.Row]) -> str:
@@ -705,17 +760,14 @@ final Source coverage section. Do not overclaim.
         task: str,
         request: str,
         include_links: bool = True,
+        source_command: str = "/context summarize",
+        task_type: str = "staff_context_topic",
+        max_output_tokens: int = 1_250,
+        empty_message: str = "No stored messages matched that scope.",
     ) -> None:
         if not rows:
             await interaction.followup.send(
-                "No stored messages matched that scope.", ephemeral=True
-            )
-            return
-        if self.client is None:
-            await interaction.followup.send(
-                "Gemini is not configured, so this archive cannot create a "
-                "narrative summary right now.",
-                ephemeral=True,
+                empty_message, ephemeral=True
             )
             return
         try:
@@ -725,13 +777,20 @@ final Source coverage section. Do not overclaim.
                     task=task,
                     request=request,
                     include_links=include_links,
+                    interaction=interaction,
+                    source_command=source_command,
+                    task_type=task_type,
+                    max_output_tokens=max_output_tokens,
                 ),
                 timeout=120,
             )
-        except Exception:
+        except Exception as exc:
             logger.exception("Message-context synthesis failed")
+            message = AI_BUDGET_MESSAGE if str(exc) == AI_BUDGET_MESSAGE else (
+                "The private summary could not be generated right now."
+            )
             await interaction.followup.send(
-                "The private summary could not be generated right now.",
+                message,
                 ephemeral=True,
             )
             return
@@ -1030,39 +1089,99 @@ final Source coverage section. Do not overclaim.
             include_links=include_links,
         )
 
+    @staticmethod
+    def _timeframe_after(timeframe: str) -> str:
+        value = str(timeframe or "").strip().casefold()
+        seconds = TIMEFRAME_SECONDS.get(value)
+        if seconds is None:
+            raise ValueError(
+                "Use one of: " + ", ".join(sorted(TIMEFRAME_SECONDS, key=len))
+            )
+        return (
+            dt.datetime.now(dt.timezone.utc) - dt.timedelta(seconds=seconds)
+        ).isoformat()
+
+    async def _staff_ai_cooldown(self, interaction: discord.Interaction) -> bool:
+        ok, retry_after = await check_ai_cooldown(interaction.user.id, "staff")
+        if ok:
+            return False
+        await interaction.response.send_message(
+            f"Please wait {max(1, int(retry_after))} seconds before using another staff AI tool.",
+            ephemeral=True,
+        )
+        return True
+
     @context.command(name="user", description="Review a member's stored activity")
+    @app_commands.describe(
+        user="Member to summarize",
+        timeframe="Timeframe: 24h, 3d, 7d, 14d, 30d, 60d, or 90d",
+        channel="Optional channel filter",
+        include_bots="Include bot-authored messages",
+        max_messages="Maximum stored messages to summarize, capped at 1500",
+    )
     @app_commands.guild_only()
     async def context_user(
         self,
         interaction: discord.Interaction,
         user: discord.Member,
-        after: Optional[str] = None,
-        before: Optional[str] = None,
+        timeframe: str,
         channel: Optional[
             Union[discord.TextChannel, discord.Thread, discord.ForumChannel]
         ] = None,
-        summarize: bool = True,
+        include_bots: bool = False,
+        max_messages: app_commands.Range[int, 1, 1500] = 500,
     ) -> None:
         if await self._deny(interaction):
             return
-        await self._run_scope(
+        if await self._staff_ai_cooldown(interaction):
+            return
+        try:
+            after_value = self._timeframe_after(timeframe)
+        except ValueError as exc:
+            await interaction.response.send_message(str(exc), ephemeral=True)
+            return
+        await interaction.response.defer(ephemeral=True, thinking=True)
+        rows = await self._range_rows(
+            interaction.guild_id,
+            channel_id=channel.id if channel else None,
+            user_id=user.id,
+            after=after_value,
+            include_bots=include_bots,
+            max_messages=max_messages,
+        )
+        await self._send_analysis(
             interaction,
-            after=after,
-            before=before,
-            channel=channel,
-            topic=None,
-            user=user,
+            rows,
             title="User Context",
             task=(
-                "Neutrally summarize active channels, topics, clear conversation "
-                "starters, and recent relevant excerpts"
-                if summarize
-                else "List a concise neutral activity overview with brief excerpts"
+                "Produce a staff-only user context summary with sections: User "
+                "Activity Overview, Positive/Constructive Contributions, "
+                "Staff-Relevant Concerns, Recurring Patterns, Useful Message "
+                "References, Suggested Staff Follow-up, Confidence / Limitations. "
+                "Summarize observable behavior only. Do not infer motives, mental "
+                "health, protected traits, or recommend automatic punishment."
             ),
-            extra=f"summarize={summarize}",
+            request=(
+                f"user={user.display_name} ({user.id}); timeframe={timeframe}; "
+                f"channel={channel.name if channel else 'all'}; "
+                f"include_bots={include_bots}; max_messages={max_messages}"
+            ),
+            source_command="/context user",
+            task_type="staff_context_user",
+            max_output_tokens=1_300,
+            empty_message="No matching messages found for that user/timeframe.",
         )
+        if rows:
+            await set_ai_cooldown(interaction.user.id, "staff")
 
     @context.command(name="channel", description="Review a channel's stored activity")
+    @app_commands.describe(
+        channel="Channel to summarize",
+        timeframe="Timeframe: 1h, 6h, 12h, 24h, 3d, 7d, 14d, or 30d",
+        topic="Optional topic filter",
+        include_bots="Include bot-authored messages",
+        max_messages="Maximum stored messages to summarize, capped at 1000",
+    )
     @app_commands.guild_only()
     async def context_channel(
         self,
@@ -1070,27 +1189,53 @@ final Source coverage section. Do not overclaim.
         channel: Union[
             discord.TextChannel, discord.Thread, discord.ForumChannel
         ],
-        after: Optional[str] = None,
-        before: Optional[str] = None,
-        summarize: bool = True,
+        timeframe: str,
+        topic: Optional[str] = None,
+        include_bots: bool = False,
+        max_messages: app_commands.Range[int, 1, 1000] = 300,
     ) -> None:
         if await self._deny(interaction):
             return
-        await self._run_scope(
+        if await self._staff_ai_cooldown(interaction):
+            return
+        try:
+            after_value = self._timeframe_after(timeframe)
+        except ValueError as exc:
+            await interaction.response.send_message(str(exc), ephemeral=True)
+            return
+        await interaction.response.defer(ephemeral=True, thinking=True)
+        rows = await self._range_rows(
+            interaction.guild_id,
+            channel_id=channel.id,
+            after=after_value,
+            topic=topic,
+            include_bots=include_bots,
+            max_messages=max_messages,
+        )
+        await self._send_analysis(
             interaction,
-            after=after,
-            before=before,
-            channel=channel,
-            topic=None,
+            rows,
             title=f"Channel Context: #{channel.name}",
             task=(
-                "Summarize active topics, notable shifts, arguments, de-escalation, "
-                "and possible moderation concerns"
-                if summarize
-                else "List a concise chronological channel overview"
+                "Produce a staff-only channel context summary with sections: "
+                "Summary, Main Topics, Members Involved, Potential Concerns, "
+                "Useful Message References, Suggested Staff Follow-up, Confidence "
+                "/ Limitations. Summarize observable behavior only. Separate facts "
+                "from uncertainty, avoid long quotes, and do not recommend "
+                "automatic punishment."
             ),
-            extra=f"summarize={summarize}",
+            request=(
+                f"channel=#{channel.name} ({channel.id}); timeframe={timeframe}; "
+                f"topic={topic or 'all'}; include_bots={include_bots}; "
+                f"max_messages={max_messages}"
+            ),
+            source_command="/context channel",
+            task_type="staff_context_channel",
+            max_output_tokens=1_300,
+            empty_message="No matching messages found for that channel/timeframe.",
         )
+        if rows:
+            await set_ai_cooldown(interaction.user.id, "staff")
 
 
 async def setup(bot: commands.Bot) -> None:

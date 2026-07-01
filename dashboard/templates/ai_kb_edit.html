@@ -1,0 +1,46 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="page-heading">
+  <div>
+    <p class="eyebrow">AI Knowledge Base</p>
+    <h1>{{ "Edit " ~ source.source_name if source else "Add Source" }}</h1>
+  </div>
+</div>
+{% if error %}<div class="alert error">{{ error }}</div>{% endif %}
+<section class="card">
+  <form method="post" action="{{ url_for('ai_kb_save') }}" class="stack">
+    <input type="hidden" name="csrf" value="{{ csrf_token }}">
+    <label>
+      Source name
+      <input name="source_name" value="{{ source.source_name if source else "" }}" maxlength="160" {{ "readonly" if source else "" }} required>
+    </label>
+    <div class="two-column">
+      <label>
+        Source type
+        <select name="source_type" required>
+          {% for type in source_types %}
+          <option value="{{ type }}" {{ "selected" if source and source.source_type == type else "" }}>{{ type }}</option>
+          {% endfor %}
+        </select>
+      </label>
+      <label>
+        Visibility
+        <select name="source_visibility" required>
+          {% for visibility in visibilities %}
+          <option value="{{ visibility }}" {{ "selected" if source and source.source_visibility == visibility else "" }}>{{ visibility }}</option>
+          {% endfor %}
+        </select>
+      </label>
+    </div>
+    <label>
+      Markdown or plain text content
+      <textarea class="knowledge-editor ai-kb-editor" name="raw_content" rows="28" maxlength="{{ max_source_chars }}" required>{{ source.raw_content if source else "" }}</textarea>
+    </label>
+    <p class="muted">Paste markdown or plain text content here. Saving will replace the searchable chunks for this source. Maximum size: 2 MB. File upload is not enabled in Phase 1.</p>
+    <div class="action-buttons">
+      <button class="button" type="submit">Save source</button>
+      <a class="button secondary" href="{{ url_for('ai_kb_page') }}">Cancel</a>
+    </div>
+  </form>
+</section>
+{% endblock %}

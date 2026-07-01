@@ -199,6 +199,63 @@ class DashboardRouteTests(unittest.TestCase):
         self.assertEqual(response.status_code, 404)
         self.assertNotIn(">AI</a>", overview.text)
 
+    def test_ai_kb_dashboard_create_search_edit_and_delete(self):
+        self.login()
+        page = self.client.get("/ai/kb")
+        self.assertEqual(page.status_code, 200)
+        self.assertIn("AI Knowledge Base", page.text)
+        token = re.search(r'name="csrf" value="([^"]+)"', page.text).group(1)
+
+        response = self.client.post(
+            "/ai/kb/save",
+            data={
+                "csrf": token,
+                "source_name": "server-faq",
+                "source_type": "faq",
+                "source_visibility": "public",
+                "raw_content": "# FAQ\n\nTickets go in the support channel.",
+            },
+            follow_redirects=False,
+        )
+        self.assertEqual(response.status_code, 303)
+        search = self.client.get("/ai/kb?query=support&visibility=public")
+        self.assertIn("server-faq", search.text)
+
+        edit = self.client.get("/ai/kb/server-faq/edit")
+        self.assertEqual(edit.status_code, 200)
+        self.assertIn("Tickets go in the support channel.", edit.text)
+        token = re.search(r'name="csrf" value="([^"]+)"', edit.text).group(1)
+        response = self.client.post(
+            "/ai/kb/save",
+            data={
+                "csrf": token,
+                "source_name": "server-faq",
+                "source_type": "faq",
+                "source_visibility": "public",
+                "raw_content": "# FAQ\n\nUpdated answer about support tickets.",
+            },
+            follow_redirects=False,
+        )
+        self.assertEqual(response.status_code, 303)
+        self.assertIn("Updated answer", self.client.get("/ai/kb/server-faq/edit").text)
+
+        token = re.search(
+            r'name="csrf" value="([^"]+)"',
+            self.client.get("/ai/kb").text,
+        ).group(1)
+        response = self.client.post(
+            "/ai/kb/server-faq/delete",
+            data={"csrf": token, "confirm": "server-faq"},
+            follow_redirects=False,
+        )
+        self.assertEqual(response.status_code, 303)
+        deleted_page = self.client.get("/ai/kb").text
+        self.assertIn("No AI KB sources found.", deleted_page)
+
+    def test_unauthenticated_user_cannot_access_ai_kb_editor(self):
+        response = self.client.get("/ai/kb", follow_redirects=False)
+        self.assertEqual(response.status_code, 303)
+
 
 class DashboardConfigurationTests(unittest.TestCase):
     def run_dashboard_import(self, environment):

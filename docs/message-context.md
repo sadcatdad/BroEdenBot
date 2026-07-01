@@ -91,10 +91,11 @@ without crashing.
   [include_links]` produces a neutral staff recap.
 - `/context timeline after:<time> [before] [channel] [topic] [granularity]`
   builds a chronological narrative.
-- `/context user user:<member> [after] [before] [channel] [summarize]` reviews
-  that member's stored participation without assigning intent.
-- `/context channel channel:<channel> [after] [before] [summarize]` reviews a
-  stored channel timeframe.
+- `/context user user:<member> timeframe:<24h|3d|7d|14d|30d|60d|90d>
+  [channel] [include_bots] [max_messages]` reviews that member's stored
+  participation without assigning intent.
+- `/context channel channel:<channel> timeframe:<1h|6h|12h|24h|3d|7d|14d|30d>
+  [topic] [include_bots] [max_messages]` reviews a stored channel timeframe.
 
 Dates accept ISO dates/times plus `yesterday` and `today`. Examples:
 

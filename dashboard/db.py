@@ -14,6 +14,7 @@ from utils.settings import (
     settings_database_path,
 )
 from utils.ai_config import get_ai_config
+from utils.ai_kb import get_kb_status
 from utils.sqlite import configure_sync_connection
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
@@ -413,6 +414,11 @@ def ai_usage_overview(
         "last_error": None,
         "last_success_at": None,
         "recent_logs": [],
+        "command_usage": [],
+        "top_commands_by_cost": [],
+        "recent_failures": [],
+        "recent_budget_blocks": [],
+        "kb_status": get_kb_status(),
         "filters": {
             "command": command,
             "model": model,
@@ -522,6 +528,77 @@ def ai_usage_overview(
                     LIMIT ?
                     """,
                     tuple(params),
+                ).fetchall()
+            ]
+            tracked_commands = (
+                "/ask",
+                "/context channel",
+                "/context user",
+                "/rulecard draft",
+            )
+            result["command_usage"] = [
+                dict(row)
+                for row in connection.execute(
+                    f"""
+                    SELECT
+                        source_command,
+                        SUM(created_at LIKE ?) AS today_count,
+                        SUM(created_at LIKE ?) AS month_count,
+                        COALESCE(SUM(CASE WHEN created_at LIKE ? THEN estimated_cost_usd END), 0)
+                            AS today_cost,
+                        COALESCE(SUM(CASE WHEN created_at LIKE ? THEN estimated_cost_usd END), 0)
+                            AS month_cost
+                    FROM ai_usage_logs
+                    WHERE source_command IN ({",".join("?" for _ in tracked_commands)})
+                    GROUP BY source_command
+                    ORDER BY source_command
+                    """,
+                    (
+                        day_prefix + "%",
+                        month_prefix + "%",
+                        day_prefix + "%",
+                        month_prefix + "%",
+                        *tracked_commands,
+                    ),
+                ).fetchall()
+            ]
+            result["top_commands_by_cost"] = [
+                dict(row)
+                for row in connection.execute(
+                    """
+                    SELECT source_command, COUNT(*) AS request_count,
+                           COALESCE(SUM(estimated_cost_usd), 0) AS total_cost
+                    FROM ai_usage_logs
+                    WHERE created_at LIKE ?
+                    GROUP BY source_command
+                    ORDER BY total_cost DESC, request_count DESC
+                    LIMIT 8
+                    """,
+                    (month_prefix + "%",),
+                ).fetchall()
+            ]
+            result["recent_failures"] = [
+                dict(row)
+                for row in connection.execute(
+                    """
+                    SELECT created_at, source_command, task_type, model_used, error_message
+                    FROM ai_usage_logs
+                    WHERE success = 0 AND blocked_by_budget = 0
+                    ORDER BY created_at DESC, id DESC
+                    LIMIT 8
+                    """
+                ).fetchall()
+            ]
+            result["recent_budget_blocks"] = [
+                dict(row)
+                for row in connection.execute(
+                    """
+                    SELECT created_at, source_command, task_type, model_used, estimated_cost_usd
+                    FROM ai_usage_logs
+                    WHERE blocked_by_budget = 1
+                    ORDER BY created_at DESC, id DESC
+                    LIMIT 8
+                    """
                 ).fetchall()
             ]
     except (OSError, sqlite3.Error) as exc:

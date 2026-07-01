@@ -37,7 +37,6 @@ FUTURE_TASK_TYPES = {
     "staff_context_topic",
     "rulecard_draft",
     "ticket_summary",
-    "event_assistant",
     "moderation_classification",
     "weekly_recap",
     "onboarding_helper",
