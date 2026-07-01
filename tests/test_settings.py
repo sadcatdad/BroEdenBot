@@ -110,14 +110,14 @@ class SettingsDatabaseTests(unittest.TestCase):
     def test_typed_getters(self):
         initialize_settings_from_env()
         set_setting("VCXP_ENABLED", "true")
-        set_setting("VCXP_MINUTES_PER_PULSE", "35")
+        set_setting("VC_XP_PULSE_MINUTES", "35")
         set_setting("VCXP_EXCLUDED_ROLE_IDS", "34567890123456789")
         set_setting(
             "VCSTATS_ALLOWED_ROLE_IDS",
             "12345678901234567,23456789012345678",
         )
         self.assertTrue(get_bool_setting("VCXP_ENABLED"))
-        self.assertEqual(get_int_setting("VCXP_MINUTES_PER_PULSE"), 35)
+        self.assertEqual(get_int_setting("VC_XP_PULSE_MINUTES"), 35)
         self.assertEqual(
             get_csv_ids_setting("VCSTATS_ALLOWED_ROLE_IDS"),
             [12345678901234567, 23456789012345678],
@@ -162,7 +162,7 @@ class SettingsValidationTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "integer"):
             normalize_setting_value("ASK_COOLDOWN_SECONDS", "nope")
         with self.assertRaisesRegex(ValueError, "at least 1"):
-            normalize_setting_value("VCXP_MINUTES_PER_PULSE", "0")
+            normalize_setting_value("VC_XP_PULSE_MINUTES", "0")
         with self.assertRaisesRegex(ValueError, "at least 0"):
             normalize_setting_value("VCXP_DAILY_PULSE_CAP", "-1")
 

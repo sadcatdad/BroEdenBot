@@ -3,7 +3,7 @@ import tempfile
 import unittest
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 
 import aiosqlite
 
@@ -13,8 +13,17 @@ from utils.sqlite import configure_connection
 
 
 class DummyRole:
-    def __init__(self, role_id):
+    def __init__(self, role_id, *, position=1, managed=False):
         self.id = role_id
+        self.position = position
+        self.managed = managed
+        self.members = []
+
+    def __ge__(self, other):
+        return self.position >= other.position
+
+    def __gt__(self, other):
+        return self.position > other.position
 
 
 class DummyState:
@@ -40,6 +49,13 @@ class DummyMember:
         self.bot = bot
         self.display_name = f"Member {member_id}"
         self.name = f"member{member_id}"
+        self.voice = None
+        self.top_role = DummyRole(99999999999999999, position=100)
+
+    async def add_roles(self, role, *, reason=None):
+        if role not in self.roles:
+            self.roles.append(role)
+            role.members.append(self)
 
 
 class DummyChannel:
@@ -54,12 +70,19 @@ class DummyGuild:
         self.id = guild_id
         self.afk_channel = None
         self.members = []
+        self.voice_channels = []
+        self.stage_channels = []
+        self.roles = {}
+        self.me = DummyMember(999, self, bot=True)
 
     def get_member(self, user_id):
         for member in self.members:
             if member.id == user_id:
                 return member
         return None
+
+    def get_role(self, role_id):
+        return self.roles.get(role_id)
 
 
 class DummyBot:
@@ -70,6 +93,9 @@ class DummyBot:
 
     def get_guild(self, guild_id):
         return self._guild if self._guild.id == guild_id else None
+
+    def is_ready(self):
+        return True
 
 
 class VCRewardAccountingTests(unittest.IsolatedAsyncioTestCase):
@@ -318,7 +344,7 @@ class VCRewardAccountingTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(eligible_seconds, 1800)
         self.assertEqual(pulses_earned, 1)
-        self.assertEqual(pulses_paid, 0)
+        self.assertEqual(pulses_paid, 1)
 
     async def test_vcxp_bulk_sync_resets_stale_backpay_state(self):
         initialize_settings_from_env()
@@ -387,6 +413,114 @@ class VCRewardAccountingTests(unittest.IsolatedAsyncioTestCase):
             value,
             datetime.now(timezone.utc) - timedelta(minutes=1),
         )
+
+    async def test_automatic_vcxp_pulse_adds_role_after_eligible_time(self):
+        initialize_settings_from_env()
+        pulse_role = DummyRole(44444444444444444, position=10)
+        self.guild.roles[pulse_role.id] = pulse_role
+        set_setting("VCXP_ENABLED", "true")
+        set_setting("VCXP_TRIGGER_ROLE_ID", str(pulse_role.id))
+        set_setting("VC_XP_PULSE_MINUTES", "30")
+        now = datetime(2026, 6, 25, 13, tzinfo=timezone.utc)
+        member = DummyMember(10, self.guild)
+        member.voice = DummyState()
+        self.guild.members = [member]
+        channel = DummyChannel(20, [member])
+        self.guild.voice_channels = [channel]
+        await self.cog._start_session(
+            member,
+            channel,
+            member.voice,
+            now - timedelta(minutes=30, seconds=5),
+        )
+        await self.database.commit()
+
+        with patch("cogs.vc_stats.utc_now", return_value=now), patch(
+            "cogs.vc_stats.asyncio.sleep",
+            new=AsyncMock(),
+        ):
+            await self.cog._run_automatic_pulses()
+
+        self.assertIn(pulse_role, member.roles)
+        cursor = await self.database.execute(
+            """
+            SELECT status, role_id
+            FROM vc_xp_pulses
+            WHERE guild_id = ? AND user_id = ?
+            """,
+            (self.guild.id, member.id),
+        )
+        row = await cursor.fetchone()
+        await cursor.close()
+        self.assertEqual(row[0], "added")
+        self.assertEqual(row[1], pulse_role.id)
+
+    async def test_automatic_vcxp_pulse_skips_muted_member(self):
+        initialize_settings_from_env()
+        pulse_role = DummyRole(44444444444444444, position=10)
+        self.guild.roles[pulse_role.id] = pulse_role
+        set_setting("VCXP_ENABLED", "true")
+        set_setting("VCXP_TRIGGER_ROLE_ID", str(pulse_role.id))
+        set_setting("VC_XP_PULSE_MINUTES", "30")
+        now = datetime(2026, 6, 25, 13, tzinfo=timezone.utc)
+        member = DummyMember(10, self.guild)
+        member.voice = DummyState(self_mute=True)
+        self.guild.members = [member]
+        channel = DummyChannel(20, [member])
+        self.guild.voice_channels = [channel]
+        await self.cog._start_session(
+            member,
+            channel,
+            member.voice,
+            now - timedelta(minutes=45),
+        )
+        await self.database.commit()
+
+        with patch("cogs.vc_stats.utc_now", return_value=now), patch(
+            "cogs.vc_stats.asyncio.sleep",
+            new=AsyncMock(),
+        ):
+            await self.cog._run_automatic_pulses()
+
+        self.assertNotIn(pulse_role, member.roles)
+        cursor = await self.database.execute("SELECT COUNT(*) FROM vc_xp_pulses")
+        count = (await cursor.fetchone())[0]
+        await cursor.close()
+        self.assertEqual(count, 0)
+
+    async def test_automatic_vcxp_pulse_skips_server_bot_role(self):
+        initialize_settings_from_env()
+        pulse_role = DummyRole(44444444444444444, position=10)
+        excluded_role = DummyRole(1282775339566895239, position=5)
+        self.guild.roles[pulse_role.id] = pulse_role
+        set_setting("VCXP_ENABLED", "true")
+        set_setting("VCXP_TRIGGER_ROLE_ID", str(pulse_role.id))
+        set_setting("VC_XP_PULSE_MINUTES", "30")
+        now = datetime(2026, 6, 25, 13, tzinfo=timezone.utc)
+        member = DummyMember(10, self.guild, roles=[excluded_role])
+        member.voice = DummyState()
+        self.guild.members = [member]
+        channel = DummyChannel(20, [member])
+        self.guild.voice_channels = [channel]
+        await self.cog._start_session(
+            member,
+            channel,
+            member.voice,
+            now - timedelta(minutes=45),
+        )
+        await self.database.commit()
+
+        with patch("cogs.vc_stats.utc_now", return_value=now), patch(
+            "cogs.vc_stats.asyncio.sleep",
+            new=AsyncMock(),
+        ):
+            await self.cog._run_automatic_pulses()
+
+        self.assertNotIn(pulse_role, member.roles)
+        cursor = await self.database.execute("SELECT COUNT(*) FROM vc_xp_pulses")
+        count = (await cursor.fetchone())[0]
+        await cursor.close()
+        self.assertEqual(count, 0)
 
 
 if __name__ == "__main__":

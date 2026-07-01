@@ -229,10 +229,7 @@ def vcxp_overview(limit: int = 5) -> dict[str, Any]:
     trigger_role_ids = get_csv_ids_setting("VCXP_TRIGGER_ROLE_ID")
     trigger_role_id = trigger_role_ids[0] if trigger_role_ids else 0
     enabled = get_bool_setting("VCXP_ENABLED", False)
-    minutes_per_pulse = max(1, get_int_setting("VCXP_MINUTES_PER_PULSE", 30))
-    remove_delay = max(0, get_int_setting("VCXP_ROLE_REMOVE_DELAY_SECONDS", 30))
-    daily_cap = max(0, get_int_setting("VCXP_DAILY_PULSE_CAP", 4))
-    weekly_cap = max(0, get_int_setting("VCXP_WEEKLY_PULSE_CAP", 20))
+    minutes_per_pulse = max(1, get_int_setting("VC_XP_PULSE_MINUTES", 30))
     xp_excluded_role_ids = get_csv_ids_setting("VCXP_EXCLUDED_ROLE_IDS")
     reward_start_at = get_setting("VCXP_REWARD_START_AT", "") or ""
     result: dict[str, Any] = {
@@ -244,9 +241,6 @@ def vcxp_overview(limit: int = 5) -> dict[str, Any]:
         "role_snapshot_available": False,
         "role_snapshot_found": None,
         "minutes_per_pulse": minutes_per_pulse,
-        "remove_delay_seconds": remove_delay,
-        "daily_cap": daily_cap,
-        "weekly_cap": weekly_cap,
         "xp_excluded_role_count": len(xp_excluded_role_ids),
         "reward_start_at": reward_start_at,
         "state_table_found": False,
@@ -287,64 +281,9 @@ def vcxp_overview(limit: int = 5) -> dict[str, Any]:
 
             if "vc_xp_user_state" in tables:
                 result["state_table_found"] = True
-                if "vc_sessions" in tables and reward_start_at:
-                    row = connection.execute(
-                        """
-                        WITH earned AS (
-                            SELECT
-                                guild_id,
-                                user_id,
-                                CAST(
-                                    COALESCE(SUM(counted_seconds), 0) / ? AS INTEGER
-                                ) AS pulses_earned
-                            FROM vc_sessions
-                            WHERE reward_eligible = 1
-                              AND left_at >= ?
-                            GROUP BY user_id
-                        ),
-                        unpaid AS (
-                            SELECT
-                                earned.user_id,
-                                MAX(
-                                    0,
-                                    earned.pulses_earned
-                                        - COALESCE(state.pulses_paid, 0)
-                                ) AS unpaid_pulses
-                            FROM earned
-                            LEFT JOIN vc_xp_user_state AS state
-                              ON state.guild_id = earned.guild_id
-                             AND state.user_id = earned.user_id
-                        )
-                        SELECT
-                            COUNT(*) AS users,
-                            COALESCE(SUM(unpaid_pulses), 0) AS pulses
-                        FROM unpaid
-                        WHERE unpaid_pulses > 0
-                        """,
-                        (minutes_per_pulse * 60, reward_start_at),
-                    ).fetchone()
-                else:
-                    row = connection.execute(
-                        """
-                        SELECT
-                            COUNT(*) AS users,
-                            COALESCE(SUM(pulses_earned - pulses_paid), 0) AS pulses
-                        FROM vc_xp_user_state
-                        WHERE pulses_earned > pulses_paid
-                        """
-                    ).fetchone()
-                result["unpaid_users"] = int(row["users"] or 0)
-                result["unpaid_pulses"] = int(row["pulses"] or 0)
 
             if "vc_xp_pulses" in tables:
                 result["pulses_table_found"] = True
-                paid_statuses = (
-                    "paid",
-                    "remove_failed_assumed_paid",
-                    "stale_assumed_paid",
-                    "marked_paid",
-                )
-                active_statuses = ("pending", "granted")
                 day_start = (
                     datetime.now(timezone.utc) - timedelta(days=1)
                 ).isoformat()
@@ -353,9 +292,9 @@ def vcxp_overview(limit: int = 5) -> dict[str, Any]:
                         """
                         SELECT COUNT(*)
                         FROM vc_xp_pulses
-                        WHERE status IN (?, ?)
+                        WHERE status = ?
                         """,
-                        active_statuses,
+                        ("added",),
                     ).fetchone()[0]
                     or 0
                 )
@@ -365,9 +304,9 @@ def vcxp_overview(limit: int = 5) -> dict[str, Any]:
                         SELECT COUNT(*)
                         FROM vc_xp_pulses
                         WHERE granted_at >= ?
-                          AND status IN (?, ?, ?, ?)
+                          AND status = ?
                         """,
-                        (day_start, *paid_statuses),
+                        (day_start, "added"),
                     ).fetchone()[0]
                     or 0
                 )
@@ -400,10 +339,6 @@ def vcxp_overview(limit: int = 5) -> dict[str, Any]:
             "Refresh Discord metadata to show the trigger role name here."
         )
 
-    if remove_delay == 0:
-        result["issues"].append(
-            "Use a nonzero removal delay unless the MEE6 automation has been tested."
-        )
     if not result["state_table_found"] or not result["pulses_table_found"]:
         result["issues"].append(
             "Restart the bot once so the VC XP accounting tables are created."

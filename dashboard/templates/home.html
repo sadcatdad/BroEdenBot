@@ -58,12 +58,11 @@
         {% endif %}
       </strong>
     </div>
-    <div><span>Pulse rule</span><strong>{{ vcxp.minutes_per_pulse }} min · remove after {{ vcxp.remove_delay_seconds }}s</strong></div>
+    <div><span>Pulse rule</span><strong>{{ vcxp.minutes_per_pulse }} eligible minutes</strong></div>
     <div><span>Reward start</span><strong>{{ vcxp.reward_start_at or "Set on next bot startup" }}</strong></div>
-    <div><span>Caps</span><strong>{{ vcxp.daily_cap }}/day · {{ vcxp.weekly_cap }}/7 days</strong></div>
     <div><span>XP excluded roles</span><strong>{{ vcxp.xp_excluded_role_count }} configured</strong></div>
-    <div><span>Unpaid snapshot</span><strong>{{ vcxp.unpaid_pulses }} pulses · {{ vcxp.unpaid_users }} users</strong></div>
-    <div><span>Recent payout activity</span><strong>{{ vcxp.paid_24h }} paid in 24h · {{ vcxp.active_pulses }} active</strong></div>
+    <div><span>Legacy backlog</span><strong>{{ vcxp.unpaid_pulses }} pulses · {{ vcxp.unpaid_users }} users</strong></div>
+    <div><span>Recent role adds</span><strong>{{ vcxp.paid_24h }} added in 24h</strong></div>
   </div>
   {% if vcxp.issues %}
   <div class="alert warning compact-alert">

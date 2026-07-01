@@ -32,8 +32,7 @@ class DashboardRouteTests(unittest.TestCase):
                 "BOT_OWNER_USER_IDS": "33333333333333333",
                 "VCXP_TRIGGER_ROLE_ID": "44444444444444444",
                 "VCXP_EXCLUDED_ROLE_IDS": "55555555555555555",
-                "VCXP_MINUTES_PER_PULSE": "30",
-                "VCXP_ROLE_REMOVE_DELAY_SECONDS": "30",
+                "VC_XP_PULSE_MINUTES": "30",
                 "DISCORD_TOKEN": "discord-super-secret-value",
                 "GEMINI_API_KEY": "gemini-super-secret-value",
             },
@@ -326,7 +325,7 @@ class DashboardDatabaseTests(unittest.TestCase):
                 connection.execute(
                     """
                     INSERT INTO vc_xp_pulses (status, error, granted_at)
-                    VALUES ('paid', NULL, ?), ('pending', NULL, ?)
+                    VALUES ('added', NULL, ?), ('add_failed', 'Forbidden', ?)
                     """,
                     ("2099-01-01T00:00:00+00:00", "2099-01-01T00:01:00+00:00"),
                 )
@@ -337,8 +336,8 @@ class DashboardDatabaseTests(unittest.TestCase):
 
             self.assertEqual(result["status"], "Enabled")
             self.assertEqual(result["trigger_role_name"], "pulse")
-            self.assertEqual(result["unpaid_users"], 1)
-            self.assertEqual(result["unpaid_pulses"], 2)
+            self.assertEqual(result["unpaid_users"], 0)
+            self.assertEqual(result["unpaid_pulses"], 0)
             self.assertEqual(result["active_pulses"], 1)
             self.assertEqual(result["paid_24h"], 1)
 

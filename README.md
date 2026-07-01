@@ -36,7 +36,7 @@ For a module-by-module architecture and reliability map, see
 | `/vcrewards audit` | Administrators or roles listed in `VCREWARDS_ALLOWED_ROLE_IDS`, falling back to `VCSTATS_ALLOWED_ROLE_IDS` |
 | Other VC reward commands | Administrators or roles listed in `VCSTATS_ALLOWED_ROLE_IDS` |
 | `/vcstats reset` | Administrators only |
-| `/vcrewards pulse` and `/vcrewards markpaid` | Administrators only |
+| `/vcrewards pulse` | Administrators only |
 | Bank commands | Administrators or roles listed in `BANK_ALLOWED_ROLE_IDS` |
 | Stats creation and refresh commands | Administrators or roles listed in `STATS_ALLOWED_ROLE_IDS` |
 | `/stats delete` and `/stats reset` | Administrators only |
@@ -604,18 +604,19 @@ length, AFK and alone-session exclusions, and the muted/deafened XP exclusion.
 
 ## VC XP role-pulse commands
 
-The optional VC XP bridge converts cumulative reward-eligible VC time into
-temporary Discord role pulses. A separately configured MEE6 automation can
-watch for that role being added and decide whether to award MEE6 XP.
-BroEdenBot never connects to MEE6 or impersonates a user.
+The optional VC XP bridge turns active, eligible VC time into Discord role
+pulses. A separately configured MEE6 automation watches for that role being
+added, awards MEE6 XP, and removes the role afterward. BroEdenBot never
+connects to MEE6, grants MEE6 XP directly, or manages VC level roles.
 
 Automatic pulses are disabled by default. When enabled and configured, the bot
-checks every five minutes for unpaid pulses and processes at most one pulse per
-member during each check. A pulse adds the configured trigger role, waits for
-the configured delay, removes the role, and records the result in `data.db`.
-Muted or deafened VC time does not earn VC XP. The bot subtracts self-muted,
-self-deafened, server-muted, and server-deafened intervals from the session's
-eligible seconds before calculating earned pulses.
+checks every five minutes, adds the configured trigger role only after a member
+has accumulated `VC_XP_PULSE_MINUTES` eligible active VC minutes, and then
+leaves that role alone for MEE6 to process. BroEdenBot skips members who are
+self-muted, server-muted, self-deafened, server-deafened, bots, or carrying the
+server bot role `1282775339566895239`. A member does not receive another pulse
+until another full interval of eligible VC time has passed, and the bot skips
+the add if the member already has the trigger role.
 
 VC XP has a reward-start cutoff so old tracked history does not create
 back-pay pulses. On first startup, if `VCXP_REWARD_START_AT` is not already
@@ -623,26 +624,19 @@ set, BroEdenBot stores the current UTC timestamp and only completed sessions
 after that timestamp can earn VC XP. Set `VCXP_REWARD_START_AT` manually only
 when staff intentionally want a different cutoff.
 
-If role removal fails after a successful add, the pulse is counted as paid to
-prevent an accidental duplicate MEE6 trigger. Staff should then remove the
-stuck role manually and inspect the bot logs.
-
 ### `/vcrewards settings`
 
 Shows whether automatic pulses are enabled, the configured trigger role,
-reward-start cutoff, eligible minutes per pulse, removal delay, daily cap,
-weekly cap, and current configuration status. It also shows how many
-VCXP-only excluded roles are configured.
+reward-start cutoff, eligible minutes per pulse, current configuration status,
+and how many VCXP-only excluded roles are configured.
 
 ### `/vcrewards audit [include_left_members]`
 
 Runs a read-only safety audit of the role-pulse bridge. It reports whether
 VCXP is enabled, whether the trigger role exists and is manageable, pulse
-limits, unpaid-user and recent-paid counts, members currently holding the
-trigger role, and recent pulse statuses/errors. It never grants or removes
-roles, calls MEE6, starts a payout, or changes VCXP accounting.
-The unpaid-user count defaults to current members only. Set
-`include_left_members:true` to include historical users.
+interval, members currently holding the trigger role, and recent pulse
+statuses/errors. It never grants or removes roles, calls MEE6, starts a payout,
+or changes VCXP accounting.
 
 ### `/vcrewards preview [days] [include_left_members]`
 
@@ -653,13 +647,9 @@ accounting for up to 25 members.
 - `include_left_members` — Defaults to false. Set true to include historical
   users who are no longer in the server.
 
-The earned, paid, and unpaid pulse counts are cumulative because pulse
-boundaries are calculated from all completed eligible VC sessions.
-
-### `/vcrewards unpaid [include_left_members]`
-
-Shows members whose cumulative earned pulse count is greater than their paid
-pulse count. It defaults to current members only.
+The earned, paid, and unpaid columns are legacy audit fields from the older
+accounting model. Automatic role pulses now use active eligible VC time instead
+of this backlog.
 
 ### `/vcrewards pulse <user> [pulses]`
 
@@ -669,23 +659,14 @@ Automatic VC XP must be enabled and the trigger role must be configured.
 - `user` — Member who should receive the trigger role.
 - `pulses` — Optional number of sequential pulses from 1 to 10. Defaults to 1.
 
-Each pulse respects `VCXP_ROLE_REMOVE_DELAY_SECONDS` and is recorded in the
-pulse log. Manual test pulses bypass the automatic daily and weekly caps.
-
-### `/vcrewards markpaid <user> <pulses>`
-
-Administrator-only accounting command that increases a member's paid pulse
-count without adding the trigger role. Use this when staff granted the
-equivalent XP manually.
-
-- `user` — Member whose pulse accounting should be updated.
-- `pulses` — Number of pulses to mark paid, from 1 to 100.
+Each pulse attempts to add the configured trigger role and records the attempt
+in the pulse log. BroEdenBot does not remove the role after a manual pulse.
 
 ### `/vcrewards export [days] [include_left_members]`
 
-Exports eligible time and cumulative earned, paid, and unpaid pulse counts to
-an ephemeral CSV attachment. The export defaults to current members only and
-includes an `is_current_member` column.
+Exports eligible time and legacy pulse-accounting columns to an ephemeral CSV
+attachment. The export defaults to current members only and includes an
+`is_current_member` column.
 
 ## Configuring the VC XP trigger role
 
@@ -701,10 +682,8 @@ includes an `is_current_member` column.
    workflow.
 
 MEE6 automation is configured separately. A typical automation watches for a
-member receiving `VCxp` and awards a small amount of XP. Configure MEE6 to
-trigger on the temporary role being added, not on the role being removed.
-Use `VCXP_ROLE_REMOVE_DELAY_SECONDS` to keep the role present long enough for
-MEE6 to see the change; `30` seconds is the default safe starting point.
+member receiving `VCxp`, awards a small amount of XP, and removes `VCxp`.
+Configure MEE6 to trigger on the role being added.
 
 ### Testing the VC XP bridge
 
@@ -714,15 +693,12 @@ Start with automatic role changes disabled:
 VCXP_ENABLED=false
 VCXP_TRIGGER_ROLE_ID=
 VCXP_REWARD_START_AT=
-VCXP_MINUTES_PER_PULSE=30
-VCXP_ROLE_REMOVE_DELAY_SECONDS=30
-VCXP_DAILY_PULSE_CAP=4
-VCXP_WEEKLY_PULSE_CAP=20
+VC_XP_PULSE_MINUTES=30
 ```
 
-Restart the bot and run `/vcrewards settings`, `/vcrewards preview`, and
-`/vcrewards unpaid`. These read-only commands should work, while
-`/vcrewards pulse` should refuse to add a role.
+Restart the bot and run `/vcrewards settings` and `/vcrewards preview`. These
+read-only commands should work, while `/vcrewards pulse` should refuse to add a
+role.
 
 After creating the `VCxp` role and copying its ID, set:
 
@@ -732,15 +708,14 @@ VCXP_ENABLED=true
 ```
 
 Restart the bot, then run `/vcrewards pulse user:@me pulses:1`. Verify that
-`VCxp` appears on the member, remains for
-`VCXP_ROLE_REMOVE_DELAY_SECONDS`, and is removed. Run `/vcrewards preview`
-again to confirm the paid pulse count increased.
+`VCxp` appears on the member. MEE6 should award XP and remove `VCxp`; BroEdenBot
+will not remove it.
 
 Before leaving automation on, run `/vcrewards audit` and check the local web
 dashboard Overview page. The dashboard's VC XP readiness card summarizes the
-stored trigger role ID, latest role snapshot name when available, pulse caps,
-reward-start cutoff, VCXP-only excluded-role count, unpaid snapshot, active
-pulses, and recent payout activity. The Discord audit remains the source of
+stored trigger role ID, latest role snapshot name when available, pulse
+interval, reward-start cutoff, VCXP-only excluded-role count, legacy backlog
+snapshot, and recent role-add activity. The Discord audit remains the source of
 truth for live role hierarchy and Manage Roles checks.
 
 ## Stats commands
@@ -1313,10 +1288,7 @@ updated from the authenticated local dashboard without rewriting `.env`.
 | `VCXP_TRIGGER_ROLE_ID` | Discord role ID temporarily added for each VC XP pulse. |
 | `VCXP_EXCLUDED_ROLE_IDS` | Comma-separated role IDs excluded from VC XP pulses only. Members with these roles remain visible in VC stats unless also excluded by `VC_EXCLUDED_ROLE_IDS`. |
 | `VCXP_REWARD_START_AT` | ISO timestamp for the earliest completed VC session that can earn VC XP. Defaults to the first bot startup time after this setting exists, preventing historical back-pay pulses. |
-| `VCXP_MINUTES_PER_PULSE` | Eligible VC minutes required per pulse. Defaults to `30`. |
-| `VCXP_ROLE_REMOVE_DELAY_SECONDS` | Seconds before the trigger role is removed. Defaults to `30`. |
-| `VCXP_DAILY_PULSE_CAP` | Maximum automatic pulses per member per UTC day. Defaults to `4`. |
-| `VCXP_WEEKLY_PULSE_CAP` | Maximum automatic pulses per member in a rolling seven-day period. Defaults to `20`. |
+| `VC_XP_PULSE_MINUTES` | Eligible active VC minutes required per pulse. Defaults to `30`. |
 | `VCXP_ENABLED` | Enables automatic and manual role pulses when `true`. Defaults to `false`. |
 | `BANK_ALLOWED_ROLE_IDS` | Comma-separated Discord role IDs allowed to use bank commands. |
 | `STATS_ALLOWED_ROLE_IDS` | Comma-separated Discord role IDs allowed to create and refresh stats pages. |

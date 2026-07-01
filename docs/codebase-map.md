@@ -51,8 +51,8 @@ maintenance.
 - `cogs/staff_notes.py` — Manual private staff records.
 - `cogs/stats.py` — Live/imported activity reports and roster graphics.
 - `cogs/vc_stats.py` — Voice-session tracking, muted/deafened interval
-  exclusion for VC XP, reward-start cutoff accounting, XP-only role
-  exclusions, and temporary trigger-role pulses for external MEE6 automation.
+  exclusion for VC XP, active eligible-time pulse cooldowns, XP-only role
+  exclusions, and trigger-role adds for external MEE6 automation.
 
 ## Shared helpers
 

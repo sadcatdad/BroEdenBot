@@ -37,6 +37,8 @@ logger = logging.getLogger(__name__)
 MINIMUM_ELIGIBLE_SECONDS = 5 * 60
 HEARTBEAT_SECONDS = 60
 XP_PULSE_CHECK_SECONDS = 5 * 60
+VCXP_ROLE_ADD_DELAY_SECONDS = 1.75
+DEFAULT_VCXP_EXCLUDED_ROLE_IDS = {1282775339566895239}
 MAX_EXPORT_BYTES = 24 * 1024 * 1024
 MAX_CURRENT_LINES = 75
 
@@ -75,7 +77,7 @@ class VCStats(commands.Cog):
     )
     vcrewards = app_commands.Group(
         name="vcrewards",
-        description="Manage VC XP role pulses and reward accounting",
+        description="Manage VC XP role pulses for MEE6 automation",
     )
 
     def __init__(self, bot: commands.Bot):
@@ -103,7 +105,9 @@ class VCStats(commands.Cog):
 
     @property
     def vcxp_excluded_role_ids(self) -> set[int]:
-        return set(get_csv_ids_setting("VCXP_EXCLUDED_ROLE_IDS"))
+        return DEFAULT_VCXP_EXCLUDED_ROLE_IDS | set(
+            get_csv_ids_setting("VCXP_EXCLUDED_ROLE_IDS")
+        )
 
     def _member_excluded(self, member: Optional[discord.Member]) -> bool:
         return bool(
@@ -168,19 +172,7 @@ class VCStats(commands.Cog):
 
     @property
     def vcxp_minutes_per_pulse(self) -> int:
-        return max(1, get_int_setting("VCXP_MINUTES_PER_PULSE", 30))
-
-    @property
-    def vcxp_role_remove_delay_seconds(self) -> int:
-        return max(0, get_int_setting("VCXP_ROLE_REMOVE_DELAY_SECONDS", 30))
-
-    @property
-    def vcxp_daily_pulse_cap(self) -> int:
-        return max(0, get_int_setting("VCXP_DAILY_PULSE_CAP", 4))
-
-    @property
-    def vcxp_weekly_pulse_cap(self) -> int:
-        return max(0, get_int_setting("VCXP_WEEKLY_PULSE_CAP", 20))
+        return max(1, get_int_setting("VC_XP_PULSE_MINUTES", 30))
 
     async def cog_load(self) -> None:
         await self._create_tables()
@@ -239,6 +231,8 @@ class VCStats(commands.Cog):
                 server_deafened_entire INTEGER DEFAULT 0,
                 reward_blocked_seconds INTEGER DEFAULT 0,
                 reward_state_started_at TEXT,
+                last_vc_xp_pulse_at TEXT,
+                vcxp_eligible_seconds_at_last_pulse INTEGER DEFAULT 0,
                 PRIMARY KEY (guild_id, user_id)
             )
             """
@@ -305,11 +299,13 @@ class VCStats(commands.Cog):
                 eligible_seconds_total INTEGER DEFAULT 0,
                 pulses_earned INTEGER DEFAULT 0,
                 pulses_paid INTEGER DEFAULT 0,
+                last_vc_xp_pulse_at TEXT,
                 updated_at TEXT NOT NULL,
                 PRIMARY KEY (guild_id, user_id)
             )
             """
         )
+        await self._ensure_vcxp_state_columns()
         await self.bot.db.execute(
             """
             CREATE INDEX IF NOT EXISTS idx_vc_sessions_guild_left
@@ -394,6 +390,8 @@ class VCStats(commands.Cog):
             "server_deafened_entire": "INTEGER DEFAULT 0",
             "reward_blocked_seconds": "INTEGER DEFAULT 0",
             "reward_state_started_at": "TEXT",
+            "last_vc_xp_pulse_at": "TEXT",
+            "vcxp_eligible_seconds_at_last_pulse": "INTEGER DEFAULT 0",
         }
         for name, definition in additions.items():
             if name not in existing:
@@ -411,6 +409,19 @@ class VCStats(commands.Cog):
                 )
             """
         )
+
+    async def _ensure_vcxp_state_columns(self) -> None:
+        cursor = await self.bot.db.execute("PRAGMA table_info(vc_xp_user_state)")
+        existing = {row[1] for row in await cursor.fetchall()}
+        await cursor.close()
+        additions = {
+            "last_vc_xp_pulse_at": "TEXT",
+        }
+        for name, definition in additions.items():
+            if name not in existing:
+                await self.bot.db.execute(
+                    f"ALTER TABLE vc_xp_user_state ADD COLUMN {name} {definition}"
+                )
 
     @staticmethod
     def _parse_allowed_role_ids(raw_value: str) -> set:
@@ -516,8 +527,9 @@ class VCStats(commands.Cog):
                 self_muted, self_deafened, server_muted, server_deafened,
                 alone_entire, self_muted_entire, self_deafened_entire,
                 server_muted_entire, server_deafened_entire,
-                reward_blocked_seconds, reward_state_started_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                reward_blocked_seconds, reward_state_started_at,
+                last_vc_xp_pulse_at, vcxp_eligible_seconds_at_last_pulse
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(guild_id, user_id) DO UPDATE SET
                 display_name = excluded.display_name,
                 username = excluded.username,
@@ -535,7 +547,10 @@ class VCStats(commands.Cog):
                 server_muted_entire = excluded.server_muted_entire,
                 server_deafened_entire = excluded.server_deafened_entire,
                 reward_blocked_seconds = excluded.reward_blocked_seconds,
-                reward_state_started_at = excluded.reward_state_started_at
+                reward_state_started_at = excluded.reward_state_started_at,
+                last_vc_xp_pulse_at = excluded.last_vc_xp_pulse_at,
+                vcxp_eligible_seconds_at_last_pulse =
+                    excluded.vcxp_eligible_seconds_at_last_pulse
             """,
             (
                 member.guild.id,
@@ -551,6 +566,8 @@ class VCStats(commands.Cog):
                 *flags,
                 0,
                 timestamp,
+                None,
+                0,
             ),
         )
 
@@ -937,13 +954,17 @@ class VCStats(commands.Cog):
             INSERT INTO vc_xp_user_state (
                 guild_id, user_id, eligible_seconds_total,
                 pulses_earned, pulses_paid, updated_at
-            ) VALUES (?, ?, ?, ?, 0, ?)
+            ) VALUES (?, ?, ?, ?, ?, ?)
             ON CONFLICT(guild_id, user_id) DO UPDATE SET
                 eligible_seconds_total = excluded.eligible_seconds_total,
                 pulses_earned = excluded.pulses_earned,
+                pulses_paid = MAX(
+                    vc_xp_user_state.pulses_paid,
+                    excluded.pulses_paid
+                ),
                 updated_at = excluded.updated_at
             """,
-            (guild_id, user_id, eligible_seconds, pulses_earned, now),
+            (guild_id, user_id, eligible_seconds, pulses_earned, pulses_earned, now),
         )
         cursor = await self.bot.db.execute(
             """
@@ -990,10 +1011,14 @@ class VCStats(commands.Cog):
                 INSERT INTO vc_xp_user_state (
                     guild_id, user_id, eligible_seconds_total,
                     pulses_earned, pulses_paid, updated_at
-                ) VALUES (?, ?, ?, ?, 0, ?)
+                ) VALUES (?, ?, ?, ?, ?, ?)
                 ON CONFLICT(guild_id, user_id) DO UPDATE SET
                     eligible_seconds_total = excluded.eligible_seconds_total,
                     pulses_earned = excluded.pulses_earned,
+                    pulses_paid = MAX(
+                        vc_xp_user_state.pulses_paid,
+                        excluded.pulses_paid
+                    ),
                     updated_at = excluded.updated_at
                 """,
                 [
@@ -1002,6 +1027,7 @@ class VCStats(commands.Cog):
                         user_id,
                         int(eligible_seconds),
                         int(eligible_seconds) // self._xp_seconds_per_pulse,
+                        int(eligible_seconds) // self._xp_seconds_per_pulse,
                         now,
                     )
                     for user_id, eligible_seconds in rows
@@ -1009,146 +1035,111 @@ class VCStats(commands.Cog):
             )
         await self.bot.db.commit()
 
-    async def _pulse_cap_counts(
-        self, guild_id: int, user_id: int
-    ) -> Tuple[int, int]:
-        now = utc_now()
-        day_start = datetime.combine(
-            now.date(), datetime.min.time(), tzinfo=timezone.utc
-        )
-        week_start = now - timedelta(days=7)
+    async def _active_session_vcxp_progress(
+        self,
+        member: discord.Member,
+        observed_at: datetime,
+    ) -> Optional[Tuple[int, int]]:
         cursor = await self.bot.db.execute(
             """
-            SELECT
-                COALESCE(SUM(CASE WHEN granted_at >= ? THEN 1 ELSE 0 END), 0),
-                COUNT(*)
-            FROM vc_xp_pulses
+            SELECT joined_at, reward_blocked_seconds, reward_state_started_at,
+                   self_muted, self_deafened, server_muted, server_deafened,
+                   vcxp_eligible_seconds_at_last_pulse
+            FROM vc_active_sessions
             WHERE guild_id = ? AND user_id = ?
-              AND granted_at >= ?
-              AND status IN (
-                  'paid',
-                  'remove_failed_assumed_paid',
-                  'stale_assumed_paid',
-                  'marked_paid'
-              )
             """,
-            (day_start.isoformat(), guild_id, user_id, week_start.isoformat()),
+            (member.guild.id, member.id),
         )
         row = await cursor.fetchone()
         await cursor.close()
-        return int(row[0]), int(row[1])
+        if row is None:
+            return None
 
-    async def _set_pulse_failure(
-        self, pulse_id: int, status: str, exc: Exception
-    ) -> None:
-        await self.bot.db.execute(
-            """
-            UPDATE vc_xp_pulses
-            SET status = ?, error = ?
-            WHERE id = ?
-            """,
-            (status, type(exc).__name__, pulse_id),
+        joined_at = parse_timestamp(row[0])
+        duration = max(0, int((observed_at - joined_at).total_seconds()))
+        blocked_seconds = int(row[1] or 0)
+        flags = tuple(int(row[index] or 0) for index in range(3, 7))
+        if self._voice_reward_blocked(flags):
+            blocked_seconds += self._elapsed_seconds(row[2], observed_at)
+        eligible_seconds = max(0, duration - min(duration, blocked_seconds))
+        last_pulse_eligible = min(
+            eligible_seconds,
+            max(0, int(row[7] or 0)),
         )
-        await self.bot.db.commit()
+        return eligible_seconds, last_pulse_eligible
 
-    async def _recover_stale_pulses(
-        self, guild: discord.Guild, role: discord.Role
-    ) -> None:
-        stale_before = utc_now() - timedelta(
-            seconds=self.vcxp_role_remove_delay_seconds + 60
-        )
-        rows = await self._fetchall(
-            """
-            SELECT id, user_id
-            FROM vc_xp_pulses
-            WHERE guild_id = ?
-              AND status IN ('pending', 'granted')
-              AND granted_at <= ?
-            ORDER BY id
-            """,
-            (guild.id, stale_before.isoformat()),
-        )
-        for pulse_id, user_id in rows:
-            key = (guild.id, user_id)
-            async with self._pulse_state_lock:
-                if key in self._pulses_in_progress:
-                    continue
-                self._pulses_in_progress.add(key)
-            try:
-                await self._sync_xp_user_state(guild.id, user_id)
-                member = guild.get_member(user_id)
-                removed_at = None
-                error = "Recovered interrupted pulse; assumed paid"
-                if member and role in member.roles:
-                    try:
-                        await member.remove_roles(
-                            role,
-                            reason="BroEdenBot recovered interrupted VC XP pulse",
-                        )
-                        removed_at = utc_now()
-                    except Exception as exc:
-                        error = (
-                            "Recovered interrupted pulse; role removal failed: "
-                            f"{type(exc).__name__}"
-                        )
-                await self._record_paid_pulse(
-                    guild.id,
-                    user_id,
-                    pulse_id,
-                    "stale_assumed_paid",
-                    removed_at,
-                    error,
-                )
-                logger.warning(
-                    "Recovered interrupted VC XP pulse as paid: "
-                    "guild=%s user=%s role=%s pulse_id=%s",
-                    guild.id,
-                    user_id,
-                    role.id,
-                    pulse_id,
-                )
-            finally:
-                async with self._pulse_state_lock:
-                    self._pulses_in_progress.discard(key)
-
-    async def _record_paid_pulse(
-        self,
-        guild_id: int,
-        user_id: int,
-        pulse_id: int,
-        status: str,
-        removed_at: Optional[datetime],
-        error: Optional[str],
-    ) -> None:
-        await self.bot.db.execute(
-            """
-            UPDATE vc_xp_pulses
-            SET removed_at = ?, status = ?, error = ?
-            WHERE id = ?
-            """,
-            (
-                removed_at.isoformat() if removed_at else None,
-                status,
-                error,
-                pulse_id,
-            ),
-        )
-        await self.bot.db.execute(
-            """
-            UPDATE vc_xp_user_state
-            SET pulses_paid = pulses_paid + 1,
-                updated_at = ?
-            WHERE guild_id = ? AND user_id = ?
-            """,
-            (utc_now().isoformat(), guild_id, user_id),
-        )
-        await self.bot.db.commit()
-
-    async def _pay_one_pulse(
+    async def _record_vcxp_pulse_attempt(
         self,
         member: discord.Member,
         role: discord.Role,
-        automatic: bool,
+        eligible_seconds: int,
+        pulse_number: int,
+        status: str,
+        error: Optional[str] = None,
+    ) -> None:
+        now = utc_now().isoformat()
+        await self.bot.db.execute(
+            """
+            INSERT INTO vc_xp_pulses (
+                guild_id, user_id, eligible_seconds_snapshot, pulse_number,
+                role_id, granted_at, status, error
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                member.guild.id,
+                member.id,
+                eligible_seconds,
+                pulse_number,
+                role.id,
+                now,
+                status,
+                error,
+            ),
+        )
+        if status == "added":
+            await self.bot.db.execute(
+                """
+                INSERT INTO vc_xp_user_state (
+                    guild_id, user_id, eligible_seconds_total,
+                    pulses_earned, pulses_paid, last_vc_xp_pulse_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(guild_id, user_id) DO UPDATE SET
+                    eligible_seconds_total = excluded.eligible_seconds_total,
+                    pulses_earned = excluded.pulses_earned,
+                    pulses_paid = MAX(
+                        vc_xp_user_state.pulses_paid,
+                        excluded.pulses_paid
+                    ),
+                    last_vc_xp_pulse_at = excluded.last_vc_xp_pulse_at,
+                    updated_at = excluded.updated_at
+                """,
+                (
+                    member.guild.id,
+                    member.id,
+                    eligible_seconds,
+                    pulse_number,
+                    pulse_number,
+                    now,
+                    now,
+                ),
+            )
+            await self.bot.db.execute(
+                """
+                UPDATE vc_active_sessions
+                SET last_vc_xp_pulse_at = ?,
+                    vcxp_eligible_seconds_at_last_pulse = ?
+                WHERE guild_id = ? AND user_id = ?
+                """,
+                (now, eligible_seconds, member.guild.id, member.id),
+            )
+        await self.bot.db.commit()
+
+    async def _add_vcxp_pulse_role(
+        self,
+        member: discord.Member,
+        role: discord.Role,
+        eligible_seconds: int,
+        pulse_number: int,
     ) -> Tuple[bool, str]:
         key = (member.guild.id, member.id)
         async with self._pulse_state_lock:
@@ -1156,7 +1147,6 @@ class VCStats(commands.Cog):
                 return False, "A pulse is already in progress for that member."
             self._pulses_in_progress.add(key)
 
-        pulse_id = None
         try:
             if member.bot:
                 return False, "Bots cannot receive VC XP pulses."
@@ -1179,58 +1169,34 @@ class VCStats(commands.Cog):
                 )
                 return False, "The member already has the trigger role."
 
-            eligible_seconds, pulses_earned, pulses_paid = (
-                await self._sync_xp_user_state(member.guild.id, member.id)
-            )
-            if automatic:
-                if pulses_earned <= pulses_paid:
-                    return False, "The member has no unpaid pulses."
-                daily_paid, weekly_paid = await self._pulse_cap_counts(
-                    member.guild.id, member.id
-                )
-                if (
-                    self.vcxp_daily_pulse_cap
-                    and daily_paid >= self.vcxp_daily_pulse_cap
-                ):
-                    return False, "The member has reached the daily pulse cap."
-                if (
-                    self.vcxp_weekly_pulse_cap
-                    and weekly_paid >= self.vcxp_weekly_pulse_cap
-                ):
-                    return False, "The member has reached the weekly pulse cap."
-
-            pulse_number = pulses_paid + 1
-            granted_at = utc_now()
-            try:
-                cursor = await self.bot.db.execute(
-                    """
-                    INSERT INTO vc_xp_pulses (
-                        guild_id, user_id, eligible_seconds_snapshot,
-                        pulse_number, role_id, granted_at, status
-                    ) VALUES (?, ?, ?, ?, ?, ?, 'pending')
-                    """,
-                    (
-                        member.guild.id,
-                        member.id,
-                        eligible_seconds,
-                        pulse_number,
-                        role.id,
-                        granted_at.isoformat(),
-                    ),
-                )
-            except sqlite3.IntegrityError:
-                return False, "A pulse is already reserved for that member."
-            pulse_id = cursor.lastrowid
-            await cursor.close()
-            await self.bot.db.commit()
-
             try:
                 await member.add_roles(
                     role,
                     reason="BroEdenBot eligible VC time XP role pulse",
                 )
-            except Exception as exc:
-                await self._set_pulse_failure(pulse_id, "add_failed", exc)
+            except (
+                discord.Forbidden,
+                discord.HTTPException,
+                discord.NotFound,
+            ) as exc:
+                try:
+                    await self._record_vcxp_pulse_attempt(
+                        member,
+                        role,
+                        eligible_seconds,
+                        pulse_number,
+                        "add_failed",
+                        type(exc).__name__,
+                    )
+                except Exception as record_exc:
+                    logger.exception(
+                        "VC XP pulse failure log write failed: "
+                        "guild=%s user=%s role=%s error_type=%s",
+                        member.guild.id,
+                        member.id,
+                        role.id,
+                        type(record_exc).__name__,
+                    )
                 logger.warning(
                     "VC XP role add failed: guild=%s user=%s role=%s error_type=%s",
                     member.guild.id,
@@ -1239,12 +1205,51 @@ class VCStats(commands.Cog):
                     type(exc).__name__,
                 )
                 return False, f"Role add failed ({type(exc).__name__})."
+            except Exception as exc:
+                try:
+                    await self._record_vcxp_pulse_attempt(
+                        member,
+                        role,
+                        eligible_seconds,
+                        pulse_number,
+                        "add_failed",
+                        type(exc).__name__,
+                    )
+                except Exception as record_exc:
+                    logger.exception(
+                        "VC XP pulse failure log write failed: "
+                        "guild=%s user=%s role=%s error_type=%s",
+                        member.guild.id,
+                        member.id,
+                        role.id,
+                        type(record_exc).__name__,
+                    )
+                logger.exception(
+                    "Unexpected VC XP role add failure: guild=%s user=%s role=%s error_type=%s",
+                    member.guild.id,
+                    member.id,
+                    role.id,
+                    type(exc).__name__,
+                )
+                return False, f"Role add failed ({type(exc).__name__})."
 
-            await self.bot.db.execute(
-                "UPDATE vc_xp_pulses SET status = 'granted' WHERE id = ?",
-                (pulse_id,),
-            )
-            await self.bot.db.commit()
+            try:
+                await self._record_vcxp_pulse_attempt(
+                    member,
+                    role,
+                    eligible_seconds,
+                    pulse_number,
+                    "added",
+                )
+            except Exception as record_exc:
+                logger.exception(
+                    "VC XP pulse success log write failed: "
+                    "guild=%s user=%s role=%s error_type=%s",
+                    member.guild.id,
+                    member.id,
+                    role.id,
+                    type(record_exc).__name__,
+                )
             logger.info(
                 "VC XP role granted: guild=%s user=%s role=%s pulse=%s",
                 member.guild.id,
@@ -1252,123 +1257,113 @@ class VCStats(commands.Cog):
                 role.id,
                 pulse_number,
             )
-
-            cancellation = None
-            removal_error = None
-            try:
-                await asyncio.sleep(self.vcxp_role_remove_delay_seconds)
-                await member.remove_roles(
-                    role,
-                    reason="BroEdenBot VC XP role pulse completed",
-                )
-            except asyncio.CancelledError as exc:
-                cancellation = exc
-                try:
-                    await member.remove_roles(
-                        role,
-                        reason="BroEdenBot VC XP pulse cancelled during shutdown",
-                    )
-                except Exception as remove_exc:
-                    removal_error = remove_exc
-            except Exception as exc:
-                removal_error = exc
-
-            if removal_error is None:
-                await self._record_paid_pulse(
-                    member.guild.id,
-                    member.id,
-                    pulse_id,
-                    "paid",
-                    utc_now(),
-                    None,
-                )
-                logger.info(
-                    "VC XP role removed and pulse paid: "
-                    "guild=%s user=%s role=%s pulse=%s",
-                    member.guild.id,
-                    member.id,
-                    role.id,
-                    pulse_number,
-                )
-            else:
-                await self._record_paid_pulse(
-                    member.guild.id,
-                    member.id,
-                    pulse_id,
-                    "remove_failed_assumed_paid",
-                    None,
-                    type(removal_error).__name__,
-                )
-                logger.warning(
-                    "VC XP role removal failed; pulse counted paid to avoid duplicate: "
-                    "guild=%s user=%s role=%s pulse=%s error_type=%s",
-                    member.guild.id,
-                    member.id,
-                    role.id,
-                    pulse_number,
-                    type(removal_error).__name__,
-                )
-
-            if cancellation is not None:
-                raise cancellation
-            if removal_error is not None:
-                return (
-                    True,
-                    "The role was added, but removal failed. The pulse was counted "
-                    "as paid to prevent a duplicate.",
-                )
-            return True, f"Pulse {pulse_number} completed."
+            return True, f"Pulse {pulse_number} role added."
         finally:
             async with self._pulse_state_lock:
                 self._pulses_in_progress.discard(key)
 
     async def _run_automatic_pulses(self) -> None:
+        logger.info("VC XP pulse check started")
         vcxp_enabled = self.vcxp_enabled
         trigger_role_id = self.vcxp_trigger_role_id
         if not vcxp_enabled or not trigger_role_id:
-            return
-        pulse_tasks = []
-        for guild in self.bot.guilds:
-            role = guild.get_role(trigger_role_id)
-            if role is None:
-                logger.warning(
-                    "VC XP trigger role not found: guild=%s role=%s",
-                    guild.id,
-                    trigger_role_id,
-                )
-                continue
-            await self._sync_xp_states(guild.id)
-            await self._recover_stale_pulses(guild, role)
-            rows = await self._fetchall(
-                """
-                SELECT user_id
-                FROM vc_xp_user_state
-                WHERE guild_id = ? AND pulses_earned > pulses_paid
-                ORDER BY (pulses_earned - pulses_paid) DESC, user_id
-                """,
-                (guild.id,),
+            logger.info(
+                "VC XP pulse check completed: checked=0 eligible=0 "
+                "skipped_bot=0 skipped_excluded=0 skipped_muted=0 "
+                "skipped_deafened=0 skipped_cooldown=0 skipped_role_present=0 "
+                "attempted=0 succeeded=0 failed=0"
             )
-            for (user_id,) in rows:
-                member = guild.get_member(user_id)
-                if member is None or member.bot:
-                    logger.info(
-                        "VC XP pulse skipped: member unavailable guild=%s user=%s",
+            return
+        await self._reconcile_sessions(startup=False)
+        checked = 0
+        eligible = 0
+        skipped_bot = 0
+        skipped_excluded = 0
+        skipped_muted = 0
+        skipped_deafened = 0
+        skipped_cooldown = 0
+        skipped_role_present = 0
+        attempted = 0
+        succeeded = 0
+        failed = 0
+        now = utc_now()
+        for guild in self.bot.guilds:
+            try:
+                role = guild.get_role(trigger_role_id)
+                if role is None:
+                    logger.warning(
+                        "VC XP trigger role not found: guild=%s role=%s",
                         guild.id,
-                        user_id,
+                        trigger_role_id,
                     )
                     continue
-                if self._member_xp_excluded(member):
-                    logger.info(
-                        "VC XP pulse skipped: excluded member guild=%s user=%s",
-                        guild.id,
-                        user_id,
-                    )
-                    continue
-                pulse_tasks.append(
-                    self._pay_one_pulse(member, role, automatic=True)
+                for channel in guild.voice_channels + guild.stage_channels:
+                    for member in channel.members:
+                        checked += 1
+                        if member.bot:
+                            skipped_bot += 1
+                            continue
+                        if self._member_xp_excluded(member):
+                            skipped_excluded += 1
+                            continue
+                        voice = member.voice
+                        if voice is None:
+                            continue
+                        flags = self._voice_flags(voice)
+                        if flags[0] or flags[2]:
+                            skipped_muted += 1
+                            continue
+                        if flags[1] or flags[3]:
+                            skipped_deafened += 1
+                            continue
+                        progress = await self._active_session_vcxp_progress(member, now)
+                        if progress is None:
+                            continue
+                        eligible_seconds, last_pulse_eligible = progress
+                        seconds_since_pulse = eligible_seconds - last_pulse_eligible
+                        if seconds_since_pulse < self._xp_seconds_per_pulse:
+                            skipped_cooldown += 1
+                            continue
+                        eligible += 1
+                        if role in member.roles:
+                            skipped_role_present += 1
+                            continue
+                        pulse_number = eligible_seconds // self._xp_seconds_per_pulse
+                        attempted += 1
+                        role_added, _ = await self._add_vcxp_pulse_role(
+                            member,
+                            role,
+                            eligible_seconds,
+                            pulse_number,
+                        )
+                        if role_added:
+                            succeeded += 1
+                        else:
+                            failed += 1
+                        await asyncio.sleep(VCXP_ROLE_ADD_DELAY_SECONDS)
+            except Exception as exc:
+                logger.exception(
+                    "VC XP pulse guild check failed: guild=%s error_type=%s",
+                    guild.id,
+                    type(exc).__name__,
                 )
-        if pulse_tasks:
-            await asyncio.gather(*pulse_tasks)
+        logger.info(
+            "VC XP pulse check completed: checked=%s eligible=%s "
+            "skipped_bot=%s skipped_excluded=%s skipped_muted=%s "
+            "skipped_deafened=%s skipped_cooldown=%s skipped_role_present=%s "
+            "attempted=%s succeeded=%s failed=%s",
+            checked,
+            eligible,
+            skipped_bot,
+            skipped_excluded,
+            skipped_muted,
+            skipped_deafened,
+            skipped_cooldown,
+            skipped_role_present,
+            attempted,
+            succeeded,
+            failed,
+        )
 
     @tasks.loop(seconds=XP_PULSE_CHECK_SECONDS)
     async def _xp_pulse_loop(self) -> None:
@@ -2105,14 +2100,10 @@ class VCStats(commands.Cog):
             f"Trigger role: **{role_label}**\n"
             f"Eligible time per pulse: **{self.vcxp_minutes_per_pulse} minutes**\n"
             f"Reward start: **{self.vcxp_reward_start_at.isoformat()}**\n"
-            f"Role removal delay: **{self.vcxp_role_remove_delay_seconds} seconds**\n"
-            f"Daily pulse cap: **{self.vcxp_daily_pulse_cap}**\n"
-            f"Weekly pulse cap: **{self.vcxp_weekly_pulse_cap}** "
-            "(rolling seven days)\n"
             f"VC XP excluded roles: **{len(self.vcxp_excluded_role_ids)} configured**\n"
             f"Status: {issue or '**Ready**'}\n\n"
-            "BroEdenBot only adds and removes the configured role. It does not "
-            "call MEE6 or grant MEE6 XP directly.",
+            "BroEdenBot only adds the configured role. MEE6 awards XP and removes "
+            "the role afterward.",
             ephemeral=True,
         )
 
@@ -2152,27 +2143,8 @@ class VCStats(commands.Cog):
 
         state_exists = await self._table_exists("vc_xp_user_state")
         pulses_exists = await self._table_exists("vc_xp_pulses")
-        if state_exists:
-            await self._sync_xp_states(guild.id)
-        excluded_ids = self._xp_excluded_user_ids_for_guild(guild)
-        unpaid_users = 0
-        paid_last_day = 0
+        added_last_day = 0
         recent_rows = []
-        if state_exists:
-            rows = await self._fetchall(
-                """
-                SELECT user_id
-                FROM vc_xp_user_state
-                WHERE guild_id = ? AND pulses_earned > pulses_paid
-                """,
-                (guild.id,),
-            )
-            unpaid_users = sum(
-                1
-                for (user_id,) in rows
-                if user_id not in excluded_ids
-                and (include_left_members or current_member(guild, user_id))
-            )
         if pulses_exists:
             day_ago = (utc_now() - timedelta(hours=24)).isoformat()
             rows = await self._fetchall(
@@ -2181,13 +2153,12 @@ class VCStats(commands.Cog):
                 FROM vc_xp_pulses
                 WHERE guild_id = ? AND granted_at >= ?
                   AND status IN (
-                      'paid', 'remove_failed_assumed_paid',
-                      'stale_assumed_paid', 'marked_paid'
+                      'added'
                   )
                 """,
                 (guild.id, day_ago),
             )
-            paid_last_day = int(rows[0][0] or 0)
+            added_last_day = int(rows[0][0] or 0)
             recent_rows = await self._fetchall(
                 """
                 SELECT user_id, status, error, granted_at
@@ -2236,18 +2207,13 @@ class VCStats(commands.Cog):
             name="Pulse limits",
             value=(
                 f"Minutes per pulse: **{self.vcxp_minutes_per_pulse}**\n"
-                f"Role removal delay: **{self.vcxp_role_remove_delay_seconds}s**\n"
-                f"Daily cap: **{self.vcxp_daily_pulse_cap}**\n"
-                f"Weekly cap: **{self.vcxp_weekly_pulse_cap}**\n"
                 f"XP excluded roles: **{len(self.vcxp_excluded_role_ids)}**"
             ),
             inline=True,
         )
         state_text = (
-            f"Users with unpaid pulses "
-            f"({'includes left members' if include_left_members else 'current members only'}): "
-            f"**{unpaid_users:,}**\n"
-            f"Pulses paid in last 24h: **{paid_last_day:,}**"
+            "Legacy unpaid-pulse backlog: **disabled**\n"
+            f"Role adds in last 24h: **{added_last_day:,}**"
             if state_exists and pulses_exists
             else "VCXP state tables not found yet."
         )
@@ -2321,7 +2287,7 @@ class VCStats(commands.Cog):
         )
         if not rows:
             await interaction.followup.send(
-                "No eligible VC time or unpaid VC XP pulses were found.",
+                "No eligible VC time was found for the selected period.",
                 ephemeral=True,
             )
             return
@@ -2329,8 +2295,8 @@ class VCStats(commands.Cog):
             f"{index}. "
             f"{f'<@{row[0]}>' if row[8] else discord.utils.escape_markdown(row[2] or row[1] or str(row[0])) + ' — Left server'} "
             f"— {format_duration(row[3])} eligible "
-            f"in period — earned **{row[5]}** / paid **{row[6]}** / "
-            f"unpaid **{row[7]}**"
+            f"in period — legacy earned **{row[5]}** / pulsed **{row[6]}** / "
+            f"backlog **{row[7]}**"
             for index, row in enumerate(rows[:25], 1)
         ]
         if len(rows) > 25:
@@ -2341,64 +2307,7 @@ class VCStats(commands.Cog):
         await self._send_lines(
             interaction,
             f"**VC XP pulse preview — last {days} days**\n"
-            "Earned, paid, and unpaid counts are cumulative.\n"
-            f"{'Includes left members' if include_left_members else 'Current members only'}.",
-            lines,
-        )
-
-    @vcrewards.command(name="unpaid", description="Show unpaid VC XP pulses")
-    @app_commands.describe(
-        include_left_members="Include users who are no longer in the server",
-    )
-    @app_commands.guild_only()
-    async def rewards_unpaid(
-        self,
-        interaction: discord.Interaction,
-        include_left_members: bool = False,
-    ) -> None:
-        if await self._deny_if_unauthorised(interaction):
-            return
-        await interaction.response.defer(ephemeral=True, thinking=True)
-        await self._sync_xp_states(interaction.guild_id)
-        rows = await self._fetchall(
-            """
-            SELECT user_id, eligible_seconds_total, pulses_earned, pulses_paid,
-                   (pulses_earned - pulses_paid) AS unpaid
-            FROM vc_xp_user_state
-            WHERE guild_id = ? AND pulses_earned > pulses_paid
-            ORDER BY unpaid DESC, eligible_seconds_total DESC
-            """,
-            (interaction.guild_id,),
-        )
-        filtered_rows = []
-        for row in rows:
-            member = current_member(interaction.guild, row[0])
-            if row[0] in self.excluded_user_ids or self._member_xp_excluded(member):
-                continue
-            if member is None and not include_left_members:
-                continue
-            filtered_rows.append((*row, member))
-            if len(filtered_rows) >= 75:
-                break
-        if not filtered_rows:
-            await interaction.followup.send(
-                "No members currently have unpaid VC XP pulses.",
-                ephemeral=True,
-            )
-            return
-        lines = [
-            f"{index}. "
-            f"{f'<@{row[0]}>' if row[5] else f'`{row[0]}` — Left server'} "
-            f"— {format_duration(row[1])} eligible "
-            f"— earned **{row[2]}** / paid **{row[3]}** / unpaid **{row[4]}**"
-            for index, row in enumerate(filtered_rows, 1)
-        ]
-        warning = member_filter_warning(self.bot, interaction.guild)
-        if warning and not include_left_members:
-            lines.append(f"⚠️ {warning}")
-        await self._send_lines(
-            interaction,
-            "**Unpaid VC XP pulses**\n"
+            "Legacy counts are informational; automatic pulses use active eligible time.\n"
             f"{'Includes left members' if include_left_members else 'Current members only'}.",
             lines,
         )
@@ -2438,91 +2347,23 @@ class VCStats(commands.Cog):
         completed = 0
         messages = []
         for _ in range(pulses):
-            succeeded, message = await self._pay_one_pulse(
-                user, role, automatic=False
+            progress = await self._active_session_vcxp_progress(user, utc_now())
+            eligible_seconds = progress[0] if progress else 0
+            pulse_number = max(1, eligible_seconds // self._xp_seconds_per_pulse)
+            succeeded, message = await self._add_vcxp_pulse_role(
+                user,
+                role,
+                eligible_seconds,
+                pulse_number,
             )
             messages.append(message)
             if not succeeded:
                 break
             completed += 1
+            await asyncio.sleep(VCXP_ROLE_ADD_DELAY_SECONDS)
         await interaction.followup.send(
             f"Completed **{completed} of {pulses}** requested VC XP role pulses "
             f"for {user.mention}.\n{messages[-1]}",
-            ephemeral=True,
-        )
-
-    @vcrewards.command(
-        name="markpaid", description="Mark VC XP pulses paid without adding a role"
-    )
-    @app_commands.describe(
-        user="Member whose accounting should be updated",
-        pulses="Number of pulses to mark paid",
-    )
-    @app_commands.guild_only()
-    async def rewards_markpaid(
-        self,
-        interaction: discord.Interaction,
-        user: discord.Member,
-        pulses: app_commands.Range[int, 1, 100],
-    ) -> None:
-        if not self._is_administrator(interaction):
-            await interaction.response.send_message(
-                "Only administrators can mark VC XP pulses paid.",
-                ephemeral=True,
-            )
-            return
-        if self._member_xp_excluded(user):
-            await interaction.response.send_message(
-                "That member is excluded from VC XP pulses.",
-                ephemeral=True,
-            )
-            return
-        await interaction.response.defer(ephemeral=True, thinking=True)
-        eligible_seconds, _, pulses_paid = await self._sync_xp_user_state(
-            interaction.guild_id, user.id
-        )
-        now = utc_now().isoformat()
-        role_id = self.vcxp_trigger_role_id or 0
-        await self.bot.db.executemany(
-            """
-            INSERT INTO vc_xp_pulses (
-                guild_id, user_id, eligible_seconds_snapshot, pulse_number,
-                role_id, granted_at, removed_at, status, error
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, 'marked_paid', ?)
-            """,
-            [
-                (
-                    interaction.guild_id,
-                    user.id,
-                    eligible_seconds,
-                    pulses_paid + index,
-                    role_id,
-                    now,
-                    now,
-                    f"Manually marked paid by administrator {interaction.user.id}",
-                )
-                for index in range(1, pulses + 1)
-            ],
-        )
-        await self.bot.db.execute(
-            """
-            UPDATE vc_xp_user_state
-            SET pulses_paid = pulses_paid + ?, updated_at = ?
-            WHERE guild_id = ? AND user_id = ?
-            """,
-            (pulses, now, interaction.guild_id, user.id),
-        )
-        await self.bot.db.commit()
-        logger.info(
-            "VC XP pulses marked paid: guild=%s user=%s pulses=%s admin=%s",
-            interaction.guild_id,
-            user.id,
-            pulses,
-            interaction.user.id,
-        )
-        await interaction.followup.send(
-            f"Marked **{pulses}** VC XP pulses paid for {user.mention} without "
-            "adding the trigger role.",
             ephemeral=True,
         )
 
@@ -2574,9 +2415,9 @@ class VCStats(commands.Cog):
             "period_eligible_readable",
             "total_eligible_seconds",
             "total_eligible_readable",
-            "pulses_earned",
-            "pulses_paid",
-            "unpaid_pulses",
+            "legacy_pulses_earned",
+            "legacy_pulses_pulsed",
+            "legacy_backlog_pulses",
             "is_current_member",
             "period_days",
             "minutes_per_pulse",
