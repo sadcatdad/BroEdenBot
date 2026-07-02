@@ -55,9 +55,9 @@ Do not dump raw message logs; synthesize and use only brief relevant excerpts.
 
 Imported staff discussion is historical context, not automatically official
 policy. Do not present it as public policy unless the supplied material
-explicitly confirms it against the official Bro Eden Rules or Survival Guide.
-If the context is incomplete, conflicting, or unclear, say so. Never imply that
-a discussion is a final staff decision unless the supplied messages clearly
+explicitly confirms it against configured Bro Eden knowledge sources. If the
+context is incomplete, conflicting, or unclear, say so. Never imply that a
+discussion is a final staff decision unless the supplied messages clearly
 establish that.
 """.strip()
 

@@ -3,7 +3,13 @@ import unittest
 import aiosqlite
 import discord
 
-from cogs.ask import Ask, AskResponseView, _feedback_sources, _format_public_response
+from cogs.ask import (
+    Ask,
+    AskResponseView,
+    _fallback_answer_from_sources,
+    _feedback_sources,
+    _format_public_response,
+)
 from utils.ask_feedback import create_ask_feedback, record_ask_feedback
 
 
@@ -18,6 +24,10 @@ class AskFormattingTests(unittest.TestCase):
         self.assertIn("**Answer:**", embed.description)
         self.assertNotIn("\n\n", embed.description)
         self.assertNotIn("Source:", embed.description)
+        self.assertEqual(
+            embed.footer.text,
+            "Private answer • Based only on public Bro Eden knowledge sources",
+        )
 
     def test_feedback_buttons_disable_after_feedback(self):
         view = AskResponseView(owner_id=123, question="where is support?")
@@ -45,6 +55,25 @@ class AskFormattingTests(unittest.TestCase):
 
         self.assertIn("Do not include source labels", prompt)
         self.assertIn('"Source:" section', prompt)
+        self.assertIn("public Bro Eden knowledge source context", prompt)
+
+    def test_empty_ai_fallback_uses_public_source_excerpts(self):
+        answer = _fallback_answer_from_sources(
+            [
+                {
+                    "source_name": "live-discord:1:10",
+                    "excerpt": "Server boosters get special perks in Bro Eden.",
+                },
+                {
+                    "source_name": "live-discord:1:11",
+                    "content": "Use tickets when you need staff help.",
+                },
+            ]
+        )
+
+        self.assertIn("matching public knowledge", answer)
+        self.assertIn("Server boosters get special perks", answer)
+        self.assertIn("Use tickets when you need staff help", answer)
 
     def test_feedback_sources_keep_review_context(self):
         sources = _feedback_sources(

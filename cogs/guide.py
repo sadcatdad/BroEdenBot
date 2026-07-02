@@ -10,13 +10,10 @@ from utils.ui import INFO_COLOR, branded_embed
 
 
 SUPPORT_MESSAGE = (
-    "I couldn’t find that in the guide. Please submit a ticket in "
+    "I couldn’t find that in the public knowledge sources. Please submit a ticket in "
     "<#1300632962127368283> if you need help."
 )
-SOURCE_LABELS = {
-    "Bro Eden Survival Guide": "Survival Guide",
-    "Bro Eden Rules": "Rules",
-}
+SOURCE_LABELS = {}
 
 
 class Guide(commands.Cog):
@@ -39,7 +36,7 @@ class Guide(commands.Cog):
             self._last_use_by_user[user_id] = now
             return False
 
-    @guide.command(name="search", description="Search the public guide and rules")
+    @guide.command(name="search", description="Search public knowledge sources")
     @app_commands.describe(query="Keywords or topic to search for")
     @app_commands.guild_only()
     async def search(
@@ -71,7 +68,7 @@ class Guide(commands.Cog):
             "🔎 Guide Search Results",
             description=f"Best public matches for **{discord.utils.escape_markdown(query)}**",
             color=INFO_COLOR,
-            footer="Public guide and rules • Deterministic keyword search",
+            footer="Public knowledge sources • Deterministic keyword search",
         )
         for source, heading, excerpt in results:
             label = SOURCE_LABELS.get(source, source)

@@ -136,8 +136,7 @@ have **View Channel**, **Send Messages** (or **Send Messages in Threads**), and
   activity using `data/channel_categories.json`.
 - `/stats activity heatmap [period] [source] [timezone] [channel]` — Summarizes
   activity by local day, hour, and broad time block.
-- `/guide search <query>` — Searches only the public Survival Guide and Rules
-  without Gemini.
+- `/guide search <query>` — Searches public knowledge sources without Gemini.
 - `/ask <question>` — Answers from public guidance with private follow-up
   buttons.
 - `/staffai help`, `/staffai status`, `/staffai ask`, `/staffai search`,
@@ -245,7 +244,10 @@ This review data is used to improve the public Knowledge Base manually.
 The prompt requires Gemini to stay grounded in the retrieved public KB chunks,
 avoid inventing policies or permissions, and keep replies concise. When no
 public KB source matches, `/ask` says it could not find an answer and directs
-the member to submit a ticket in <#1300632962127368283>.
+the member to submit a ticket in <#1300632962127368283>. If public knowledge
+does match but Gemini returns an empty response, `/ask` falls back to a concise
+excerpt from the matched public knowledge sources instead of showing a blank AI
+failure.
 
 Questions involving personal disputes, accusations, harassment, reports,
 appeals, staff complaints, moderation actions, rule-enforcement decisions,
@@ -254,16 +256,15 @@ are not sent to Gemini. The member is privately directed to the support-ticket
 channel instead. Clearly unrelated questions are also redirected rather than
 answered.
 
-The command uses `AI_MEMBER_COOLDOWN_SECONDS`. If Gemini returns an empty or
-blocked response, the private embed says it cannot answer safely. If Gemini
-fails, the private embed directs the member to the support-ticket
-channel. Missing `GEMINI_API_KEY` configuration is reported ephemerally.
+The command uses `AI_MEMBER_COOLDOWN_SECONDS`. If Gemini returns a blocked
+response, the private embed says it cannot answer safely. If Gemini fails, the
+private embed directs the member to the support-ticket channel. Missing
+`GEMINI_API_KEY` configuration is reported ephemerally.
 
 ### `/guide search <query>`
 
-Performs a deterministic, case-insensitive search of the public Survival Guide
-and Rules plus public live Discord knowledge sources, returning up to three
-short matching snippets.
+Performs a deterministic, case-insensitive search of public live Discord
+knowledge sources, returning up to three short matching snippets.
 
 - `query` — Required keywords or topic, from 2 to 200 characters.
 - Responses are ephemeral and available to all server members.
@@ -434,14 +435,14 @@ uses the **Send Rule Reminder** button. ModAI provides guidance only. It does
 not warn, timeout, kick, ban, delete messages, or otherwise moderate members
 automatically.
 
-Private ModAI knowledge includes the public Rules and Survival Guide plus the
-staff-only `data/staff_knowledge/rangers_handbook.md`. The Ranger's Handbook is
-not loaded by public `/ask`.
+Private ModAI knowledge comes from the same configured public and staff-only
+live Discord knowledge sources. Staff-only sources are not loaded by public
+`/ask`.
 
 ### `/modai check <text>`
 
 Privately reviews pasted text for possible moderation concerns using Gemini and
-the local Bro Eden rules and survival guide.
+the configured Bro Eden knowledge sources.
 
 - `text` — The text staff want reviewed. This is treated as untrusted content
   and is not stored by this command.
@@ -452,16 +453,15 @@ whether more context is needed.
 
 ### `/modai rulesearch <query>`
 
-Performs a local keyword search of the Bro Eden rules, survival guide, and
-staff-only Ranger's Handbook. This does not call Gemini.
+Performs a local keyword search of configured public and staff-only knowledge
+sources. This does not call Gemini.
 
 - `query` — A word or short topic to find, such as `unsolicited DMs`,
   `self-promo`, or `politics`.
 
 ### `/modai rulehelp <situation>`
 
-Privately evaluates a described situation against the local rules and survival
-guide.
+Privately evaluates a described situation against configured Bro Eden knowledge.
 
 - `situation` — A description of the moderation question or behavior staff
   want help evaluating.
@@ -1754,20 +1754,19 @@ surface.
 ### Unified Knowledge Manager
 
 The authenticated Knowledge tab is the single dashboard surface for public and
-staff knowledge. It shows file-backed documents, dashboard-created text sources
-in `ai_kb_sources` / `ai_kb_chunks`, and live Discord sources in
-`knowledge_sources` / `knowledge_entries`.
+staff knowledge. It shows internal file-backed dashboard docs,
+dashboard-created text sources in `ai_kb_sources` / `ai_kb_chunks`, and live
+Discord sources in `knowledge_sources` / `knowledge_entries`.
 
-File-backed documents still use a fixed source-code allowlist. The dashboard
-does not accept arbitrary file paths, browse directories, follow symlinks
-outside the project, or expose a file-download route. The allowlist includes:
-
-- Public bot knowledge: `data/knowledge/rules.md` and
-  `data/knowledge/survival_guide.md`.
-- Private staff knowledge:
-  `data/staff_knowledge/rangers_handbook.md`.
-- Internal guides under `docs/`: message context, staff context, checklists,
-  historical imports, VC log imports, and the codebase map.
+File-backed documents are limited to internal dashboard docs and still use a
+fixed source-code allowlist. The dashboard does not accept arbitrary file paths,
+browse directories, follow symlinks outside the project, or expose a
+file-download route. The old public Rules, public Survival Guide, and private
+Ranger's Handbook Markdown files are no longer dashboard knowledge sources;
+those topics are expected to come from configured Discord channel/forum/thread
+sources instead. The remaining file allowlist covers internal guides under
+`docs/`: message context, staff context, checklists, historical imports, VC log
+imports, and the codebase map.
 
 Each file entry shows its category, public/staff/internal visibility, relative
 path, editability, modified time, size, approximate word count, and
@@ -1777,19 +1776,21 @@ HTML and scripts are not executed. Obvious token, password, API-key, secret,
 authorization, and provider-token patterns are redacted from displayed content
 and rejected on save.
 
-The public Rules and Survival Guide, private Ranger's Handbook, message-context
-guide, and staff-context guide are editable. Import guides, checklist docs, and
-the codebase map are intentionally read-only in this dashboard phase. Edits are
-limited to UTF-8 Markdown/text, reject binary or content over 1 MB, and use a
-temporary file plus atomic replacement. Before replacing an existing file, the
-dashboard creates a timestamped copy under `backups/knowledge/`; those runtime
-backups are ignored by Git. `knowledge_audit` records metadata for edits and
-reindex requests without storing old or new document contents.
+The message-context and staff-context guides are editable. Import guides,
+checklist docs, and the codebase map are intentionally read-only in this
+dashboard phase. Edits are limited to UTF-8 Markdown/text, reject binary or
+content over 1 MB, and use a temporary file plus atomic replacement. Before
+replacing an existing file, the dashboard creates a timestamped copy under
+`backups/knowledge/`; those runtime backups are ignored by Git.
+`knowledge_audit` records metadata for edits and reindex requests without
+storing old or new document contents.
 
 Dashboard text sources support public/staff visibility, source type, content
 editing, deletion, and a `Use this source for AI retrieval` checkbox. Disabled
 AI sources remain stored but are ignored by `search_kb()` and therefore by
-member-facing `/ask` retrieval.
+member-facing `/ask` retrieval. Discord `/knowledge sources list` and sync
+results show whether each live source is connected to AI retrieval, so an
+indexed source that is intentionally AI-disabled is visible to admins.
 
 Live Discord sources can be configured from the same Knowledge tab using either
 the channel picker or a pasted channel/forum-thread ID. This supports whole text

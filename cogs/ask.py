@@ -16,6 +16,7 @@ from utils.ai_kb import format_kb_context, search_kb
 from utils.ai_service import (
     AI_BUDGET_MESSAGE,
     AI_DISABLED_MESSAGE,
+    AI_EMPTY_RESPONSE_MESSAGE,
     check_ai_cooldown,
     generate_ai_response,
     set_ai_cooldown,
@@ -52,7 +53,7 @@ RATE_LIMIT_MESSAGE = "Please wait a bit before using /ask again."
 MAX_QUESTION_LENGTH = 1_000
 EMBED_DESCRIPTION_LIMIT = 4_096
 NO_KB_MATCH_MESSAGE = (
-    "I could not find an answer in the server guide or rules. "
+    "I could not find an answer in the public Bro Eden knowledge sources. "
     f"For anything unclear, please open a support ticket in {SUPPORT_CHANNEL} "
     "or ask staff."
 )
@@ -138,7 +139,34 @@ def _format_public_response(question: str, answer: str) -> discord.Embed:
         "✨ Bro Eden Guide Answer",
         description=prefix + answer,
         color=SUCCESS_COLOR,
-        footer="Private answer • Based only on the public guide and rules",
+        footer="Private answer • Based only on public Bro Eden knowledge sources",
+    )
+
+
+def _fallback_answer_from_sources(chunks: list[dict[str, object]]) -> str:
+    excerpts = []
+    seen = set()
+    for chunk in chunks:
+        excerpt = str(chunk.get("excerpt") or chunk.get("content") or "").strip()
+        if not excerpt:
+            continue
+        compact = re.sub(r"\s+", " ", excerpt)
+        key = compact.casefold()
+        if key in seen:
+            continue
+        seen.add(key)
+        if len(compact) > 420:
+            compact = compact[:419].rstrip() + "…"
+        excerpts.append(compact)
+        if len(excerpts) >= 3:
+            break
+    if not excerpts:
+        return GEMINI_FAILURE_MESSAGE
+    bullets = "\n".join(f"- {excerpt}" for excerpt in excerpts)
+    return (
+        "I found matching public knowledge, but the AI summarizer returned an "
+        f"empty response. Here is the relevant public source text:\n{bullets}\n"
+        f"If you still need help, please submit a ticket in {SUPPORT_CHANNEL}."
     )
 
 
@@ -404,7 +432,7 @@ class Ask(commands.Cog):
     def _build_prompt(question: str, context: str) -> str:
         return f"""
 You are BroEdenBot, answering general Bro Eden server questions for members.
-Use only the provided AI Knowledge Base context.
+Use only the provided public Bro Eden knowledge source context.
 If the answer is not clearly supported by the provided context, say you are
 not fully sure and direct the user to submit a ticket in {SUPPORT_CHANNEL}.
 Do not invent policies, punishments, staff decisions, channel IDs, or
@@ -420,7 +448,7 @@ appear in the provided context. When support is appropriate, end with:
 Do not include source labels, source citations, or a "Source:" section in the
 member-facing answer.
 
-PUBLIC AI KNOWLEDGE BASE CONTEXT:
+PUBLIC BRO EDEN KNOWLEDGE SOURCE CONTEXT:
 <public_kb_context>
 {context}
 </public_kb_context>
@@ -531,10 +559,21 @@ MEMBER QUESTION:
             )
             return
         if not result.ok or not result.text:
+            answer = result.error or GEMINI_FAILURE_MESSAGE
+            if result.error == AI_EMPTY_RESPONSE_MESSAGE:
+                answer = _fallback_answer_from_sources(chunks)
+                logger.warning(
+                    "Ask AI returned empty response after KB retrieval: "
+                    "guild_id=%s channel_id=%s user_id=%s sources=%s",
+                    interaction.guild_id,
+                    interaction.channel_id,
+                    interaction.user.id,
+                    [chunk.get("source_name") for chunk in chunks[:6]],
+                )
             await interaction.followup.send(
                 embed=_format_public_response(
                     question,
-                    result.error or GEMINI_FAILURE_MESSAGE,
+                    answer,
                 ),
                 ephemeral=True,
                 allowed_mentions=discord.AllowedMentions.none(),

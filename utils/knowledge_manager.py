@@ -36,36 +36,6 @@ class KnowledgeDocument:
 
 DOCUMENTS = (
     KnowledgeDocument(
-        "rules",
-        "Bro Eden Rules",
-        "data/knowledge/rules.md",
-        "Public Guide",
-        True,
-        "public",
-        "Public rules used by /ask, /guide, and private staff tools.",
-        True,
-    ),
-    KnowledgeDocument(
-        "survival-guide",
-        "Bro Eden Survival Guide",
-        "data/knowledge/survival_guide.md",
-        "Public Guide",
-        True,
-        "public",
-        "Public server guide used by /ask, /guide, and private staff tools.",
-        True,
-    ),
-    KnowledgeDocument(
-        "rangers-handbook",
-        "Ranger's Handbook",
-        "data/staff_knowledge/rangers_handbook.md",
-        "Staff Knowledge",
-        True,
-        "staff",
-        "Private operational guidance used only by staff-facing tools.",
-        True,
-    ),
-    KnowledgeDocument(
         "message-context",
         "Message Context Guide",
         "docs/message-context.md",

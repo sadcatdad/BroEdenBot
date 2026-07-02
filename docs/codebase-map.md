@@ -33,7 +33,7 @@ maintenance.
 
 ## Member-facing tools
 
-- `cogs/ask.py` — Private Gemini answers grounded only in public guidance.
+- `cogs/ask.py` — Private Gemini answers grounded only in public knowledge sources.
 - `cogs/guide.py` — Deterministic public-guide search without AI.
 - `cogs/poll.py` — Persistent button polls and visual result boards.
 - `cogs/queue.py` — Voice-channel queues and legacy prefix commands.
@@ -66,20 +66,18 @@ maintenance.
 ## Shared helpers
 
 - `utils/ui.py` — Brand colors, status embeds, progress bars, and truncation.
-- `utils/knowledge.py` — Separate cached public and private-staff knowledge
-  loaders, cache reload, and search, including public/staff-filtered live
-  Discord knowledge entries.
+- `utils/knowledge.py` — Public and private-staff knowledge search over
+  public/staff-filtered live Discord knowledge entries, with local file caches
+  kept empty for legacy source compatibility.
 - `utils/live_knowledge.py` — `knowledge_sources` / `knowledge_entries`
   schema, Discord message/embed/forum formatting, duplicate filtering, AI KB
   mirroring, and live-source search helpers.
-- `utils/knowledge_manager.py` — Fixed document allowlist, safe UTF-8
+- `utils/knowledge_manager.py` — Fixed internal document allowlist, safe UTF-8
   reads/atomic edits, knowledge backups and audit rows, and queued bot-side
   cache reloads for the local dashboard.
 - `utils/analytics.py` — Fixed-range, parameterized read-only aggregation over
   existing text and VC activity tables, including dashboard summaries,
   leaderboards, heatmap data, and content-free CSV exports.
-- `data/staff_knowledge/rangers_handbook.md` — Private Ranger operations and
-  moderation guidance used by staff-facing AI only.
 - `utils/member_filter.py` — Current-member filtering safeguards.
 - `utils/compact_roster.py` — Multi-page roster image rendering.
 - `utils/stats_reports.py` — Analytics PNG cards.

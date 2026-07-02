@@ -11,16 +11,9 @@ from utils.sqlite import configure_sync_connection
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 KNOWLEDGE_DIR = PROJECT_ROOT / "data" / "knowledge"
-KNOWLEDGE_FILES = {
-    "Bro Eden Rules": KNOWLEDGE_DIR / "rules.md",
-    "Bro Eden Survival Guide": KNOWLEDGE_DIR / "survival_guide.md",
-}
+KNOWLEDGE_FILES: Dict[str, Path] = {}
 STAFF_KNOWLEDGE_DIR = PROJECT_ROOT / "data" / "staff_knowledge"
-STAFF_KNOWLEDGE_FILES = {
-    "Ranger's Handbook (Staff Only)": (
-        STAFF_KNOWLEDGE_DIR / "rangers_handbook.md"
-    ),
-}
+STAFF_KNOWLEDGE_FILES: Dict[str, Path] = {}
 
 COMMUNITY_CONTEXT = """
 Bro Eden is an 18+ Discord community for gay, bi, and queer men.
@@ -91,7 +84,7 @@ def compact_knowledge_context(max_chars: int = 18_000) -> str:
 
 
 def build_public_ask_context(query: str, max_chars: int = 12_000) -> str:
-    """Build member-safe context from only the public rules and survival guide."""
+    """Build member-safe context from public live knowledge sources."""
     sections = []
     matches = search_server_knowledge(query, max_results=6)
     if matches:

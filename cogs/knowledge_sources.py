@@ -330,6 +330,7 @@ class KnowledgeSources(commands.Cog):
                 value=(
                     f"Type: `{row['source_type']}`\n"
                     f"Visibility: `{row['visibility']}`\n"
+                    f"AI retrieval: `{'enabled' if row['ai_enabled'] else 'disabled'}`\n"
                     f"Sync: `{row['sync_mode']}`\n"
                     f"Entries: **{row['entry_count'] or 0}**\n"
                     f"Latest: `{latest}`"
@@ -428,7 +429,10 @@ class KnowledgeSources(commands.Cog):
                 lines.append(f"`{row['channel_name']}`: Discord read failed")
                 continue
             total_indexed += indexed
-            lines.append(f"`{row['channel_name']}`: scanned {scanned}, indexed {indexed}")
+            ai_state = "AI on" if row["ai_enabled"] else "AI off"
+            lines.append(
+                f"`{row['channel_name']}`: scanned {scanned}, indexed {indexed} ({ai_state})"
+            )
 
         await db.commit()
         embed = branded_embed(

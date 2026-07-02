@@ -943,6 +943,9 @@ def knowledge_sources_summary() -> dict[str, Any]:
         "documents": documents,
         "ai_sources": ai_sources,
         "live_sources": live_sources,
+        "has_reindexable_documents": any(
+            document.get("reindex_supported") for document in documents
+        ),
         "counts": {
             "documents": len(documents),
             "ai_sources": len(ai_sources),
@@ -1255,6 +1258,7 @@ async def knowledge_page(request: Request) -> HTMLResponse:
             ai_sources=summary["ai_sources"],
             live_sources=summary["live_sources"],
             knowledge_counts=summary["counts"],
+            has_reindexable_documents=summary["has_reindexable_documents"],
             kb_status=get_kb_status(),
             source_types=sorted(SOURCE_TYPES),
             live_source_types=sorted(KNOWLEDGE_SOURCE_TYPES),

@@ -36,9 +36,8 @@ result set, caps context size, and asks Gemini to summarize rather than dump
 logs. Staff discussion is historical context, not automatically official
 policy; confirm policy against the Rules and Survival Guide.
 
-StaffAI may also retrieve relevant sections from the private Ranger's Handbook
-at `data/staff_knowledge/rangers_handbook.md`. Public `/ask` cannot load that
-file.
+StaffAI may also retrieve relevant sections from configured staff-only live
+Discord knowledge sources. Public `/ask` cannot load staff-only knowledge.
 
 ## Environment variables
 

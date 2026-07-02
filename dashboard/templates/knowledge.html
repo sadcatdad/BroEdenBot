@@ -7,10 +7,12 @@
   </div>
   <div class="action-buttons">
     <a class="button secondary" href="{{ url_for('ai_kb_new') }}">Add text source</a>
+    {% if has_reindexable_documents %}
     <form method="post" action="{{ url_for('knowledge_reindex_all') }}">
       <input type="hidden" name="csrf" value="{{ csrf_token }}">
       <button class="button" type="submit">Reindex file knowledge</button>
     </form>
+    {% endif %}
   </div>
 </div>
 <p class="muted">Manage public and staff knowledge in one place. AI-enabled sources can be retrieved by AI tools according to their visibility; staff-only knowledge is never used for member-facing answers.</p>
