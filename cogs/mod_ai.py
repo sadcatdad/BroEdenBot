@@ -600,15 +600,15 @@ def format_draft_response_embed(guidance: Dict[str, Any]) -> discord.Embed:
     return _guidance_embed(
         "Draft Staff Response",
         [
-            ("Suggested public response", guidance.get("public_response"), 280),
-            ("Suggested private DM", guidance.get("private_dm"), 280),
-            ("Softer version", guidance.get("softer_version"), 220),
-            ("Firmer version", guidance.get("firmer_version"), 220),
-            ("Relevant Bro Eden area", guidance.get("relevant_area"), 180),
+            ("Suggested public response", guidance.get("public_response"), 1_000),
+            ("Suggested private DM", guidance.get("private_dm"), 1_000),
+            ("Softer version", guidance.get("softer_version"), 800),
+            ("Firmer version", guidance.get("firmer_version"), 800),
+            ("Relevant Bro Eden area", guidance.get("relevant_area"), 600),
             (
                 "Is more context needed?",
                 guidance.get("more_context_needed"),
-                180,
+                500,
             ),
         ],
         guidance.get("guidance_reminder"),
