@@ -57,6 +57,10 @@ class AIBudgets:
 class AITokenLimits:
     max_input_tokens: int
     max_output_tokens: int
+    # Thinking-token cap for reasoning-heavy calls (e.g. /context structured
+    # summaries). 0 disables thinking; higher values allow more reasoning at a
+    # higher per-call output cost. This is billed as output tokens.
+    structured_thinking_budget: int
 
 
 @dataclass(frozen=True)
@@ -109,6 +113,7 @@ class AIConfig:
             "tokenLimits": {
                 "maxInputTokens": self.token_limits.max_input_tokens,
                 "maxOutputTokens": self.token_limits.max_output_tokens,
+                "structuredThinkingBudget": self.token_limits.structured_thinking_budget,
             },
             "defaultTemperature": self.default_temperature,
             "cooldowns": {
@@ -140,6 +145,9 @@ def get_ai_config() -> AIConfig:
         token_limits=AITokenLimits(
             max_input_tokens=max(1, _int_env("AI_MAX_INPUT_TOKENS", 12000)),
             max_output_tokens=max(1, _int_env("AI_MAX_OUTPUT_TOKENS", 6144)),
+            structured_thinking_budget=max(
+                0, _int_env("AI_STRUCTURED_THINKING_BUDGET", 512)
+            ),
         ),
         default_temperature=_float_env("AI_DEFAULT_TEMPERATURE", 0.4),
         cooldowns=AICooldowns(

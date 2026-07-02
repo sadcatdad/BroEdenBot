@@ -32,6 +32,7 @@ class AIConfigTests(unittest.TestCase):
                 "AI_ENABLE_ADVANCED_MODEL": "true",
                 "AI_DAILY_BUDGET_USD": "0.12",
                 "AI_MAX_OUTPUT_TOKENS": "600",
+                "AI_STRUCTURED_THINKING_BUDGET": "768",
                 "AI_LOG_PROMPTS": "TRUE",
                 "AI_LOG_RESPONSES": "no",
             },
@@ -44,6 +45,7 @@ class AIConfigTests(unittest.TestCase):
         self.assertTrue(config.advanced_enabled)
         self.assertEqual(config.budgets.daily_usd, 0.12)
         self.assertEqual(config.token_limits.max_output_tokens, 600)
+        self.assertEqual(config.token_limits.structured_thinking_budget, 768)
         self.assertTrue(config.logging.log_prompts)
         self.assertFalse(config.logging.log_responses)
 
