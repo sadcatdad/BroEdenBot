@@ -15,8 +15,23 @@ from utils.settings import settings_database_path
 from utils.sqlite import configure_sync_connection
 
 
-SOURCE_TYPES = {"rule", "guide", "channel_guide", "faq", "role_guide", "staff_note"}
-VISIBILITIES = {"public", "staff"}
+SOURCE_TYPES = {
+    "bot_commands",
+    "channel_guide",
+    "channel_index",
+    "events",
+    "faq",
+    "guide",
+    "public",
+    "role_guide",
+    "rule",
+    "rules",
+    "staff",
+    "staff_note",
+    "survival_guide",
+    "vc_guide",
+}
+VISIBILITIES = {"public", "staff", "staff_only"}
 MAX_SOURCE_CHARS = 2 * 1024 * 1024
 CHUNK_TARGET_CHARS = 5_500
 CHUNK_MAX_CHARS = 7_000
@@ -345,7 +360,10 @@ def get_kb_status() -> dict[str, Any]:
                 COUNT(DISTINCT source_name) AS total_sources,
                 COUNT(*) AS total_chunks,
                 SUM(source_visibility = 'public') AS public_chunks,
-                SUM(source_visibility = 'staff') AS staff_chunks
+                SUM(CASE
+                    WHEN source_visibility IN ('staff', 'staff_only') THEN 1
+                    ELSE 0
+                END) AS staff_chunks
             FROM ai_kb_chunks
             """
         ).fetchone()
@@ -381,9 +399,9 @@ def get_kb_status() -> dict[str, Any]:
 def _visibility_values(visibility: str) -> set[str]:
     value = str(visibility or "public").strip().casefold()
     if value == "all":
-        return {"public", "staff"}
-    if value == "staff":
-        return {"public", "staff"}
+        return {"public", "staff", "staff_only"}
+    if value in {"staff", "staff_only"}:
+        return {"public", "staff", "staff_only"}
     return {"public"}
 
 

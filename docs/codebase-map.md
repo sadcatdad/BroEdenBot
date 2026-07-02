@@ -51,6 +51,10 @@ maintenance.
 - `cogs/mod_ai.py` — Private Gemini-assisted moderation guidance.
 - `cogs/staff_ai.py` — Role/owner-restricted historical/live staff-context
   capture, status, search, questions, and scoped summaries.
+- `cogs/knowledge_sources.py` — Manage Discord text channels, whole forum
+  channels, or specific forum posts/threads as public or staff-only live
+  knowledge sources, backfill history, and keep indexed entries current from
+  message create/edit/delete events.
 - `cogs/message_context.py` — Disabled-by-default full-server content capture,
   staff-only search, summaries, user/channel reviews, and timelines.
 - `cogs/staff_notes.py` — Manual private staff records.
@@ -63,7 +67,11 @@ maintenance.
 
 - `utils/ui.py` — Brand colors, status embeds, progress bars, and truncation.
 - `utils/knowledge.py` — Separate cached public and private-staff knowledge
-  loaders, cache reload, and search.
+  loaders, cache reload, and search, including public/staff-filtered live
+  Discord knowledge entries.
+- `utils/live_knowledge.py` — `knowledge_sources` / `knowledge_entries`
+  schema, Discord message/embed/forum formatting, duplicate filtering, AI KB
+  mirroring, and live-source search helpers.
 - `utils/knowledge_manager.py` — Fixed document allowlist, safe UTF-8
   reads/atomic edits, knowledge backups and audit rows, and queued bot-side
   cache reloads for the local dashboard.
@@ -94,7 +102,8 @@ maintenance.
   `ai_usage_logs` schema/logging, cooldown helpers, and normalized result
   objects for future AI commands.
 - `utils/ai_kb.py` — Shared `ai_kb_sources` / `ai_kb_chunks` schema, chunking,
-  keyword search, source upsert/delete, and dashboard/Discord KB helpers.
+  keyword search, source upsert/delete, live-source type support, and
+  dashboard/Discord KB helpers.
 - `utils/settings.py` — Allowlisted, validated runtime settings stored in
   `data.db`, with environment fallback and a non-secret dashboard audit trail.
 - `utils/discord_metadata.py` — Shared SQLite snapshot and fixed dashboard

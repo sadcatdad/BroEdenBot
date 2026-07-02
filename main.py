@@ -11,6 +11,7 @@ from discord.ext import commands
 from config import COLOR, TOKEN
 from utils.ai_kb import initialize_ai_kb_schema_async
 from utils.ai_service import initialize_ai_usage_schema
+from utils.live_knowledge import initialize_live_knowledge_schema
 from utils.settings import initialize_settings_from_env, settings_database_path
 from utils.sqlite import configure_connection
 from utils.ui import error_embed
@@ -128,6 +129,7 @@ class BotClient(commands.Bot):
     async def load_data(self):
         initialize_settings_from_env()
         self.db = await aiosqlite.connect(settings_database_path())
+        self.db.row_factory = aiosqlite.Row
         journal_mode = await configure_connection(
             self.db,
             foreign_keys=True,
@@ -139,6 +141,7 @@ class BotClient(commands.Bot):
             )
         await initialize_ai_usage_schema(self.db)
         await initialize_ai_kb_schema_async(self.db)
+        await initialize_live_knowledge_schema(self.db)
 
     async def close(self):
         try:

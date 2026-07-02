@@ -1,7 +1,12 @@
 import re
+import sqlite3
 from functools import lru_cache
 from pathlib import Path
-from typing import Dict, List, Tuple
+from typing import Dict, Iterable, List, Tuple
+
+from utils.live_knowledge import excerpt_for_terms, score_entry
+from utils.settings import settings_database_path
+from utils.sqlite import configure_sync_connection
 
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
@@ -73,6 +78,12 @@ def compact_knowledge_context(max_chars: int = 18_000) -> str:
     for label, content in load_staff_knowledge().items():
         if content:
             sections.append(f"## {label}\n{content}")
+    for label, content in _load_live_knowledge_sources(
+        visibility="staff",
+        max_sources=30,
+    ).items():
+        if content:
+            sections.append(f"## {label}\n{content}")
     context = "\n\n".join(sections)
     if len(context) <= max_chars:
         return context
@@ -108,12 +119,21 @@ def search_knowledge(
     max_excerpt_chars: int = 700,
 ) -> List[Tuple[str, str, str]]:
     """Search public and staff-only knowledge for private staff tools."""
-    return _search_sources(
+    results = _search_sources(
         load_staff_knowledge(),
         query,
         max_results,
         max_excerpt_chars,
     )
+    results.extend(
+        _search_live_knowledge(
+            query,
+            visibility="staff",
+            max_results=max_results,
+            max_excerpt_chars=max_excerpt_chars,
+        )
+    )
+    return _rank_results(results, query, max_results)
 
 
 def build_staff_knowledge_context(
@@ -175,12 +195,143 @@ def search_server_knowledge(
     max_excerpt_chars: int = 700,
 ) -> List[Tuple[str, str, str]]:
     """Search only the public-safe server knowledge."""
-    return _search_sources(
+    results = _search_sources(
         load_server_knowledge(),
         query,
         max_results,
         max_excerpt_chars,
     )
+    results.extend(
+        _search_live_knowledge(
+            query,
+            visibility="public",
+            max_results=max_results,
+            max_excerpt_chars=max_excerpt_chars,
+        )
+    )
+    return _rank_results(results, query, max_results)
+
+
+def _connect_live_knowledge() -> sqlite3.Connection:
+    connection = sqlite3.connect(settings_database_path(), timeout=30)
+    connection.row_factory = sqlite3.Row
+    return configure_sync_connection(connection)
+
+
+def _live_tables_available(connection: sqlite3.Connection) -> bool:
+    row = connection.execute(
+        """
+        SELECT 1
+        FROM sqlite_master
+        WHERE type = 'table' AND name = 'knowledge_entries'
+        """
+    ).fetchone()
+    return row is not None
+
+
+def _visibility_filter(visibility: str) -> tuple[str, tuple[str, ...]]:
+    if visibility in {"staff", "staff_only"}:
+        return "visibility IN (?, ?)", ("public", "staff_only")
+    return "visibility = ?", ("public",)
+
+
+def _search_live_knowledge(
+    query: str,
+    *,
+    visibility: str,
+    max_results: int,
+    max_excerpt_chars: int,
+) -> List[Tuple[str, str, str]]:
+    terms = _query_terms(query)
+    if not terms:
+        return []
+    clause, values = _visibility_filter(visibility)
+    try:
+        with _connect_live_knowledge() as connection:
+            if not _live_tables_available(connection):
+                return []
+            rows = connection.execute(
+                f"""
+                SELECT
+                    source_channel_id, source_message_id, source_type,
+                    visibility, title, content, indexed_at
+                FROM knowledge_entries
+                WHERE {clause}
+                ORDER BY indexed_at DESC, id DESC
+                LIMIT 300
+                """,
+                values,
+            ).fetchall()
+    except sqlite3.Error:
+        return []
+
+    matches = []
+    for row in rows:
+        score = score_entry(query, row["title"] or "", row["content"] or "")
+        if score <= 0:
+            continue
+        source = (
+            f"Live Discord #{row['source_channel_id']} "
+            f"({row['source_type']})"
+        )
+        heading = row["title"] or "Discord Knowledge"
+        excerpt = excerpt_for_terms(
+            row["content"],
+            terms,
+            limit=max_excerpt_chars,
+        )
+        matches.append((score, source, heading, excerpt))
+    matches.sort(key=lambda item: (-item[0], item[1], item[2]))
+    return [
+        (source, heading, excerpt)
+        for _, source, heading, excerpt in matches[:max_results]
+    ]
+
+
+def _load_live_knowledge_sources(
+    *,
+    visibility: str,
+    max_sources: int,
+) -> Dict[str, str]:
+    clause, values = _visibility_filter(visibility)
+    try:
+        with _connect_live_knowledge() as connection:
+            if not _live_tables_available(connection):
+                return {}
+            rows = connection.execute(
+                f"""
+                SELECT source_channel_id, source_type, title, content
+                FROM knowledge_entries
+                WHERE {clause}
+                ORDER BY indexed_at DESC, id DESC
+                LIMIT ?
+                """,
+                (*values, max_sources),
+            ).fetchall()
+    except sqlite3.Error:
+        return {}
+    sources = {}
+    for row in rows:
+        label = f"Live Discord #{row['source_channel_id']} ({row['source_type']})"
+        heading = row["title"] or "Discord Knowledge"
+        sources[f"{label} — {heading}"] = row["content"]
+    return sources
+
+
+def _rank_results(
+    results: Iterable[Tuple[str, str, str]],
+    query: str,
+    max_results: int,
+) -> List[Tuple[str, str, str]]:
+    ranked = []
+    for source, heading, excerpt in results:
+        ranked.append((score_entry(query, heading, excerpt), source, heading, excerpt))
+    ranked.sort(key=lambda item: (-item[0], item[1], item[2]))
+    return [
+        (source, heading, excerpt)
+        for score, source, heading, excerpt in ranked
+        if score > 0
+    ][:max_results]
 
 
 def _query_terms(query: str) -> List[str]:

@@ -56,12 +56,24 @@ class AIKnowledgeBaseTests(unittest.TestCase):
             visibility="staff",
             raw_text="Internal escalation checklist for staff only.",
         )
+        upsert_kb_source(
+            source_name="staff-source-channel",
+            source_type="staff",
+            visibility="staff_only",
+            raw_text="Private source channel escalation runbook.",
+        )
 
         self.assertEqual(search_kb(query="escalation checklist", visibility="public"), [])
         self.assertEqual(
             search_kb(query="escalation checklist", visibility="staff")[0]["source_name"],
             "staff-note",
         )
+        staff_only_matches = search_kb(
+            query="source channel runbook",
+            visibility="staff",
+        )
+        self.assertEqual(staff_only_matches[0]["source_name"], "staff-source-channel")
+        self.assertEqual(staff_only_matches[0]["source_visibility"], "staff_only")
 
     def test_invalid_values_are_rejected(self):
         with self.assertRaisesRegex(ValueError, "Invalid source type"):

@@ -23,6 +23,7 @@ For a module-by-module architecture and reliability map, see
 | --- | --- |
 | `/ask` | All server members |
 | `/guide search` | All server members |
+| `/knowledge sources add`, `/knowledge sources list`, `/knowledge sources remove`, `/knowledge sources sync` | Administrators or members with **Manage Server** |
 | `/bot help`, `/bot status`, `/bot logs`, `/bot restart`, `/bot deploy` | Users listed in `BOT_OWNER_USER_IDS`; administrators only when `BOT_OWNER_ALLOW_ADMINS=true` |
 | `/ai test`, `/ai status`, `/ai kb` commands | Users listed in `BOT_OWNER_USER_IDS`; administrators only when `BOT_OWNER_ALLOW_ADMINS=true` |
 | `/staffai help`, `/staffai status`, `/staffai ask`, `/staffai search`, `/staffai summarize` | Roles listed in `STAFF_AI_ALLOWED_ROLE_IDS` or users listed in `BOT_OWNER_USER_IDS` |
@@ -230,8 +231,9 @@ events, verification, NSFW access, server features, and support.
 
 `/ask` uses Gemini with only `public` sources in the AI Knowledge Base
 (`ai_kb_sources` and `ai_kb_chunks`). Import public rules, guides, FAQs, role
-guides, or channel guides through `/ai kb import` or the dashboard AI Knowledge
-Base editor.
+guides, or channel guides through `/ai kb import`, the dashboard AI Knowledge
+Base editor, or live Discord knowledge sources configured with
+`/knowledge sources`.
 
 It does not read `staff_notes.py`, staff-note records, ModAI prompts, moderation
 logs, private incident records, imported Discord history, message history,
@@ -260,13 +262,51 @@ channel. Missing `GEMINI_API_KEY` configuration is reported ephemerally.
 ### `/guide search <query>`
 
 Performs a deterministic, case-insensitive search of the public Survival Guide
-and Rules, returning up to three short matching snippets.
+and Rules plus public live Discord knowledge sources, returning up to three
+short matching snippets.
 
 - `query` — Required keywords or topic, from 2 to 200 characters.
 - Responses are ephemeral and available to all server members.
 - A 15-second per-user cooldown limits repeated searches.
 - It does not use Gemini or read staff/private data, imported chat history, or
   activity statistics.
+
+### `/knowledge sources`
+
+Configures Discord text channels, whole forum channels, or individual forum
+posts/threads as live knowledge sources. These commands are private and require
+**Manage Server** or administrator permission. The bot must have **View
+Channel** and **Read Message History** in configured source channels or
+threads. Live updates also require Message Content Intent to be enabled in the
+Discord Developer Portal and requested by the bot.
+
+- `/knowledge sources add <channel> <source_type> <visibility> <sync_mode>` —
+  Add or update a source channel or specific forum post/thread. `source_type`
+  can be `public`, `rules`, `survival_guide`, `channel_index`, `bot_commands`,
+  `vc_guide`, `events`, or `staff`. `visibility` is `public` or `staff_only`.
+  `sync_mode` is `live` for continuous indexing or `manual` for explicit
+  backfills only.
+- `/knowledge sources list` — Show configured channels, type, visibility,
+  sync mode, indexed-entry count, and latest sync/index time.
+- `/knowledge sources remove <channel>` — Remove a source and its indexed
+  entries from the live knowledge tables and mirrored AI KB chunks.
+- `/knowledge sources sync [channel] [limit]` — Backfill existing messages from
+  one source or all enabled sources. `limit` defaults to 200 and can scan up to
+  1,000 messages per source.
+
+Configured sources are stored in `knowledge_sources`; indexed messages are
+stored in `knowledge_entries` and mirrored into `ai_kb_sources` /
+`ai_kb_chunks` as `live-discord:<guild_id>:<message_id>` sources. Text messages
+store message content. Embeds are converted to readable Markdown using title,
+description, and fields. Whole-forum sources index thread/post titles and
+thread messages across the forum; specific forum-post sources index only that
+selected thread. Useful non-image attachment names and URLs are kept; empty
+image-only messages and duplicate normalized content are ignored.
+
+Public `/ask` and `/guide search` only read entries with `visibility=public`.
+Staff-only live sources use `visibility=staff_only` and are available only to
+private staff surfaces such as `/staffai` and ModAI knowledge search. Staff-only
+entries are never returned to member-facing `/ask`.
 
 The Gemini request uses `ASK_MODEL` when configured, otherwise `MODAI_MODEL`,
 and then the built-in default. The fallback follows the same order using
@@ -293,6 +333,9 @@ The shared AI framework lives in `utils/ai_config.py`, `utils/ai_costs.py`,
   confusing answers and improve public KB sources.
 - Editable AI KB source text is stored in `ai_kb_sources`; searchable chunks
   are stored in `ai_kb_chunks`.
+- Live Discord knowledge sources are stored in `knowledge_sources` and
+  `knowledge_entries`, then mirrored into the same AI KB chunk tables for
+  retrieval.
 - General AI prompts and responses are not stored. They are not logged unless
   `AI_LOG_PROMPTS=true` or `AI_LOG_RESPONSES=true`.
 - Reusable cooldown helpers are available for future member and staff AI
@@ -309,8 +352,8 @@ and its chunks.
 
 Phase 1 `/ask` uses only `public` AI KB chunks, sends the top matching context
 through the shared AI router, and refuses to invent an answer when no public KB
-match exists. Staff-only KB chunks are available only to staff tools such as
-context summaries and rulecard drafting.
+match exists. Staff-only KB chunks (`staff` or `staff_only`) are available only
+to staff tools such as context summaries and rulecard drafting.
 
 The framework accepts task types such as `ask_server_guide`,
 `staff_context_user`, `staff_context_channel`, `staff_context_topic`,
