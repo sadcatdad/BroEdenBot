@@ -139,7 +139,7 @@ def get_ai_config() -> AIConfig:
         ),
         token_limits=AITokenLimits(
             max_input_tokens=max(1, _int_env("AI_MAX_INPUT_TOKENS", 12000)),
-            max_output_tokens=max(1, _int_env("AI_MAX_OUTPUT_TOKENS", 1200)),
+            max_output_tokens=max(1, _int_env("AI_MAX_OUTPUT_TOKENS", 2048)),
         ),
         default_temperature=_float_env("AI_DEFAULT_TEMPERATURE", 0.4),
         cooldowns=AICooldowns(
