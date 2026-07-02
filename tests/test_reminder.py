@@ -1,6 +1,6 @@
 import os
 import unittest
-from datetime import timezone
+from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 from unittest.mock import patch
 from zoneinfo import ZoneInfo
@@ -206,6 +206,12 @@ class ReminderDatabaseTests(unittest.IsolatedAsyncioTestCase):
         interaction = FakeCommandInteraction(staff)
         channel = FakeChannel()
 
+        # Use a date comfortably in the future so the command's
+        # "must be in the future" guard does not reject it as the
+        # real-world clock advances past any hard-coded date.
+        future_local = datetime.now(ZoneInfo("America/Chicago")) + timedelta(days=7)
+        future_input = future_local.strftime("%Y-%m-%d %I:%M %p")
+
         with patch.object(reminder.discord, "Member", FakeMember):
             with patch(
                 "cogs.reminder.get_csv_ids_setting",
@@ -216,7 +222,7 @@ class ReminderDatabaseTests(unittest.IsolatedAsyncioTestCase):
                         self.cog,
                         interaction,
                         "Submit the event plan",
-                        "2026-07-01 7:30 PM",
+                        future_input,
                         channel,
                     )
 

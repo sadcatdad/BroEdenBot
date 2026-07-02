@@ -1387,6 +1387,7 @@ updated from the authenticated local dashboard without rewriting `.env`.
 | `DASHBOARD_USERNAME` | Local dashboard login username. |
 | `DASHBOARD_PASSWORD` | Local dashboard login password. Use a unique password. |
 | `DASHBOARD_SECRET_KEY` | Long random key used to sign dashboard sessions. |
+| `DASHBOARD_COOKIE_SECURE` | Set to `true` when the dashboard is served over HTTPS (e.g. behind a TLS reverse proxy) so the session cookie is only sent over secure connections. Leave `false` for plain-HTTP LAN access. |
 | `DASHBOARD_AUTH_MODE` | Set to `discord` to enable Discord OAuth while retaining password fallback. |
 | `DISCORD_OAUTH_CLIENT_ID` | Discord application OAuth2 client ID. |
 | `DISCORD_OAUTH_CLIENT_SECRET` | Discord application OAuth2 client secret. Keep only in `.env`. |
