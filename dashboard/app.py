@@ -184,7 +184,10 @@ app.add_middleware(
     session_cookie="broeden_dashboard_session",
     max_age=60 * 60 * 12,
     same_site="lax",
-    https_only=False,
+    # Set DASHBOARD_COOKIE_SECURE=true when the dashboard is served over HTTPS
+    # (e.g. behind a TLS reverse proxy) so the session cookie is only sent over
+    # secure connections. Defaults to False for plain-HTTP LAN access on the Pi.
+    https_only=env_flag("DASHBOARD_COOKIE_SECURE", default=False),
 )
 app.mount("/static", StaticFiles(directory=DASHBOARD_DIR / "static"), name="static")
 templates = Jinja2Templates(directory=DASHBOARD_DIR / "templates")
