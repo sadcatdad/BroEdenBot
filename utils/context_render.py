@@ -59,9 +59,78 @@ def _strip_json_code_fences(text: str) -> str:
     return stripped.strip()
 
 
+def _salvage_truncated_json_object(cleaned: str) -> Optional[dict[str, object]]:
+    """Best-effort recovery of a JSON object that was cut off before it finished
+    (e.g. the model hit its output-token limit mid-write). Keeps every complete
+    top-level key/value pair and discards the trailing incomplete one, so a
+    truncated summary still renders as a structured embed (missing fields simply
+    show as empty) instead of dumping raw JSON. Returns None if nothing usable
+    can be recovered."""
+    start = cleaned.find("{")
+    if start == -1:
+        return None
+    text = cleaned[start:]
+    depth = 0
+    in_string = False
+    escaped = False
+    closers: list[str] = []
+    last_complete = None  # index just past the last complete top-level value
+    for index, char in enumerate(text):
+        if in_string:
+            if escaped:
+                escaped = False
+            elif char == "\\":
+                escaped = True
+            elif char == '"':
+                in_string = False
+            continue
+        if char == '"':
+            in_string = True
+        elif char in "{[":
+            depth += 1
+            closers.append("}" if char == "{" else "]")
+        elif char in "}]":
+            depth -= 1
+            if closers:
+                closers.pop()
+            if depth == 1:
+                last_complete = index + 1
+            elif depth == 0:
+                last_complete = index + 1
+                break
+        elif char == "," and depth == 1:
+            last_complete = index
+
+    candidates = []
+    # Attempt 1: close the currently-open string (if any) plus every open
+    # bracket. Recovers the most content, including a partial trailing value
+    # such as a summary string that was cut mid-sentence.
+    repaired = text + ('"' if in_string else "") + "".join(reversed(closers))
+    candidates.append(repaired)
+    # Attempt 2: drop the trailing incomplete pair and keep only the top-level
+    # key/value pairs that finished cleanly. Handles truncation after a key's
+    # colon or inside a non-string value, where closing brackets alone fails.
+    if last_complete is not None:
+        trimmed = text[:last_complete].rstrip().rstrip(",")
+        if not trimmed.endswith("}"):
+            trimmed += "}"
+        candidates.append(trimmed)
+
+    best: Optional[dict[str, object]] = None
+    for candidate in candidates:
+        try:
+            recovered = json.loads(candidate)
+        except (json.JSONDecodeError, TypeError):
+            continue
+        if isinstance(recovered, dict) and (best is None or len(recovered) > len(best)):
+            best = recovered
+    return best
+
+
 def parse_ai_json_response(text: str) -> dict[str, object]:
     """Parse a JSON object out of an AI response, tolerating code fences and
-    leading/trailing prose. Raises ValueError if no JSON object is found."""
+    leading/trailing prose. Falls back to recovering a truncated object before
+    giving up. Raises ValueError if no JSON object can be recovered."""
     cleaned = _strip_json_code_fences(text)
     try:
         result = json.loads(cleaned)
@@ -69,6 +138,12 @@ def parse_ai_json_response(text: str) -> dict[str, object]:
         result = None
     if isinstance(result, dict):
         return result
+    # Recover a truncated or trailing-prose top-level object before the
+    # promiscuous brace scan below, so we return the real (outer) object rather
+    # than a complete nested fragment (e.g. one messageReferences entry).
+    salvaged = _salvage_truncated_json_object(cleaned)
+    if salvaged is not None:
+        return salvaged
     decoder = json.JSONDecoder()
     for match in re.finditer(r"\{", cleaned):
         try:
