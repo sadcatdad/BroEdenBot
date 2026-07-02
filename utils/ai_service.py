@@ -350,6 +350,7 @@ async def generate_ai_response(
     requested_tier: str = "default",
     max_output_tokens: Optional[int] = None,
     temperature: Optional[float] = None,
+    response_schema: Optional[dict[str, object]] = None,
     user_id: Optional[object] = None,
     guild_id: Optional[object] = None,
     channel_id: Optional[object] = None,
@@ -468,6 +469,9 @@ async def generate_ai_response(
         }
         if system_instruction:
             config_kwargs["system_instruction"] = str(system_instruction)
+        if response_schema is not None:
+            config_kwargs["response_mime_type"] = "application/json"
+            config_kwargs["response_schema"] = response_schema
         if "gemini-2.5" in model.casefold():
             config_kwargs["thinking_config"] = types.ThinkingConfig(
                 thinking_budget=0

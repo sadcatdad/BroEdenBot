@@ -23,6 +23,14 @@ from utils.ai_service import (
     generate_ai_response,
     set_ai_cooldown,
 )
+from utils.context_render import (
+    build_channel_context_embed,
+    build_fallback_context_embed,
+    build_user_context_embed,
+    format_timeframe,
+    parse_ai_json_response,
+    truncate_embed,
+)
 from utils.message_context import (
     MESSAGE_CONTEXT_FTS_SQL,
     MESSAGE_CONTEXT_FTS_TRIGGER_SQL,
@@ -75,6 +83,101 @@ Cite channel names and date/time ranges. Never invent events, intent, speakers,
 or moderation concerns. If context is insufficient, say so. Public /ask does
 not use this context.
 """.strip()
+
+JSON_FORMAT_RULES = """
+Formatting rules for the JSON response:
+- Return valid JSON only, matching the schema exactly. No prose outside the
+  JSON object and no markdown code fences.
+- Do not use markdown headings, "###", or bold "**"/"__" text anywhere in the
+  JSON string values.
+- Keep every bullet string under 180 characters.
+- Avoid long lists of channel mentions; use plain channel names (no <#id>
+  syntax) unless only 1-2 channels are relevant to a bullet.
+- Summarize observable behavior only. Do not diagnose, psychoanalyze, or
+  speculate about motives, mental health, or protected traits.
+- Do not include explicit sexual detail; summarize NSFW-topic participation at
+  a high level only (e.g. "participated in NSFW-topic channels").
+- Keep staff-relevant/concern fields factual and neutral, never accusatory.
+- Prefer concise summaries (roughly 3-5 bullets per list) over exhaustive
+  lists.
+- messageReferences: include at most 5 of the most representative messages.
+  Each "timestamp" must be copied exactly from the source archived message
+  data (ISO 8601), not reworded. Each "jumpUrl" must be copied exactly from
+  the source data if one was present there, or omitted entirely — never
+  invent a jumpUrl.
+- If a list section has nothing noteworthy, return an empty array rather than
+  a placeholder string.
+""".strip()
+
+USER_CONTEXT_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "summary": {"type": "string"},
+        "activityOverview": {"type": "array", "items": {"type": "string"}},
+        "positiveContributions": {"type": "array", "items": {"type": "string"}},
+        "staffRelevantConcerns": {"type": "array", "items": {"type": "string"}},
+        "recurringPatterns": {"type": "array", "items": {"type": "string"}},
+        "messageReferences": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "label": {"type": "string"},
+                    "timestamp": {"type": "string"},
+                    "channelName": {"type": "string"},
+                    "jumpUrl": {"type": "string"},
+                },
+                "required": ["label", "timestamp", "channelName"],
+            },
+        },
+        "suggestedFollowUp": {"type": "array", "items": {"type": "string"}},
+        "limitations": {"type": "string"},
+    },
+    "required": [
+        "summary",
+        "activityOverview",
+        "positiveContributions",
+        "staffRelevantConcerns",
+        "recurringPatterns",
+        "messageReferences",
+        "suggestedFollowUp",
+        "limitations",
+    ],
+}
+
+CHANNEL_CONTEXT_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "summary": {"type": "string"},
+        "mainTopics": {"type": "array", "items": {"type": "string"}},
+        "membersInvolved": {"type": "array", "items": {"type": "string"}},
+        "potentialConcerns": {"type": "array", "items": {"type": "string"}},
+        "messageReferences": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "label": {"type": "string"},
+                    "timestamp": {"type": "string"},
+                    "author": {"type": "string"},
+                    "jumpUrl": {"type": "string"},
+                },
+                "required": ["label", "timestamp", "author"],
+            },
+        },
+        "suggestedFollowUp": {"type": "array", "items": {"type": "string"}},
+        "limitations": {"type": "string"},
+    },
+    "required": [
+        "summary",
+        "mainTopics",
+        "membersInvolved",
+        "potentialConcerns",
+        "messageReferences",
+        "suggestedFollowUp",
+        "limitations",
+    ],
+}
 
 
 class MessageContext(commands.Cog):
@@ -810,6 +913,172 @@ final Source coverage section. Do not overclaim.
             allowed_mentions=discord.AllowedMentions.none(),
         )
 
+    async def _synthesize_structured(
+        self,
+        rows: list[aiosqlite.Row],
+        *,
+        task: str,
+        request: str,
+        schema: dict,
+        include_links: bool,
+        interaction: discord.Interaction,
+        source_command: str,
+        task_type: str,
+        max_output_tokens: int = 1_300,
+    ) -> tuple[Optional[dict], str]:
+        """Runs the same chunked-recap pipeline as `_synthesize`, but asks for
+        a structured JSON object on the final call. Returns
+        (parsed_json_or_None, raw_text) — callers fall back to raw_text if
+        parsing fails so a malformed response never crashes the command."""
+        chunks = self._chunks(rows, include_links=include_links)
+        partials = []
+        for number, chunk in enumerate(chunks, start=1):
+            result = await generate_ai_response(
+                task_type=task_type,
+                prompt=f"""
+Task: Create an evidence-based intermediate recap for {task}.
+Request: {request}
+Chunk: {number} of {len(chunks)}
+
+<archived_messages>
+{chunk}
+</archived_messages>
+
+Capture key events, initiators only when clear, channel and time references,
+topic shifts, escalation or de-escalation, possible moderation concerns,
+unresolved questions, and uncertainty. Do not quote long passages. Preserve
+the exact ISO timestamp, channel name/author, and Jump URL (if present) for up
+to 3 of the most noteworthy messages so they can be cited precisely later.
+""".strip(),
+                system_instruction=SYSTEM_INSTRUCTION,
+                requested_tier="default",
+                max_output_tokens=max_output_tokens,
+                temperature=0.2,
+                user_id=interaction.user.id,
+                guild_id=interaction.guild_id,
+                channel_id=interaction.channel_id,
+                source_command=source_command,
+                db=getattr(self.bot, "db", None),
+            )
+            if not result.ok or not result.text:
+                raise RuntimeError(result.error or "AI summary failed.")
+            partials.append(result.text)
+        combined = "\n\n--- CHUNK ---\n\n".join(partials)
+        coverage = self._coverage(rows)
+        result = await generate_ai_response(
+            task_type=task_type,
+            prompt=f"""
+Task: {task}
+Request: {request}
+Coverage: {coverage}
+
+<intermediate_recaps>
+{combined}
+</intermediate_recaps>
+
+Return a single JSON object that matches the required schema exactly.
+
+{JSON_FORMAT_RULES}
+""".strip(),
+            system_instruction=SYSTEM_INSTRUCTION,
+            requested_tier="default",
+            max_output_tokens=max_output_tokens,
+            temperature=0.2,
+            response_schema=schema,
+            user_id=interaction.user.id,
+            guild_id=interaction.guild_id,
+            channel_id=interaction.channel_id,
+            source_command=source_command,
+            db=getattr(self.bot, "db", None),
+        )
+        if not result.ok or not result.text:
+            raise RuntimeError(result.error or "AI summary failed.")
+        try:
+            parsed = parse_ai_json_response(result.text)
+        except ValueError:
+            logger.warning(
+                "Message-context structured JSON parse failed for %s",
+                source_command,
+            )
+            return None, result.text
+        return parsed, result.text
+
+    async def _send_structured_analysis(
+        self,
+        interaction: discord.Interaction,
+        rows: list[aiosqlite.Row],
+        *,
+        kind: Literal["user", "channel"],
+        title: str,
+        task: str,
+        request: str,
+        schema: dict,
+        timeframe_text: str,
+        include_links: bool = True,
+        source_command: str,
+        task_type: str,
+        max_output_tokens: int = 1_300,
+        empty_message: str = "No stored messages matched that scope.",
+    ) -> None:
+        if not rows:
+            await interaction.followup.send(empty_message, ephemeral=True)
+            return
+        try:
+            parsed, raw_text = await asyncio.wait_for(
+                self._synthesize_structured(
+                    rows,
+                    task=task,
+                    request=request,
+                    schema=schema,
+                    include_links=include_links,
+                    interaction=interaction,
+                    source_command=source_command,
+                    task_type=task_type,
+                    max_output_tokens=max_output_tokens,
+                ),
+                timeout=120,
+            )
+        except Exception as exc:
+            logger.exception("Message-context structured synthesis failed")
+            message = AI_BUDGET_MESSAGE if str(exc) == AI_BUDGET_MESSAGE else (
+                "The private summary could not be generated right now."
+            )
+            await interaction.followup.send(message, ephemeral=True)
+            return
+
+        metadata = {"title": title, "timeframe_text": timeframe_text}
+        if parsed is not None:
+            try:
+                embed = (
+                    build_user_context_embed(parsed, metadata)
+                    if kind == "user"
+                    else build_channel_context_embed(parsed, metadata)
+                )
+            except Exception:
+                logger.exception(
+                    "Message-context embed build failed; using fallback"
+                )
+                embed = build_fallback_context_embed(title, raw_text, metadata)
+        else:
+            embed = build_fallback_context_embed(title, raw_text, metadata)
+
+        if len(rows) >= MAX_RETRIEVAL_ROWS:
+            embed.add_field(
+                name="Note",
+                value=(
+                    f"Retrieval was capped at {MAX_RETRIEVAL_ROWS} messages; "
+                    "narrow the timeframe for finer detail."
+                ),
+                inline=False,
+            )
+            embed = truncate_embed(embed)
+
+        await interaction.followup.send(
+            embed=embed,
+            ephemeral=True,
+            allowed_mentions=discord.AllowedMentions.none(),
+        )
+
     @context.command(name="help", description="Show private archive command help")
     @app_commands.guild_only()
     async def context_help(self, interaction: discord.Interaction) -> None:
@@ -1149,23 +1418,29 @@ final Source coverage section. Do not overclaim.
             include_bots=include_bots,
             max_messages=max_messages,
         )
-        await self._send_analysis(
+        timeframe_text = format_timeframe(
+            after_value, utcnow_iso(), len(rows)
+        )
+        await self._send_structured_analysis(
             interaction,
             rows,
-            title="User Context",
+            kind="user",
+            title=f"User Context: {user.display_name}",
             task=(
-                "Produce a staff-only user context summary with sections: User "
-                "Activity Overview, Positive/Constructive Contributions, "
-                "Staff-Relevant Concerns, Recurring Patterns, Useful Message "
-                "References, Suggested Staff Follow-up, Confidence / Limitations. "
-                "Summarize observable behavior only. Do not infer motives, mental "
-                "health, protected traits, or recommend automatic punishment."
+                "Produce a staff-only user context summary covering activity "
+                "overview, positive/constructive contributions, staff-relevant "
+                "concerns, recurring patterns, useful message references, and "
+                "suggested staff follow-up. Summarize observable behavior only. "
+                "Do not infer motives, mental health, protected traits, or "
+                "recommend automatic punishment."
             ),
             request=(
                 f"user={user.display_name} ({user.id}); timeframe={timeframe}; "
                 f"channel={channel.name if channel else 'all'}; "
                 f"include_bots={include_bots}; max_messages={max_messages}"
             ),
+            schema=USER_CONTEXT_SCHEMA,
+            timeframe_text=timeframe_text,
             source_command="/context user",
             task_type="staff_context_user",
             max_output_tokens=1_300,
@@ -1212,23 +1487,28 @@ final Source coverage section. Do not overclaim.
             include_bots=include_bots,
             max_messages=max_messages,
         )
-        await self._send_analysis(
+        timeframe_text = format_timeframe(
+            after_value, utcnow_iso(), len(rows)
+        )
+        await self._send_structured_analysis(
             interaction,
             rows,
+            kind="channel",
             title=f"Channel Context: #{channel.name}",
             task=(
-                "Produce a staff-only channel context summary with sections: "
-                "Summary, Main Topics, Members Involved, Potential Concerns, "
-                "Useful Message References, Suggested Staff Follow-up, Confidence "
-                "/ Limitations. Summarize observable behavior only. Separate facts "
-                "from uncertainty, avoid long quotes, and do not recommend "
-                "automatic punishment."
+                "Produce a staff-only channel context summary covering main "
+                "topics, members involved, potential concerns, useful message "
+                "references, and suggested staff follow-up. Summarize observable "
+                "behavior only. Separate facts from uncertainty, avoid long "
+                "quotes, and do not recommend automatic punishment."
             ),
             request=(
                 f"channel=#{channel.name} ({channel.id}); timeframe={timeframe}; "
                 f"topic={topic or 'all'}; include_bots={include_bots}; "
                 f"max_messages={max_messages}"
             ),
+            schema=CHANNEL_CONTEXT_SCHEMA,
+            timeframe_text=timeframe_text,
             source_command="/context channel",
             task_type="staff_context_channel",
             max_output_tokens=1_300,
