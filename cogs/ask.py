@@ -3,7 +3,9 @@ import logging
 import os
 import re
 import time
+from typing import Optional
 
+import aiosqlite
 import discord
 from discord import app_commands
 from discord.ext import commands
@@ -18,7 +20,8 @@ from utils.ai_service import (
     generate_ai_response,
     set_ai_cooldown,
 )
-from utils.knowledge import build_public_ask_context, search_server_knowledge
+from utils.ask_feedback import create_ask_feedback, record_ask_feedback
+from utils.knowledge import search_server_knowledge
 from utils.settings import get_csv_ids_setting, get_int_setting
 from utils.ui import SUCCESS_COLOR, branded_embed
 
@@ -163,11 +166,35 @@ def _guide_keywords(question: str) -> str:
     return " ".join(keywords[:5])
 
 
+def _feedback_sources(chunks: list[dict[str, object]]) -> list[dict[str, object]]:
+    sources = []
+    for chunk in chunks[:6]:
+        sources.append(
+            {
+                "chunk_id": chunk.get("id"),
+                "source_name": chunk.get("source_name"),
+                "section_title": chunk.get("section_title") or "General",
+                "chunk_index": chunk.get("chunk_index"),
+                "score": chunk.get("score"),
+            }
+        )
+    return sources
+
+
 class AskResponseView(discord.ui.View):
-    def __init__(self, owner_id: int, question: str):
+    def __init__(
+        self,
+        owner_id: int,
+        question: str,
+        *,
+        db: Optional[aiosqlite.Connection] = None,
+        feedback_id: Optional[int] = None,
+    ):
         super().__init__(timeout=15 * 60)
         self.owner_id = owner_id
         self.keywords = _guide_keywords(question)
+        self.db = db
+        self.feedback_id = feedback_id
 
     async def interaction_check(self, interaction: discord.Interaction) -> bool:
         if interaction.user.id == self.owner_id:
@@ -209,6 +236,29 @@ class AskResponseView(discord.ui.View):
             suggestion += f"\nSuggested query: `{self.keywords}`"
         await interaction.response.send_message(suggestion, ephemeral=True)
 
+    def _mark_feedback_used(self) -> None:
+        for child in self.children:
+            if isinstance(child, discord.ui.Button) and child.label in {
+                "This Helped",
+                "Still Confused",
+                "Marked Helpful",
+                "Ticket Suggested",
+            }:
+                child.disabled = True
+
+    async def _record_feedback(self, feedback: str) -> None:
+        try:
+            stored = await record_ask_feedback(
+                self.db,
+                self.feedback_id,
+                feedback,
+            )
+        except Exception:
+            logger.exception("Failed to store /ask feedback")
+            return
+        if not stored and self.feedback_id is not None:
+            logger.warning("/ask feedback row was not found: id=%s", self.feedback_id)
+
     @discord.ui.button(
         label="This Helped",
         emoji="✅",
@@ -219,7 +269,11 @@ class AskResponseView(discord.ui.View):
         interaction: discord.Interaction,
         button: discord.ui.Button,
     ) -> None:
-        await interaction.response.send_message("Glad it helped!", ephemeral=True)
+        button.label = "Marked Helpful"
+        self._mark_feedback_used()
+        await interaction.response.edit_message(view=self)
+        await self._record_feedback("helped")
+        await interaction.followup.send("Glad it helped!", ephemeral=True)
 
     @discord.ui.button(
         label="Still Confused",
@@ -231,7 +285,11 @@ class AskResponseView(discord.ui.View):
         interaction: discord.Interaction,
         button: discord.ui.Button,
     ) -> None:
-        await interaction.response.send_message(
+        button.label = "Ticket Suggested"
+        self._mark_feedback_used()
+        await interaction.response.edit_message(view=self)
+        await self._record_feedback("confused")
+        await interaction.followup.send(
             f"No worries. Please submit a ticket in {SUPPORT_CHANNEL} "
             "so staff can help directly.",
             ephemeral=True,
@@ -359,6 +417,8 @@ Keep the tone friendly, concise, and helpful. Return one short paragraph and
 optionally 2-4 bullets. Mention relevant Discord channel links only when they
 appear in the provided context. When support is appropriate, end with:
 "If you still need help, please submit a ticket in {SUPPORT_CHANNEL}."
+Do not include source labels, source citations, or a "Source:" section in the
+member-facing answer.
 
 PUBLIC AI KNOWLEDGE BASE CONTEXT:
 <public_kb_context>
@@ -480,26 +540,32 @@ MEMBER QUESTION:
                 allowed_mentions=discord.AllowedMentions.none(),
             )
             return
-        source_lines = []
-        seen_sources = set()
-        for chunk in chunks:
-            label = f"{chunk['source_name']} / {chunk.get('section_title') or 'General'}"
-            if label in seen_sources:
-                continue
-            seen_sources.add(label)
-            source_lines.append(label)
-            if len(source_lines) >= 3:
-                break
-        answer = (
-            f"{result.text.strip()}\n\n"
-            f"Source: {'; '.join(source_lines)}\n"
-            f"For anything unclear, open a support ticket in {SUPPORT_CHANNEL} "
-            "or ask staff."
-        )
+        answer = result.text.strip()
+        db = getattr(self.bot, "db", None)
+        feedback_id = None
+        try:
+            feedback_id = await create_ask_feedback(
+                db,
+                guild_id=interaction.guild_id,
+                channel_id=interaction.channel_id,
+                user_id=interaction.user.id,
+                question=question,
+                answer=answer,
+                kb_sources=_feedback_sources(chunks),
+                model_used=result.model_used,
+                tier_used=result.tier_used,
+            )
+        except Exception:
+            logger.exception("Failed to create /ask feedback row")
 
         await interaction.followup.send(
             embed=_format_public_response(question, answer),
-            view=AskResponseView(interaction.user.id, question),
+            view=AskResponseView(
+                interaction.user.id,
+                question,
+                db=db,
+                feedback_id=feedback_id,
+            ),
             ephemeral=True,
             allowed_mentions=discord.AllowedMentions.none(),
         )

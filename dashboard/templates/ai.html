@@ -36,6 +36,11 @@
     <p class="metric">{{ ai.kb_status.total_sources }}</p>
     <p class="muted">{{ ai.kb_status.public_chunks }} public chunks · {{ ai.kb_status.staff_chunks }} staff chunks</p>
   </article>
+  <article class="card">
+    <p class="label">/ask feedback</p>
+    <p class="metric">{{ ai.ask_feedback.confused }}</p>
+    <p class="muted">{{ ai.ask_feedback.helped }} helpful · {{ ai.ask_feedback.unmarked }} unmarked</p>
+  </article>
   {% for command in ["/ask", "/context channel", "/context user", "/rulecard draft"] %}
   {% set usage = (ai.command_usage | selectattr("source_command", "equalto", command) | list | first) %}
   <article class="card">
@@ -44,6 +49,58 @@
     <p class="muted">Month: {{ usage.month_count if usage else 0 }} · ${{ "{:.4f}".format(usage.month_cost if usage else 0) }}</p>
   </article>
   {% endfor %}
+</section>
+
+<section class="card">
+  <div class="section-heading">
+    <div>
+      <p class="eyebrow">Member feedback</p>
+      <h2>Recent /ask Feedback</h2>
+    </div>
+    <a class="button secondary" href="{{ url_for('ai_kb_page') }}">Edit KB</a>
+  </div>
+  <div class="table-wrap">
+    <table>
+      <thead>
+        <tr>
+          <th>Feedback</th>
+          <th>Question</th>
+          <th>Answer</th>
+          <th>KB matches</th>
+          <th>User</th>
+          <th>Time</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for row in ai.ask_feedback.recent %}
+        <tr>
+          <td>
+            {% if row.feedback == "confused" %}
+              <span class="badge status-failed">confused</span>
+            {% elif row.feedback == "helped" %}
+              <span class="badge status-active">helped</span>
+            {% else %}
+              <span class="badge status-empty">unmarked</span>
+            {% endif %}
+          </td>
+          <td>{{ row.question }}</td>
+          <td>{{ row.answer }}</td>
+          <td>
+            {% for source in row.kb_sources[:3] %}
+              <div>{{ source.source_name or "unknown" }}{% if source.section_title %} / {{ source.section_title }}{% endif %}</div>
+            {% else %}
+              <span class="muted">No sources recorded</span>
+            {% endfor %}
+          </td>
+          <td>{{ row.user_id or "unknown" }}</td>
+          <td>{{ row.feedback_at or row.created_at }}</td>
+        </tr>
+        {% else %}
+        <tr><td colspan="6" class="muted">No /ask feedback has been recorded yet.</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
 </section>
 
 <section class="two-column operations-columns">

@@ -189,7 +189,61 @@ class DashboardRouteTests(unittest.TestCase):
         self.assertIn("AI Framework", response.text)
         self.assertIn("AI settings are currently managed through .env.", response.text)
         self.assertIn("No AI usage logs found.", response.text)
+        self.assertIn("No /ask feedback has been recorded yet.", response.text)
         self.assertNotIn("gemini-super-secret-value", response.text)
+
+    def test_ai_dashboard_shows_ask_feedback(self):
+        connection = sqlite3.connect(self.database)
+        connection.execute(
+            """
+            CREATE TABLE ask_feedback (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                guild_id TEXT,
+                channel_id TEXT,
+                user_id TEXT,
+                question TEXT NOT NULL,
+                answer TEXT NOT NULL,
+                feedback TEXT,
+                feedback_at TEXT,
+                kb_sources_json TEXT NOT NULL DEFAULT '[]',
+                model_used TEXT,
+                tier_used TEXT
+            )
+            """
+        )
+        connection.execute(
+            """
+            INSERT INTO ask_feedback (
+                created_at, updated_at, user_id, question, answer, feedback,
+                feedback_at, kb_sources_json, model_used, tier_used
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                "2099-01-01T00:00:00",
+                "2099-01-01T00:00:00",
+                "123",
+                "where is server info?",
+                "Use the guide channel.",
+                "confused",
+                "2099-01-01T00:01:00",
+                '[{"source_name": "Public Channel Index", "section_title": "Guides"}]',
+                "gemini-2.5-flash",
+                "default",
+            ),
+        )
+        connection.commit()
+        connection.close()
+
+        self.login()
+        response = self.client.get("/ai")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertIn("Recent /ask Feedback", response.text)
+        self.assertIn("where is server info?", response.text)
+        self.assertIn("Public Channel Index", response.text)
+        self.assertIn("confused", response.text)
 
     def test_ai_dashboard_can_be_hidden_by_env(self):
         self.login()
@@ -410,6 +464,63 @@ class DashboardDatabaseTests(unittest.TestCase):
             self.assertTrue(result["tables_found"])
             self.assertEqual(result["recent_logs"][0]["source_command"], "/ai test")
             self.assertEqual(result["recent_logs"][0]["user_id"], "123")
+
+    def test_ai_usage_overview_reads_ask_feedback_without_usage_logs(self):
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            database = Path(temporary_directory) / "data.db"
+            connection = sqlite3.connect(database)
+            connection.execute(
+                """
+                CREATE TABLE ask_feedback (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    guild_id TEXT,
+                    channel_id TEXT,
+                    user_id TEXT,
+                    question TEXT NOT NULL,
+                    answer TEXT NOT NULL,
+                    feedback TEXT,
+                    feedback_at TEXT,
+                    kb_sources_json TEXT NOT NULL DEFAULT '[]',
+                    model_used TEXT,
+                    tier_used TEXT
+                )
+                """
+            )
+            connection.execute(
+                """
+                INSERT INTO ask_feedback (
+                    created_at, updated_at, user_id, question, answer, feedback,
+                    feedback_at, kb_sources_json, model_used, tier_used
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    "2099-01-01T00:00:00",
+                    "2099-01-01T00:00:00",
+                    "123",
+                    "where is support?",
+                    "Open a ticket.",
+                    "helped",
+                    "2099-01-01T00:01:00",
+                    '[{"source_name": "FAQ"}]',
+                    "gemini-2.5-flash",
+                    "default",
+                ),
+            )
+            connection.commit()
+            connection.close()
+
+            with patch.dict(os.environ, {"DATABASE_PATH": str(database)}):
+                result = ai_usage_overview()
+
+            self.assertFalse(result["tables_found"])
+            self.assertTrue(result["ask_feedback"]["tables_found"])
+            self.assertEqual(result["ask_feedback"]["helped"], 1)
+            self.assertEqual(
+                result["ask_feedback"]["recent"][0]["kb_sources"][0]["source_name"],
+                "FAQ",
+            )
 
     def test_vcxp_overview_summarizes_role_and_pulse_state(self):
         with tempfile.TemporaryDirectory() as temporary_directory:

@@ -206,7 +206,8 @@ events, verification, NSFW access, server features, and support.
 - Successful responses are ephemeral by default and visible only to the member
   who used `/ask`.
 - The private response is a compact green embed with the submitted question and
-  answer in one description:
+  answer in one description. It does not append raw retrieval source names to
+  the member-facing answer:
 
   ```text
   **Question:**
@@ -222,6 +223,10 @@ events, verification, NSFW access, server features, and support.
   redirects are also shown ephemerally.
 - Successful answers include `Open Ticket`, `Search Guide`, `This Helped`, and
   `Still Confused` buttons. Only the member who ran `/ask` can use them.
+  `This Helped` and `Still Confused` acknowledge the member privately and then
+  disable the feedback buttons on that response. The selection is stored
+  locally for dashboard review; it does not publish feedback, alert staff, or
+  retrain Gemini.
 
 `/ask` uses Gemini with only `public` sources in the AI Knowledge Base
 (`ai_kb_sources` and `ai_kb_chunks`). Import public rules, guides, FAQs, role
@@ -230,8 +235,10 @@ Base editor.
 
 It does not read `staff_notes.py`, staff-note records, ModAI prompts, moderation
 logs, private incident records, imported Discord history, message history,
-member activity stats, or other private data. It does not store member
-questions or Gemini responses.
+member activity stats, or other private data. Successful member-facing answers
+create a local `ask_feedback` row with the member ID, question, answer, matched
+public KB chunks, model metadata, and later `helped`/`confused` button choice.
+This review data is used to improve the public Knowledge Base manually.
 
 The prompt requires Gemini to stay grounded in the retrieved public KB chunks,
 avoid inventing policies or permissions, and keep replies concise. When no
@@ -282,9 +289,11 @@ The shared AI framework lives in `utils/ai_config.py`, `utils/ai_costs.py`,
   configured output limit.
 - Usage is logged to `ai_usage_logs` with metadata, token counts, estimated
   cost, success/failure, and budget-block state.
+- `/ask` feedback is stored in `ask_feedback` so dashboard admins can review
+  confusing answers and improve public KB sources.
 - Editable AI KB source text is stored in `ai_kb_sources`; searchable chunks
   are stored in `ai_kb_chunks`.
-- Prompts and responses are not stored. They are not logged unless
+- General AI prompts and responses are not stored. They are not logged unless
   `AI_LOG_PROMPTS=true` or `AI_LOG_RESPONSES=true`.
 - Reusable cooldown helpers are available for future member and staff AI
   commands.
@@ -1436,8 +1445,10 @@ is false. The AI tab links to the AI Knowledge Base editor where dashboard
 admins can create, edit, search, and delete `public` or `staff` KB sources in
 `ai_kb_sources` and `ai_kb_chunks`. Paste/edit textareas support markdown or
 plain text up to 2 MB per source; dashboard file upload is intentionally not
-enabled in Phase 1. Stats Graphics lives under Analytics. Knowledge Base,
-Imports, and Dashboard Users live under Settings. The older `/stats`, `/knowledge`,
+enabled in Phase 1. The AI tab also shows recent `/ask` feedback, prioritizing
+`Still Confused` selections alongside the question, answer, and matched public
+KB chunks. Stats Graphics lives under Analytics. Knowledge Base, Imports, and
+Dashboard Users live under Settings. The older `/stats`, `/knowledge`,
 `/imports`, and `/users` links redirect to their new locations so existing
 bookmarks remain usable.
 

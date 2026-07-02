@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import json
 import sqlite3
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -430,6 +431,14 @@ def ai_usage_overview(
         "top_commands_by_cost": [],
         "recent_failures": [],
         "recent_budget_blocks": [],
+        "ask_feedback": {
+            "tables_found": False,
+            "total": 0,
+            "helped": 0,
+            "confused": 0,
+            "unmarked": 0,
+            "recent": [],
+        },
         "kb_status": get_kb_status(),
         "filters": {
             "command": command,
@@ -444,6 +453,51 @@ def ai_usage_overview(
     try:
         with readonly_connection(path) as connection:
             if "ai_usage_logs" not in table_names(connection):
+                usage_tables_found = False
+            else:
+                usage_tables_found = True
+            if "ask_feedback" in table_names(connection):
+                result["ask_feedback"]["tables_found"] = True
+                totals = connection.execute(
+                    """
+                    SELECT
+                        COUNT(*) AS total,
+                        SUM(CASE WHEN feedback = 'helped' THEN 1 ELSE 0 END) AS helped,
+                        SUM(CASE WHEN feedback = 'confused' THEN 1 ELSE 0 END) AS confused,
+                        SUM(CASE WHEN feedback IS NULL OR feedback = '' THEN 1 ELSE 0 END)
+                            AS unmarked
+                    FROM ask_feedback
+                    """
+                ).fetchone()
+                if totals is not None:
+                    result["ask_feedback"]["total"] = int(totals["total"] or 0)
+                    result["ask_feedback"]["helped"] = int(totals["helped"] or 0)
+                    result["ask_feedback"]["confused"] = int(totals["confused"] or 0)
+                    result["ask_feedback"]["unmarked"] = int(totals["unmarked"] or 0)
+                recent_feedback = []
+                for row in connection.execute(
+                    """
+                    SELECT
+                        created_at, feedback_at, feedback, user_id, channel_id,
+                        SUBSTR(question, 1, 240) AS question,
+                        SUBSTR(answer, 1, 420) AS answer,
+                        kb_sources_json, model_used
+                    FROM ask_feedback
+                    ORDER BY
+                        CASE WHEN feedback = 'confused' THEN 0 ELSE 1 END,
+                        COALESCE(feedback_at, updated_at, created_at) DESC,
+                        id DESC
+                    LIMIT 12
+                    """
+                ).fetchall():
+                    item = dict(row)
+                    try:
+                        item["kb_sources"] = json.loads(item.pop("kb_sources_json") or "[]")
+                    except (TypeError, ValueError, json.JSONDecodeError):
+                        item["kb_sources"] = []
+                    recent_feedback.append(item)
+                result["ask_feedback"]["recent"] = recent_feedback
+            if not usage_tables_found:
                 return result
             result["tables_found"] = True
             day_prefix = _current_day_prefix()

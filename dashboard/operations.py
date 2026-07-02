@@ -268,6 +268,7 @@ def operations_database_status() -> dict[str, Any]:
             "bot_settings",
             "bot_settings_audit",
             "ai_usage_logs",
+            "ask_feedback",
             "ai_kb_sources",
             "ai_kb_chunks",
             "stats_activity_imports",
