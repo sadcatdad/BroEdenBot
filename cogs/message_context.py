@@ -7,6 +7,7 @@ import datetime as dt
 import json
 import logging
 import os
+import re
 from pathlib import Path
 from typing import Literal, Optional, Union
 
@@ -58,9 +59,14 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_MODEL = "gemini-2.5-flash"
 DEFAULT_FALLBACK_MODEL = "gemini-2.0-flash"
 MAX_RETRIEVAL_ROWS = 600
-MAX_GEMINI_ROWS_PER_CHUNK = 80
+MAX_GEMINI_ROWS_PER_CHUNK = 150
 MAX_CHUNK_CHARS = 24_000
 MAX_OUTPUT_CHARS = 3_900
+TRANSCRIPT_EXCERPT_CHARS = 400
+CHUNK_CALL_TIMEOUT_SECONDS = 45
+FINAL_CALL_TIMEOUT_SECONDS = 60
+STRUCTURED_TIMEOUT_BUFFER_SECONDS = 30
+STRUCTURED_TIMEOUT_MAX_SECONDS = 600
 TIMEFRAME_SECONDS = {
     "1h": 60 * 60,
     "6h": 6 * 60 * 60,
@@ -83,6 +89,13 @@ Cite channel names and date/time ranges. Never invent events, intent, speakers,
 or moderation concerns. If context is insufficient, say so. Public /ask does
 not use this context.
 """.strip()
+
+CONTEXT_FAILURE_MESSAGE = (
+    "Context summary failed while processing message history. This usually "
+    "happens when the selected timeframe has too many messages or stored "
+    "message data is incomplete. Try a shorter timeframe or lower "
+    "max_messages."
+)
 
 JSON_FORMAT_RULES = """
 Formatting rules for the JSON response:
@@ -213,6 +226,7 @@ class MessageContext(commands.Cog):
         self.retention_days = parse_retention_days(
             os.getenv("MESSAGE_CONTEXT_RETENTION_DAYS")
         )
+        self.debug = parse_bool(os.getenv("MESSAGE_CONTEXT_DEBUG"), default=False)
         self.fts_available = False
         self.observed_message_content: Optional[bool] = None
         self._content_warning_logged = False
@@ -282,6 +296,26 @@ class MessageContext(commands.Cog):
                 "Message context tracking is enabled, but Message Content Intent "
                 "is unavailable. Live message text cannot be captured."
             )
+        try:
+            summary_rows = await self._fetchall(
+                """
+                SELECT COUNT(*) total, MIN(timestamp) oldest, MAX(timestamp) newest
+                FROM message_context_messages
+                """,
+                (),
+            )
+            summary = summary_rows[0] if summary_rows else None
+        except aiosqlite.Error:
+            summary = None
+        logger.info(
+            "Message context tracking startup: enabled=%s db_path=%s total=%s "
+            "oldest=%s newest=%s",
+            self.enabled,
+            self.database_path,
+            (summary["total"] if summary else 0) or 0,
+            (summary["oldest"] if summary else None) or "None",
+            (summary["newest"] if summary else None) or "None",
+        )
 
     async def cog_unload(self) -> None:
         self.retention_task.cancel()
@@ -454,6 +488,15 @@ class MessageContext(commands.Cog):
                 ),
             )
             await self.db.commit()
+            if self.debug:
+                logger.info(
+                    "[MESSAGE_CONTEXT_DEBUG] stored message_id=%s guild_id=%s "
+                    "channel_id=%s author_id=%s",
+                    message.id,
+                    message.guild.id,
+                    message.channel.id,
+                    message.author.id,
+                )
         except aiosqlite.Error:
             await self._rollback_quietly()
             logger.exception(
@@ -683,7 +726,9 @@ class MessageContext(commands.Cog):
                 include_bots=include_bots,
                 limit=MAX_RETRIEVAL_ROWS,
             )
-            return sorted(rows, key=lambda row: row["timestamp"])[:max_messages]
+            # Keep the most recent matches, not the earliest, when the
+            # candidate set has to be trimmed down to max_messages.
+            return sorted(rows, key=lambda row: row["timestamp"])[-max_messages:]
         conditions, parameters = self._filters(
             guild_id,
             channel_id=channel_id,
@@ -692,26 +737,70 @@ class MessageContext(commands.Cog):
             before=before,
             include_bots=include_bots,
         )
-        return await self._fetchall(
+        # Fetch the most recent max_messages rows, then restore chronological
+        # order. A plain ASC LIMIT would silently return the oldest messages
+        # in the window instead of the most relevant/recent ones once a busy
+        # user/channel exceeds max_messages.
+        rows = await self._fetchall(
             f"""
             SELECT m.* FROM message_context_messages AS m
             WHERE {" AND ".join(conditions)}
-            ORDER BY m.timestamp ASC LIMIT ?
+            ORDER BY m.timestamp DESC LIMIT ?
             """,
             (*parameters, max_messages),
         )
+        return list(reversed(rows))
 
-    @staticmethod
-    def _row_text(row: aiosqlite.Row, *, include_links: bool) -> str:
-        deleted = " | deleted" if row["is_deleted"] else ""
-        jump_url = safe_discord_jump_url(row["jump_url"])
-        link = f"\nJump: {jump_url}" if include_links and jump_url else ""
-        return (
-            f"[{row['timestamp']} | #{row['channel_name'] or row['channel_id']} | "
-            f"{row['author_display_name'] or row['author_name'] or row['author_id']}"
-            f"{deleted}]\n{safe_excerpt(row['content'], 1_200)}"
-            f"{link}"
+    async def _count_rows(
+        self,
+        guild_id: int,
+        *,
+        channel_id: Optional[int] = None,
+        user_id: Optional[int] = None,
+        after: Optional[str] = None,
+        before: Optional[str] = None,
+        include_bots: bool = True,
+    ) -> int:
+        conditions, parameters = self._filters(
+            guild_id,
+            channel_id=channel_id,
+            user_id=user_id,
+            after=after,
+            before=before,
+            include_bots=include_bots,
         )
+        rows = await self._fetchall(
+            f"""
+            SELECT COUNT(*) AS total FROM message_context_messages AS m
+            WHERE {" AND ".join(conditions)}
+            """,
+            tuple(parameters),
+        )
+        return int(rows[0]["total"]) if rows else 0
+
+    _LONG_URL_PATTERN = re.compile(r"https?://\S{60,}")
+
+    @classmethod
+    def _compact_content(cls, content: object, limit: int = TRANSCRIPT_EXCERPT_CHARS) -> str:
+        text = cls._LONG_URL_PATTERN.sub("[link]", str(content or ""))
+        return safe_excerpt(text, limit)
+
+    @classmethod
+    def _row_text(cls, row: aiosqlite.Row, *, include_links: bool) -> str:
+        # Kept single-line and compact to reduce prompt size for busy
+        # users/channels. The timestamp stays in exact source ISO 8601 form
+        # (rather than a human-readable date) because the AI is instructed to
+        # copy it verbatim into messageReferences for accurate citations —
+        # reformatting it here would break that round-trip.
+        deleted = " (deleted)" if row["is_deleted"] else ""
+        jump_url = safe_discord_jump_url(row["jump_url"])
+        link = f" Jump: {jump_url}" if include_links and jump_url else ""
+        channel = row["channel_name"] or row["channel_id"]
+        author = (
+            row["author_display_name"] or row["author_name"] or row["author_id"]
+        )
+        content = cls._compact_content(row["content"])
+        return f"[{row['timestamp']}] #{channel} {author}{deleted}: {content}{link}"
 
     @classmethod
     def _chunks(
@@ -927,15 +1016,19 @@ final Source coverage section. Do not overclaim.
         max_output_tokens: int = 1_300,
     ) -> tuple[Optional[dict], str]:
         """Runs the same chunked-recap pipeline as `_synthesize`, but asks for
-        a structured JSON object on the final call. Returns
-        (parsed_json_or_None, raw_text) — callers fall back to raw_text if
-        parsing fails so a malformed response never crashes the command."""
+        a structured JSON object on the final call. Each Gemini call gets its
+        own timeout so one slow/failed batch can be skipped instead of
+        aborting the whole command, and a partial summary (built from
+        whatever batches succeeded) is returned instead of raising whenever
+        possible. Returns (parsed_json_or_None, raw_text) — callers fall back
+        to rendering raw_text as plain text if parsing fails or the final
+        synthesis call itself couldn't complete."""
         chunks = self._chunks(rows, include_links=include_links)
-        partials = []
+        partials: list[str] = []
+        failed_chunks = 0
+        budget_exhausted = False
         for number, chunk in enumerate(chunks, start=1):
-            result = await generate_ai_response(
-                task_type=task_type,
-                prompt=f"""
+            prompt = f"""
 Task: Create an evidence-based intermediate recap for {task}.
 Request: {request}
 Chunk: {number} of {len(chunks)}
@@ -949,25 +1042,74 @@ topic shifts, escalation or de-escalation, possible moderation concerns,
 unresolved questions, and uncertainty. Do not quote long passages. Preserve
 the exact ISO timestamp, channel name/author, and Jump URL (if present) for up
 to 3 of the most noteworthy messages so they can be cited precisely later.
-""".strip(),
-                system_instruction=SYSTEM_INSTRUCTION,
-                requested_tier="default",
-                max_output_tokens=max_output_tokens,
-                temperature=0.2,
-                user_id=interaction.user.id,
-                guild_id=interaction.guild_id,
-                channel_id=interaction.channel_id,
-                source_command=source_command,
-                db=getattr(self.bot, "db", None),
-            )
+""".strip()
+            try:
+                result = await asyncio.wait_for(
+                    generate_ai_response(
+                        task_type=task_type,
+                        prompt=prompt,
+                        system_instruction=SYSTEM_INSTRUCTION,
+                        requested_tier="default",
+                        max_output_tokens=max_output_tokens,
+                        temperature=0.2,
+                        user_id=interaction.user.id,
+                        guild_id=interaction.guild_id,
+                        channel_id=interaction.channel_id,
+                        source_command=source_command,
+                        db=getattr(self.bot, "db", None),
+                    ),
+                    timeout=CHUNK_CALL_TIMEOUT_SECONDS,
+                )
+            except Exception as exc:
+                # Any failure mode (timeout, a DB error surfacing from
+                # generate_ai_response's usage logging, etc.) should degrade
+                # to "skip this batch" rather than aborting the whole
+                # command — that's the point of doing this per-chunk.
+                failed_chunks += 1
+                logger.warning(
+                    "Message-context chunk %s/%s errored for %s: %s",
+                    number, len(chunks), source_command, exc,
+                )
+                continue
+            if result.blocked_by_budget:
+                failed_chunks += 1
+                budget_exhausted = True
+                logger.warning(
+                    "Message-context AI budget exhausted mid-synthesis for "
+                    "%s at chunk %s/%s",
+                    source_command, number, len(chunks),
+                )
+                break
             if not result.ok or not result.text:
-                raise RuntimeError(result.error or "AI summary failed.")
+                failed_chunks += 1
+                logger.warning(
+                    "Message-context chunk %s/%s failed for %s: %s",
+                    number, len(chunks), source_command, result.error,
+                )
+                continue
             partials.append(result.text)
+
+        if not partials:
+            if budget_exhausted:
+                raise RuntimeError(AI_BUDGET_MESSAGE)
+            raise RuntimeError("AI summary failed.")
+
         combined = "\n\n--- CHUNK ---\n\n".join(partials)
+
+        if budget_exhausted:
+            return None, (
+                f"AI budget limit reached after {len(partials)} of "
+                f"{len(chunks)} batches. Partial per-batch notes:\n\n"
+                + combined
+            )
+
         coverage = self._coverage(rows)
-        result = await generate_ai_response(
-            task_type=task_type,
-            prompt=f"""
+        if failed_chunks:
+            coverage += (
+                f"; note: {failed_chunks} of {len(chunks)} batches failed "
+                "and were skipped"
+            )
+        prompt = f"""
 Task: {task}
 Request: {request}
 Coverage: {coverage}
@@ -979,20 +1121,42 @@ Coverage: {coverage}
 Return a single JSON object that matches the required schema exactly.
 
 {JSON_FORMAT_RULES}
-""".strip(),
-            system_instruction=SYSTEM_INSTRUCTION,
-            requested_tier="default",
-            max_output_tokens=max_output_tokens,
-            temperature=0.2,
-            response_schema=schema,
-            user_id=interaction.user.id,
-            guild_id=interaction.guild_id,
-            channel_id=interaction.channel_id,
-            source_command=source_command,
-            db=getattr(self.bot, "db", None),
-        )
-        if not result.ok or not result.text:
-            raise RuntimeError(result.error or "AI summary failed.")
+""".strip()
+        try:
+            result = await asyncio.wait_for(
+                generate_ai_response(
+                    task_type=task_type,
+                    prompt=prompt,
+                    system_instruction=SYSTEM_INSTRUCTION,
+                    requested_tier="default",
+                    max_output_tokens=max_output_tokens,
+                    temperature=0.2,
+                    response_schema=schema,
+                    user_id=interaction.user.id,
+                    guild_id=interaction.guild_id,
+                    channel_id=interaction.channel_id,
+                    source_command=source_command,
+                    db=getattr(self.bot, "db", None),
+                ),
+                timeout=FINAL_CALL_TIMEOUT_SECONDS,
+            )
+        except Exception as exc:
+            # Same reasoning as the per-chunk loop: any failure here still
+            # leaves us with useful partial batch notes, so fall back to
+            # those instead of raising and losing them.
+            logger.warning(
+                "Message-context final synthesis errored for %s: %s; "
+                "falling back to partial batch notes",
+                source_command, exc,
+            )
+            return None, "Full synthesis failed. Partial batch notes:\n\n" + combined
+        if result.blocked_by_budget or not result.ok or not result.text:
+            logger.warning(
+                "Message-context final synthesis failed for %s: %s; "
+                "falling back to partial batch notes",
+                source_command, result.error,
+            )
+            return None, "Full synthesis failed. Partial batch notes:\n\n" + combined
         try:
             parsed = parse_ai_json_response(result.text)
         except ValueError:
@@ -1014,6 +1178,9 @@ Return a single JSON object that matches the required schema exactly.
         request: str,
         schema: dict,
         timeframe_text: str,
+        total_matching_count: int,
+        target_label: str,
+        timeframe_label: str,
         include_links: bool = True,
         source_command: str,
         task_type: str,
@@ -1023,6 +1190,18 @@ Return a single JSON object that matches the required schema exactly.
         if not rows:
             await interaction.followup.send(empty_message, ephemeral=True)
             return
+        chunk_estimate = max(1, -(-len(rows) // MAX_GEMINI_ROWS_PER_CHUNK))
+        # Must stay >= the worst-case sum of the per-call timeouts inside
+        # _synthesize_structured (chunk_estimate chunk calls + 1 final call),
+        # plus a buffer. Otherwise this outer timeout could fire while a
+        # chunk is still within its own legitimate budget, cancelling work
+        # that the per-chunk resilience below was designed to let finish.
+        outer_timeout = min(
+            STRUCTURED_TIMEOUT_MAX_SECONDS,
+            chunk_estimate * CHUNK_CALL_TIMEOUT_SECONDS
+            + FINAL_CALL_TIMEOUT_SECONDS
+            + STRUCTURED_TIMEOUT_BUFFER_SECONDS,
+        )
         try:
             parsed, raw_text = await asyncio.wait_for(
                 self._synthesize_structured(
@@ -1036,12 +1215,26 @@ Return a single JSON object that matches the required schema exactly.
                     task_type=task_type,
                     max_output_tokens=max_output_tokens,
                 ),
-                timeout=120,
+                timeout=outer_timeout,
             )
         except Exception as exc:
-            logger.exception("Message-context structured synthesis failed")
-            message = AI_BUDGET_MESSAGE if str(exc) == AI_BUDGET_MESSAGE else (
-                "The private summary could not be generated right now."
+            logger.exception(
+                "Message-context structured synthesis failed: command=%s "
+                "staff_user=%s target=%s timeframe=%s matching=%s "
+                "retrieved=%s batches=%s model=%s",
+                source_command,
+                interaction.user.id,
+                target_label,
+                timeframe_label,
+                total_matching_count,
+                len(rows),
+                chunk_estimate,
+                self.model,
+            )
+            message = (
+                AI_BUDGET_MESSAGE
+                if str(exc) == AI_BUDGET_MESSAGE
+                else CONTEXT_FAILURE_MESSAGE
             )
             await interaction.followup.send(message, ephemeral=True)
             return
@@ -1062,12 +1255,14 @@ Return a single JSON object that matches the required schema exactly.
         else:
             embed = build_fallback_context_embed(title, raw_text, metadata)
 
-        if len(rows) >= MAX_RETRIEVAL_ROWS:
+        if total_matching_count > len(rows):
             embed.add_field(
                 name="Note",
                 value=(
-                    f"Retrieval was capped at {MAX_RETRIEVAL_ROWS} messages; "
-                    "narrow the timeframe for finer detail."
+                    f"{total_matching_count:,} matching messages found. "
+                    f"Reviewed the {len(rows):,} most recent messages; "
+                    "narrow the timeframe or raise max_messages for full "
+                    "coverage."
                 ),
                 inline=False,
             )
@@ -1109,17 +1304,40 @@ Return a single JSON object that matches the required schema exactly.
         if await self._deny(interaction):
             return
         await interaction.response.defer(ephemeral=True, thinking=True)
+        now = dt.datetime.now(dt.timezone.utc)
+        cutoff_24h = (now - dt.timedelta(hours=24)).isoformat()
+        cutoff_7d = (now - dt.timedelta(days=7)).isoformat()
         rows = await self._fetchall(
             """
             SELECT COUNT(*) total,
               SUM(source = 'live_discord') live_count,
               SUM(source = 'imported_csv') imported_count,
-              MIN(timestamp) oldest, MAX(timestamp) newest
+              MIN(timestamp) oldest, MAX(timestamp) newest,
+              SUM(timestamp >= ?) last_24h,
+              SUM(timestamp >= ?) last_7d
             FROM message_context_messages WHERE guild_id = ?
             """,
-            (str(interaction.guild_id),),
+            (cutoff_24h, cutoff_7d, str(interaction.guild_id)),
         )
         row = rows[0]
+        top_channel_rows = await self._fetchall(
+            """
+            SELECT COALESCE(channel_name, channel_id) AS channel, COUNT(*) AS total
+            FROM message_context_messages
+            WHERE guild_id = ? AND timestamp >= ?
+            GROUP BY COALESCE(channel_name, channel_id)
+            ORDER BY total DESC
+            LIMIT 5
+            """,
+            (str(interaction.guild_id), cutoff_7d),
+        )
+        top_channels_text = (
+            "\n".join(
+                f"{index}. #{item['channel']} — {item['total']:,}"
+                for index, item in enumerate(top_channel_rows, start=1)
+            )
+            or "None"
+        )
         try:
             size = self.database_path.stat().st_size
             size_text = f"{size / (1024 * 1024):.2f} MiB"
@@ -1144,12 +1362,17 @@ Return a single JSON object that matches the required schema exactly.
             f"**Tracking mode:** {mode}\n"
             f"**Included channel IDs:** {len(self.included_channel_ids)}\n"
             f"**Excluded channel IDs:** {len(self.excluded_channel_ids)}\n"
+            f"**Database path:** `{self.database_path}`\n"
             f"**Database size:** {size_text}\n"
             f"**Total stored:** {row['total'] or 0:,}\n"
-            f"**Live Discord:** {row['live_count'] or 0:,}\n"
+            f"**Live Discord:** {row['live_count'] or 0:,} "
+            f"(imported/live is detectable via the `source` column)\n"
             f"**Imported CSV:** {row['imported_count'] or 0:,}\n"
             f"**Oldest:** {row['oldest'] or 'None'}\n"
             f"**Newest:** {row['newest'] or 'None'}\n"
+            f"**Last 24h:** {row['last_24h'] or 0:,}\n"
+            f"**Last 7d:** {row['last_7d'] or 0:,}\n"
+            f"**Top 5 channels (7d):**\n{top_channels_text}\n"
             f"**FTS5:** {'Enabled' if self.fts_available else 'No (LIKE fallback)'}\n"
             f"**Retention:** "
             f"{str(self.retention_days) + ' days' if self.retention_days else 'Indefinite'}\n"
@@ -1160,7 +1383,7 @@ Return a single JSON object that matches the required schema exactly.
             embed=branded_embed(
                 "Message Context Status",
                 description=description,
-                footer="No secrets or raw database paths are shown",
+                footer="Staff-only diagnostic view",
             ),
             ephemeral=True,
         )
@@ -1410,6 +1633,13 @@ Return a single JSON object that matches the required schema exactly.
             await interaction.response.send_message(str(exc), ephemeral=True)
             return
         await interaction.response.defer(ephemeral=True, thinking=True)
+        total_matching = await self._count_rows(
+            interaction.guild_id,
+            channel_id=channel.id if channel else None,
+            user_id=user.id,
+            after=after_value,
+            include_bots=include_bots,
+        )
         rows = await self._range_rows(
             interaction.guild_id,
             channel_id=channel.id if channel else None,
@@ -1419,7 +1649,7 @@ Return a single JSON object that matches the required schema exactly.
             max_messages=max_messages,
         )
         timeframe_text = format_timeframe(
-            after_value, utcnow_iso(), len(rows)
+            after_value, utcnow_iso(), len(rows), total_count=total_matching
         )
         await self._send_structured_analysis(
             interaction,
@@ -1441,6 +1671,9 @@ Return a single JSON object that matches the required schema exactly.
             ),
             schema=USER_CONTEXT_SCHEMA,
             timeframe_text=timeframe_text,
+            total_matching_count=total_matching,
+            target_label=f"user={user.id}",
+            timeframe_label=timeframe,
             source_command="/context user",
             task_type="staff_context_user",
             max_output_tokens=1_300,
@@ -1487,8 +1720,20 @@ Return a single JSON object that matches the required schema exactly.
             include_bots=include_bots,
             max_messages=max_messages,
         )
+        if topic:
+            # A topic filter changes which rows count as "matching" in a way
+            # a plain COUNT(*) can't reproduce (FTS relevance ranking), so
+            # avoid showing a misleading total against the topic-narrowed set.
+            total_matching = len(rows)
+        else:
+            total_matching = await self._count_rows(
+                interaction.guild_id,
+                channel_id=channel.id,
+                after=after_value,
+                include_bots=include_bots,
+            )
         timeframe_text = format_timeframe(
-            after_value, utcnow_iso(), len(rows)
+            after_value, utcnow_iso(), len(rows), total_count=total_matching
         )
         await self._send_structured_analysis(
             interaction,
@@ -1509,6 +1754,9 @@ Return a single JSON object that matches the required schema exactly.
             ),
             schema=CHANNEL_CONTEXT_SCHEMA,
             timeframe_text=timeframe_text,
+            total_matching_count=total_matching,
+            target_label=f"channel={channel.id}",
+            timeframe_label=timeframe,
             source_command="/context channel",
             task_type="staff_context_channel",
             max_output_tokens=1_300,

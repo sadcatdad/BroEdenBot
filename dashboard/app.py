@@ -41,6 +41,7 @@ from dashboard.db import (
     find_bank_database_path,
     find_database_path,
     import_history,
+    message_context_overview,
     vcxp_overview,
 )
 from dashboard.discord_metadata import (
@@ -773,6 +774,7 @@ async def operations_page(request: Request) -> HTMLResponse:
             ],
             system=system_status(),
             databases=operations_database_status(),
+            message_context=message_context_overview(),
             message=message,
             error=error,
         ),

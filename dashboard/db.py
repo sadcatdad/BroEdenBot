@@ -19,6 +19,7 @@ from utils.sqlite import configure_sync_connection
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 BANK_DATABASE_CANDIDATES = (Path("brobank.db"),)
+MESSAGE_CONTEXT_DATABASE_CANDIDATES = (Path("message_context.db"),)
 
 
 def _resolve_path(value: str | Path) -> Path:
@@ -41,6 +42,17 @@ def find_bank_database_path() -> Path:
         if path.is_file():
             return path
     return _resolve_path(BANK_DATABASE_CANDIDATES[0])
+
+
+def find_message_context_database_path() -> Path:
+    configured = os.getenv("MESSAGE_CONTEXT_DB_PATH", "").strip()
+    if configured:
+        return _resolve_path(configured)
+    for candidate in MESSAGE_CONTEXT_DATABASE_CANDIDATES:
+        path = _resolve_path(candidate)
+        if path.is_file():
+            return path
+    return _resolve_path(MESSAGE_CONTEXT_DATABASE_CANDIDATES[0])
 
 
 def database_status(path: Path) -> dict[str, Any]:
@@ -603,4 +615,89 @@ def ai_usage_overview(
             ]
     except (OSError, sqlite3.Error) as exc:
         result["error"] = str(exc)
+    return result
+
+
+def message_context_overview() -> dict[str, Any]:
+    path = find_message_context_database_path()
+    result: dict[str, Any] = {
+        "enabled": get_bool_setting("MESSAGE_CONTEXT_ENABLED", False),
+        "database": database_status(path),
+        "tables_found": False,
+        "total_messages": 0,
+        "oldest": None,
+        "newest": None,
+        "last_24h": 0,
+        "last_7d": 0,
+        "top_channels_7d": [],
+        "last_error": None,
+        "error": None,
+    }
+    if not path.is_file():
+        return result
+
+    try:
+        with readonly_connection(path) as connection:
+            if "message_context_messages" not in table_names(connection):
+                return result
+            result["tables_found"] = True
+            now = datetime.now(timezone.utc)
+            cutoff_24h = (now - timedelta(hours=24)).isoformat()
+            cutoff_7d = (now - timedelta(days=7)).isoformat()
+            row = connection.execute(
+                """
+                SELECT COUNT(*) AS total, MIN(timestamp) AS oldest,
+                       MAX(timestamp) AS newest,
+                       SUM(timestamp >= ?) AS last_24h,
+                       SUM(timestamp >= ?) AS last_7d
+                FROM message_context_messages
+                """,
+                (cutoff_24h, cutoff_7d),
+            ).fetchone()
+            result["total_messages"] = int(row["total"] or 0)
+            result["oldest"] = row["oldest"]
+            result["newest"] = row["newest"]
+            result["last_24h"] = int(row["last_24h"] or 0)
+            result["last_7d"] = int(row["last_7d"] or 0)
+            result["top_channels_7d"] = [
+                dict(item)
+                for item in connection.execute(
+                    """
+                    SELECT COALESCE(channel_name, channel_id) AS channel,
+                           COUNT(*) AS total
+                    FROM message_context_messages
+                    WHERE timestamp >= ?
+                    GROUP BY COALESCE(channel_name, channel_id)
+                    ORDER BY total DESC
+                    LIMIT 5
+                    """,
+                    (cutoff_7d,),
+                ).fetchall()
+            ]
+    except (OSError, sqlite3.Error) as exc:
+        result["error"] = str(exc)
+        return result
+
+    # The last /context error, if any, lives in the shared DB's AI usage log
+    # rather than message_context.db.
+    try:
+        main_path = find_database_path()
+        if main_path.is_file():
+            with readonly_connection(main_path) as connection:
+                if "ai_usage_logs" in table_names(connection):
+                    last_error = connection.execute(
+                        """
+                        SELECT created_at, source_command, error_message
+                        FROM ai_usage_logs
+                        WHERE success = 0
+                          AND source_command IN ('/context user', '/context channel')
+                          AND error_message IS NOT NULL AND error_message != ''
+                        ORDER BY created_at DESC, id DESC
+                        LIMIT 1
+                        """
+                    ).fetchone()
+                    if last_error is not None:
+                        result["last_error"] = dict(last_error)
+    except (OSError, sqlite3.Error):
+        pass
     return result

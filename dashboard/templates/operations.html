@@ -91,6 +91,42 @@
 </section>
 
 <section class="card">
+  <p class="eyebrow">Staff AI</p>
+  <h2>Message Context</h2>
+  <p class="path">{{ message_context.database.path }}</p>
+  {% if message_context.error %}<div class="alert error">{{ message_context.error }}</div>{% endif %}
+  {% if not message_context.database.exists %}
+  <p class="muted">Database file not found yet.</p>
+  {% elif not message_context.tables_found %}
+  <p class="muted">Database exists but the message_context_messages table hasn't been created yet. Restart the bot once.</p>
+  {% else %}
+  <div class="status-list">
+    <div><span>Tracking enabled</span><strong class="{{ 'good' if message_context.enabled else 'warning-text' }}">{{ "Yes" if message_context.enabled else "No" }}</strong></div>
+    <div><span>Total stored messages</span><strong>{{ "{:,}".format(message_context.total_messages) }}</strong></div>
+    <div><span>Newest message</span><strong>{{ message_context.newest or "None" }}</strong></div>
+    <div><span>Oldest message</span><strong>{{ message_context.oldest or "None" }}</strong></div>
+    <div><span>Last 24h</span><strong>{{ "{:,}".format(message_context.last_24h) }}</strong></div>
+    <div><span>Last 7d</span><strong>{{ "{:,}".format(message_context.last_7d) }}</strong></div>
+  </div>
+  <p class="label" style="margin-top: 1rem;">Top 5 channels (7d)</p>
+  <div class="status-list">
+    {% for item in message_context.top_channels_7d %}
+    <div><span>#{{ item.channel }}</span><strong>{{ "{:,}".format(item.total) }}</strong></div>
+    {% else %}
+    <p class="muted">No messages stored in the last 7 days.</p>
+    {% endfor %}
+  </div>
+  {% if message_context.last_error %}
+  <p class="label" style="margin-top: 1rem;">Last /context error</p>
+  <p class="muted">{{ message_context.last_error.created_at }} · {{ message_context.last_error.source_command }}</p>
+  <pre class="log-output compact">{{ message_context.last_error.error_message }}</pre>
+  {% else %}
+  <p class="muted" style="margin-top: 1rem;">No recent /context errors logged.</p>
+  {% endif %}
+  {% endif %}
+</section>
+
+<section class="card">
   <p class="eyebrow">Recent output</p>
   <h2>Service logs</h2>
   {% for log in logs %}

@@ -97,9 +97,21 @@ def format_readable_date_only(value: object) -> str:
     return f"{parsed.strftime('%b')} {parsed.day}, {parsed.year}"
 
 
-def format_timeframe(after_value: object, before_value: object, message_count: int) -> str:
+def format_timeframe(
+    after_value: object,
+    before_value: object,
+    message_count: int,
+    *,
+    total_count: Optional[int] = None,
+) -> str:
     start = format_readable_date_only(after_value)
     end = format_readable_date_only(before_value)
+    if total_count is not None and total_count > message_count:
+        return (
+            f"{start} – {end}\n"
+            f"{message_count:,} of {total_count:,} matching messages "
+            "reviewed (most recent)"
+        )
     return f"{start} – {end}\n{message_count:,} messages reviewed"
 
 
