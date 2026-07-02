@@ -1,0 +1,80 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="page-heading">
+  <div>
+    <p class="eyebrow">AI retrieval</p>
+    <h1>Connected Knowledge Sources</h1>
+  </div>
+  <a class="button" href="{{ url_for('knowledge_page') }}">Manage Knowledge</a>
+</div>
+<p class="muted">This page shows what the AI retrieval layer can use. Changes are made from the unified Knowledge tab.</p>
+
+<section class="card-grid four">
+  <article class="card"><p class="label">AI sources</p><p class="metric">{{ kb_status.total_sources }}</p></article>
+  <article class="card"><p class="label">Enabled chunks</p><p class="metric">{{ kb_status.enabled_chunks }}</p></article>
+  <article class="card"><p class="label">Public chunks</p><p class="metric">{{ kb_status.public_chunks }}</p></article>
+  <article class="card"><p class="label">Staff chunks</p><p class="metric">{{ kb_status.staff_chunks }}</p></article>
+</section>
+
+<section class="card">
+  <h2>AI Source Inventory</h2>
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>Source</th><th>Type</th><th>Visibility</th><th>AI</th><th>Chunks</th><th>Updated</th></tr></thead>
+      <tbody>
+      {% for source in sources %}
+      <tr>
+        <td><strong>{{ source.source_name }}</strong></td>
+        <td><span class="badge">{{ source.source_type }}</span></td>
+        <td><span class="badge visibility-{{ source.source_visibility }}">{{ source.source_visibility }}</span></td>
+        <td><span class="badge {{ 'status-active' if source.ai_enabled else 'status-empty' }}">{{ "enabled" if source.ai_enabled else "disabled" }}</span></td>
+        <td>{{ source.chunk_count }}</td>
+        <td>{{ source.updated_at }}</td>
+      </tr>
+      {% else %}
+      <tr><td colspan="6" class="muted">No AI KB sources found.</td></tr>
+      {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</section>
+
+<section class="card">
+  <p class="eyebrow">Test retrieval</p>
+  <h2>Search Enabled Chunks</h2>
+  <form class="filter-grid" method="get" action="{{ url_for('ai_kb_page') }}">
+    <label><span>Query</span><input name="query" value="{{ filters.query }}" placeholder="server rules, intro channels, roles"></label>
+    <label>
+      <span>Visibility</span>
+      <select name="visibility">
+        <option value="all" {{ "selected" if filters.visibility == "all" else "" }}>All</option>
+        <option value="public" {{ "selected" if filters.visibility == "public" else "" }}>Public</option>
+        <option value="staff" {{ "selected" if filters.visibility == "staff" else "" }}>Staff</option>
+      </select>
+    </label>
+    <label>
+      <span>Type</span>
+      <select name="source_type">
+        <option value="">All types</option>
+        {% for type in source_types %}
+        <option value="{{ type }}" {{ "selected" if filters.source_type == type else "" }}>{{ type }}</option>
+        {% endfor %}
+      </select>
+    </label>
+    <label><span>Limit</span><input type="number" min="1" max="25" name="limit" value="{{ filters.limit }}"></label>
+    <button class="button" type="submit">Search</button>
+  </form>
+  {% if search_results %}
+  <div class="status-list">
+    {% for result in search_results %}
+    <div>
+      <span>{{ result.source_name }} / {{ result.section_title or "General" }}<br><small>{{ result.source_type }} · {{ result.source_visibility }} · score {{ result.score }}</small></span>
+      <strong>{{ result.excerpt }}</strong>
+    </div>
+    {% endfor %}
+  </div>
+  {% elif filters.query %}
+  <p class="muted">No enabled chunks matched that query.</p>
+  {% endif %}
+</section>
+{% endblock %}

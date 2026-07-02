@@ -4,8 +4,8 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>{{ page_title or "Login" }} · BroEdenBot</title>
-  <link rel="stylesheet" href="{{ url_for('static', path='styles.css') }}?v=settings-cleanup1">
-  <script src="{{ url_for('static', path='discord_pickers.js') }}?v=settings-cleanup1" defer></script>
+  <link rel="stylesheet" href="{{ url_for('static', path='styles.css') }}?v=knowledge-unified1">
+  <script src="{{ url_for('static', path='discord_pickers.js') }}?v=knowledge-unified1" defer></script>
 </head>
 <body>
   {% if authenticated %}
@@ -15,6 +15,7 @@
       <a class="{{ 'active' if current_path == '/' else '' }}" href="{{ url_for('home') }}">Overview</a>
       <a class="{{ 'active' if current_path.startswith('/operations') else '' }}" href="{{ url_for('operations_page') }}">Operations</a>
       {% if ai_dashboard_visible %}<a class="{{ 'active' if current_path.startswith('/ai') else '' }}" href="{{ url_for('ai_page') }}">AI</a>{% endif %}
+      <a class="{{ 'active' if current_path.startswith('/knowledge') else '' }}" href="{{ url_for('knowledge_page') }}">Knowledge</a>
       <a class="{{ 'active' if current_path.startswith('/analytics') else '' }}" href="{{ url_for('analytics_page') }}">Analytics</a>
       <a class="{{ 'active' if current_path == '/bank' else '' }}" href="{{ url_for('bank') }}">Bank</a>
       <a class="{{ 'active' if current_path.startswith('/settings') else '' }}" href="{{ url_for('settings') }}">Settings</a>

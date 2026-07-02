@@ -19,10 +19,10 @@ maintenance.
   bootstrap, allowlisted Discord OAuth identities, role-aware write
   protection, safe configuration, fixed service controls, redacted logs,
   SQLite backups, a VC XP role-pulse readiness summary, stats management, an
-  AI framework status/usage page, an AI Knowledge Base editor, an allowlisted
-  Knowledge Manager, and aggregate server analytics. Discord role/channel
-  pickers read a live-guild metadata snapshot written by the bot, not
-  historical import tables.
+  AI framework status/usage page, a unified Knowledge manager for file-backed,
+  manual AI, and live Discord sources, and aggregate server analytics. Discord
+  role/channel pickers read a live-guild metadata snapshot written by the bot,
+  not historical import tables.
 - `dashboard/users.py` — Dashboard user schema, PBKDF2 password bootstrap,
   Discord identity linking, active/disabled status, and owner/admin/viewer
   roles.

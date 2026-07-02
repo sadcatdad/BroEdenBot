@@ -257,8 +257,11 @@ class DashboardRouteTests(unittest.TestCase):
         self.login()
         page = self.client.get("/ai/kb")
         self.assertEqual(page.status_code, 200)
-        self.assertIn("AI Knowledge Base", page.text)
-        token = re.search(r'name="csrf" value="([^"]+)"', page.text).group(1)
+        self.assertIn("Connected Knowledge Sources", page.text)
+        self.assertIn("Manage Knowledge", page.text)
+        edit_page = self.client.get("/ai/kb/new")
+        self.assertEqual(edit_page.status_code, 200)
+        token = re.search(r'name="csrf" value="([^"]+)"', edit_page.text).group(1)
 
         response = self.client.post(
             "/ai/kb/save",
@@ -267,6 +270,7 @@ class DashboardRouteTests(unittest.TestCase):
                 "source_name": "server-faq",
                 "source_type": "faq",
                 "source_visibility": "public",
+                "ai_enabled": "1",
                 "raw_content": "# FAQ\n\nTickets go in the support channel.",
             },
             follow_redirects=False,
@@ -274,6 +278,9 @@ class DashboardRouteTests(unittest.TestCase):
         self.assertEqual(response.status_code, 303)
         search = self.client.get("/ai/kb?query=support&visibility=public")
         self.assertIn("server-faq", search.text)
+        knowledge = self.client.get("/knowledge")
+        self.assertIn("server-faq", knowledge.text)
+        self.assertIn("Enabled", knowledge.text)
 
         edit = self.client.get("/ai/kb/server-faq/edit")
         self.assertEqual(edit.status_code, 200)
@@ -286,6 +293,7 @@ class DashboardRouteTests(unittest.TestCase):
                 "source_name": "server-faq",
                 "source_type": "faq",
                 "source_visibility": "public",
+                "ai_enabled": "1",
                 "raw_content": "# FAQ\n\nUpdated answer about support tickets.",
             },
             follow_redirects=False,
@@ -303,12 +311,59 @@ class DashboardRouteTests(unittest.TestCase):
             follow_redirects=False,
         )
         self.assertEqual(response.status_code, 303)
-        deleted_page = self.client.get("/ai/kb").text
-        self.assertIn("No AI KB sources found.", deleted_page)
+        deleted_page = self.client.get("/knowledge").text
+        self.assertNotIn("server-faq", deleted_page)
 
     def test_unauthenticated_user_cannot_access_ai_kb_editor(self):
         response = self.client.get("/ai/kb", follow_redirects=False)
         self.assertEqual(response.status_code, 303)
+
+    def test_knowledge_dashboard_manages_live_discord_source(self):
+        self.login()
+        page = self.client.get("/knowledge")
+        self.assertEqual(page.status_code, 200)
+        self.assertIn("Add or Update Channel / Forum Post", page.text)
+        token = re.search(r'name="csrf" value="([^"]+)"', page.text).group(1)
+
+        response = self.client.post(
+            "/knowledge/live/save",
+            data={
+                "csrf": token,
+                "guild_id": "123456789012345678",
+                "manual_channel_id": "987654321098765432",
+                "channel_name": "Survival Guide Post",
+                "source_type": "survival_guide",
+                "visibility": "public",
+                "sync_mode": "live",
+                "enabled": "1",
+                "ai_enabled": "1",
+            },
+            follow_redirects=False,
+        )
+        self.assertEqual(response.status_code, 303)
+        knowledge = self.client.get("/knowledge")
+        self.assertIn("Survival Guide Post", knowledge.text)
+        self.assertIn("987654321098765432", knowledge.text)
+
+        token = re.search(r'name="csrf" value="([^"]+)"', knowledge.text).group(1)
+        response = self.client.post(
+            "/knowledge/live/123456789012345678/987654321098765432/sync",
+            data={"csrf": token, "limit": "50"},
+            follow_redirects=False,
+        )
+        self.assertEqual(response.status_code, 303)
+        connection = sqlite3.connect(self.database)
+        row = connection.execute(
+            """
+            SELECT action_type, payload_json, status
+            FROM dashboard_actions
+            WHERE action_type = 'sync_knowledge_source'
+            """
+        ).fetchone()
+        connection.close()
+        self.assertEqual(row[0], "sync_knowledge_source")
+        self.assertIn("987654321098765432", row[1])
+        self.assertEqual(row[2], "pending")
 
 
 class DashboardConfigurationTests(unittest.TestCase):

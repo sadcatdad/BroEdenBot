@@ -1479,21 +1479,18 @@ notify anyone.
 
 The local FastAPI dashboard provides shared-database status, bank overview,
 historical-import status, database-backed editing for an explicit allowlist of
-safe runtime settings, AI framework status/usage, an AI Knowledge Base editor,
-a VC XP role-pulse readiness summary, stats graphics management, and an
-allowlisted local Knowledge Base manager. It does not edit `.env`, modify bank
-records, expose Discord or Gemini secrets, or provide public hosting.
+safe runtime settings, AI framework status/usage, a unified Knowledge manager,
+a VC XP role-pulse readiness summary, stats graphics management, and aggregate
+analytics. It does not edit `.env`, modify bank records, expose Discord or
+Gemini secrets, or provide public hosting.
 
-The top-level dashboard tabs are Overview, Operations, AI, Analytics, Bank, and
-Settings when `AI_DASHBOARD_VISIBLE=true`; the AI tab is hidden when that flag
-is false. The AI tab links to the AI Knowledge Base editor where dashboard
-admins can create, edit, search, and delete `public` or `staff` KB sources in
-`ai_kb_sources` and `ai_kb_chunks`. Paste/edit textareas support markdown or
-plain text up to 2 MB per source; dashboard file upload is intentionally not
-enabled in Phase 1. The AI tab also shows recent `/ask` feedback, prioritizing
-`Still Confused` selections alongside the question, answer, and matched public
-KB chunks. Stats Graphics lives under Analytics. Knowledge Base, Imports, and
-Dashboard Users live under Settings. The older `/stats`, `/knowledge`,
+The top-level dashboard tabs are Overview, Operations, AI, Knowledge,
+Analytics, Bank, and Settings when `AI_DASHBOARD_VISIBLE=true`; the AI tab is
+hidden when that flag is false. The AI tab shows framework health, usage,
+recent `/ask` feedback, and a connected-sources page that explains which
+knowledge chunks are available to AI retrieval. Knowledge changes now happen in
+the top-level Knowledge tab. Stats Graphics lives under Analytics. Imports and
+Dashboard Users live under Settings. The older `/stats`, `/settings/knowledge`,
 `/imports`, and `/users` links redirect to their new locations so existing
 bookmarks remain usable.
 
@@ -1582,8 +1579,9 @@ Discord login is confirmed working, and never share
 ### Phase 1.5 runtime settings
 
 The Settings section has sidebar entries for Bot Configuration, Permissions &
-Access, Discord Roles & Channels, Knowledge Base, Imports, Dashboard Users,
-and Advanced. Updates are validated, stored as text in the shared `data.db`
+Access, Discord Roles & Channels, Imports, Dashboard Users, and Advanced.
+Knowledge now lives in its own top-level tab. Updates are validated, stored as
+text in the shared `data.db`
 `bot_settings` table, and recorded in `bot_settings_audit` when the value
 changes. Existing database values are never overwritten during environment
 seeding. The bot reads these safe values from SQLite first and falls back to
@@ -1753,12 +1751,16 @@ Every edit, refresh, and archive POST requires the existing session CSRF token.
 It adds no bank manager, checklist manager, terminal, or arbitrary command/SQL
 surface.
 
-### Knowledge Base / Guide Manager
+### Unified Knowledge Manager
 
-The authenticated Settings → Knowledge Base page lists only a fixed
-source-code allowlist. It does not accept paths, browse directories, follow
-symlinks outside the project, or expose a file-download route. The allowlist
-includes:
+The authenticated Knowledge tab is the single dashboard surface for public and
+staff knowledge. It shows file-backed documents, dashboard-created text sources
+in `ai_kb_sources` / `ai_kb_chunks`, and live Discord sources in
+`knowledge_sources` / `knowledge_entries`.
+
+File-backed documents still use a fixed source-code allowlist. The dashboard
+does not accept arbitrary file paths, browse directories, follow symlinks
+outside the project, or expose a file-download route. The allowlist includes:
 
 - Public bot knowledge: `data/knowledge/rules.md` and
   `data/knowledge/survival_guide.md`.
@@ -1767,9 +1769,9 @@ includes:
 - Internal guides under `docs/`: message context, staff context, checklists,
   historical imports, VC log imports, and the codebase map.
 
-Each entry shows its category, public/staff/internal visibility, relative path,
-editability, modified time, size, approximate word count, and
-found/missing/empty state. Search and filters run in the browser against this
+Each file entry shows its category, public/staff/internal visibility, relative
+path, editability, modified time, size, approximate word count, and
+found/missing/empty state. Search and filters run in the browser against
 already allowlisted metadata. Document previews are escaped plain text, so raw
 HTML and scripts are not executed. Obvious token, password, API-key, secret,
 authorization, and provider-token patterns are redacted from displayed content
@@ -1784,17 +1786,31 @@ dashboard creates a timestamped copy under `backups/knowledge/`; those runtime
 backups are ignored by Git. `knowledge_audit` records metadata for edits and
 reindex requests without storing old or new document contents.
 
-Knowledge loaders are cached inside the Discord bot process. Reindex buttons
-therefore enqueue only the fixed `reindex_knowledge` action in the existing
-`dashboard_actions` table. The live Stats cog action worker validates that
-fixed payload, clears and reloads the existing public/staff knowledge caches,
-then marks the action completed or failed. The dashboard never creates a
-second Discord client and does not build a duplicate knowledge index.
+Dashboard text sources support public/staff visibility, source type, content
+editing, deletion, and a `Use this source for AI retrieval` checkbox. Disabled
+AI sources remain stored but are ignored by `search_kb()` and therefore by
+member-facing `/ask` retrieval.
 
-The Knowledge Manager requires the existing signed login session. Every edit
-and reindex POST requires CSRF protection. This phase is a document manager,
-not an AI prompt-testing console, import manager, bank manager, checklist
-manager, terminal, or public knowledge portal.
+Live Discord sources can be configured from the same Knowledge tab using either
+the channel picker or a pasted channel/forum-thread ID. This supports whole text
+channels, whole forum channels, and individual forum posts/threads. The
+dashboard can save source type, public vs staff-only visibility, live/manual
+sync mode, enabled state, and whether the source is mirrored into AI retrieval.
+Sync buttons enqueue a fixed `sync_knowledge_source` action in
+`dashboard_actions`; the live Discord bot performs the actual history fetch and
+marks the action completed or failed. The dashboard never starts a second
+Discord client.
+
+Knowledge loaders are cached inside the Discord bot process. File reindex
+buttons enqueue only the fixed `reindex_knowledge` action in the existing
+`dashboard_actions` table. The live bot action worker validates fixed payloads,
+clears/reloads the relevant caches or syncs the requested Discord source, then
+records the action result.
+
+The Knowledge manager requires the existing signed login session. Every edit,
+toggle, remove, sync, and reindex POST requires CSRF protection. It is not a
+bank manager, checklist manager, terminal, arbitrary SQL surface, or public
+knowledge portal.
 
 ### Server Analytics Dashboard
 

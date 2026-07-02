@@ -98,10 +98,9 @@ class DashboardNavigationMetadataTests(unittest.TestCase):
         self.login()
         response = self.client.get("/")
         self.assertEqual(response.status_code, 200)
-        for label in ("Overview", "Operations", "AI", "Analytics", "Bank", "Settings"):
+        for label in ("Overview", "Operations", "AI", "Knowledge", "Analytics", "Bank", "Settings"):
             self.assertIn(label, response.text)
         self.assertNotIn(">Stats</a>", response.text)
-        self.assertNotIn(">Knowledge</a>", response.text)
         self.assertNotIn(">Users</a>", response.text)
 
         settings = self.client.get("/settings")
@@ -115,7 +114,6 @@ class DashboardNavigationMetadataTests(unittest.TestCase):
             "Bot Configuration",
             "Permissions &amp; Access",
             "Discord Roles &amp; Channels",
-            "Knowledge Base",
             "Imports",
             "Dashboard Users",
             "Advanced",
@@ -126,7 +124,7 @@ class DashboardNavigationMetadataTests(unittest.TestCase):
         self.login()
         redirects = {
             "/stats": "http://testserver/analytics/stats",
-            "/knowledge": "http://testserver/settings/knowledge",
+            "/settings/knowledge": "http://testserver/knowledge",
             "/imports": "http://testserver/settings/imports",
             "/users": "http://testserver/settings/users",
         }
@@ -246,8 +244,8 @@ class DashboardNavigationMetadataTests(unittest.TestCase):
         self.assertIn(".settings-menu-item", styles)
         self.assertIn("text-decoration: none", styles)
         base_template = (root / "dashboard/templates/base.html").read_text()
-        self.assertIn("styles.css') }}?v=settings-cleanup1", base_template)
-        self.assertIn("discord_pickers.js') }}?v=settings-cleanup1", base_template)
+        self.assertIn("styles.css') }}?v=knowledge-unified1", base_template)
+        self.assertIn("discord_pickers.js') }}?v=knowledge-unified1", base_template)
 
     def test_category_selection_matches_child_channels(self):
         self.assertTrue(

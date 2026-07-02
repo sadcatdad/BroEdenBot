@@ -84,7 +84,18 @@ from utils.ai_kb import (
     initialize_ai_kb_schema,
     list_kb_sources,
     search_kb,
+    set_kb_source_ai_enabled,
     upsert_kb_source,
+)
+from utils.live_knowledge import (
+    KNOWLEDGE_SOURCE_TYPES,
+    KNOWLEDGE_SYNC_MODES,
+    KNOWLEDGE_VISIBILITIES,
+    delete_live_knowledge_source_sync,
+    initialize_live_knowledge_schema_sync,
+    list_live_knowledge_sources_sync,
+    queue_live_knowledge_sync,
+    upsert_live_knowledge_source_sync,
 )
 from utils.analytics import (
     LIMITS,
@@ -169,6 +180,7 @@ if dashboard_enabled():
     initialize_stats_manager_schema()
     initialize_knowledge_schema()
     initialize_ai_kb_schema()
+    initialize_live_knowledge_schema_sync()
     initialize_dashboard_users()
 
 app = FastAPI(
@@ -535,11 +547,12 @@ async def ai_kb_page(
     )
     return templates.TemplateResponse(
         request=request,
-        name="ai_kb.html",
+        name="ai_kb_info.html",
         context=template_context(
             request,
-            page_title="AI Knowledge Base",
+            page_title="AI Knowledge Sources",
             kb_status=get_kb_status(),
+            knowledge=knowledge_sources_summary(),
             sources=list_kb_sources(),
             source_types=sorted(SOURCE_TYPES),
             visibilities=sorted(VISIBILITIES),
@@ -616,9 +629,10 @@ async def ai_kb_save(request: Request) -> RedirectResponse:
             source_type=str(form.get("source_type", "")),
             visibility=str(form.get("source_visibility", "")),
             raw_text=str(form.get("raw_content", "")),
+            ai_enabled=str(form.get("ai_enabled", "")).strip() == "1",
             metadata={
                 "source": "dashboard",
-                "changed_by": str(request.session.get("dashboard_user", "dashboard")),
+                "changed_by": dashboard_user_label(request),
             },
         )
     except ValueError as exc:
@@ -633,7 +647,7 @@ async def ai_kb_save(request: Request) -> RedirectResponse:
         f"{result['source_name']} saved with {result['chunk_count']} chunk(s)."
     )
     return RedirectResponse(
-        url=request.url_for("ai_kb_page"),
+        url=request.url_for("knowledge_page"),
         status_code=status.HTTP_303_SEE_OTHER,
     )
 
@@ -661,9 +675,109 @@ async def ai_kb_delete(request: Request, source_name: str) -> RedirectResponse:
             f"{source_name} deleted with {deleted} chunk(s)."
         )
     return RedirectResponse(
-        url=request.url_for("ai_kb_page"),
+        url=request.url_for("knowledge_page"),
         status_code=status.HTTP_303_SEE_OTHER,
     )
+
+
+@app.post("/knowledge/ai/{source_name}/toggle", name="knowledge_ai_toggle")
+async def knowledge_ai_toggle(request: Request, source_name: str) -> RedirectResponse:
+    if redirect := login_redirect(request):
+        return redirect
+    await require_action_csrf(request)
+    if not is_admin(request):
+        raise HTTPException(status_code=403, detail="Admin access is required.")
+    form = await request.form()
+    enabled = str(form.get("ai_enabled", "")).strip() == "1"
+    try:
+        set_kb_source_ai_enabled(source_name, enabled)
+    except ValueError as exc:
+        request.session["knowledge_error"] = str(exc)
+    else:
+        request.session["knowledge_message"] = (
+            f"{source_name} is {'connected to' if enabled else 'excluded from'} AI retrieval."
+        )
+    return knowledge_redirect(request)
+
+
+@app.post("/knowledge/live/save", name="knowledge_live_save")
+async def knowledge_live_save(request: Request) -> RedirectResponse:
+    if redirect := login_redirect(request):
+        return redirect
+    await require_action_csrf(request)
+    if not is_admin(request):
+        raise HTTPException(status_code=403, detail="Admin access is required.")
+    form = await request.form()
+    channel_id = str(form.get("channel_id", "")).strip()
+    if not channel_id or channel_id == "[]":
+        channel_id = str(form.get("manual_channel_id", "")).strip()
+    channel_id = channel_id.strip("[]\" ")
+    guild_id = str(form.get("guild_id", "")).strip() or os.getenv("GUILD_ID", "").strip()
+    channel_name = str(form.get("channel_name", "")).strip() or f"Discord source {channel_id}"
+    try:
+        if not channel_id.isdigit() or not guild_id.isdigit():
+            raise ValueError("Guild ID and source channel/thread ID are required.")
+        upsert_live_knowledge_source_sync(
+            guild_id=int(guild_id),
+            channel_id=int(channel_id),
+            channel_name=channel_name,
+            source_type=str(form.get("source_type", "")),
+            visibility=str(form.get("visibility", "")),
+            sync_mode=str(form.get("sync_mode", "")),
+            enabled=str(form.get("enabled", "")).strip() == "1",
+            ai_enabled=str(form.get("ai_enabled", "")).strip() == "1",
+        )
+    except ValueError as exc:
+        request.session["knowledge_error"] = str(exc)
+    else:
+        request.session["knowledge_message"] = f"{channel_name} saved as a live knowledge source."
+    return knowledge_redirect(request)
+
+
+@app.post("/knowledge/live/{guild_id}/{channel_id}/remove", name="knowledge_live_remove")
+async def knowledge_live_remove(
+    request: Request,
+    guild_id: int,
+    channel_id: int,
+) -> RedirectResponse:
+    if redirect := login_redirect(request):
+        return redirect
+    await require_action_csrf(request)
+    if not is_admin(request):
+        raise HTTPException(status_code=403, detail="Admin access is required.")
+    deleted = delete_live_knowledge_source_sync(
+        guild_id=guild_id,
+        channel_id=channel_id,
+    )
+    request.session["knowledge_message"] = (
+        f"Live source removed with {deleted} indexed entr{'y' if deleted == 1 else 'ies'}."
+    )
+    return knowledge_redirect(request)
+
+
+@app.post("/knowledge/live/{guild_id}/{channel_id}/sync", name="knowledge_live_sync")
+async def knowledge_live_sync(
+    request: Request,
+    guild_id: int,
+    channel_id: int,
+) -> RedirectResponse:
+    if redirect := login_redirect(request):
+        return redirect
+    await require_action_csrf(request)
+    if not is_admin(request):
+        raise HTTPException(status_code=403, detail="Admin access is required.")
+    form = await request.form()
+    limit = int(str(form.get("limit", "200")).strip() or "200")
+    action_id = queue_live_knowledge_sync(
+        guild_id=guild_id,
+        channel_id=channel_id,
+        limit=limit,
+        requested_by=dashboard_user_label(request),
+    )
+    request.session["knowledge_message"] = (
+        f"Live knowledge sync queued as dashboard action #{action_id}."
+    )
+    return knowledge_redirect(request)
 
 
 @app.get("/settings", response_class=HTMLResponse, name="settings")
@@ -810,6 +924,49 @@ def knowledge_redirect(
         else request.url_for("knowledge_page")
     )
     return RedirectResponse(url=url, status_code=status.HTTP_303_SEE_OTHER)
+
+
+def dashboard_user_label(request: Request) -> str:
+    return str(request.session.get("dashboard_user", "dashboard"))
+
+
+def knowledge_sources_summary() -> dict[str, Any]:
+    documents = list_documents()
+    ai_sources = [
+        source
+        for source in list_kb_sources()
+        if not str(source.get("source_name", "")).startswith("live-discord:")
+    ]
+    live_sources = list_live_knowledge_sources_sync()
+    ai_connected = sum(1 for source in ai_sources if source.get("ai_enabled"))
+    return {
+        "documents": documents,
+        "ai_sources": ai_sources,
+        "live_sources": live_sources,
+        "counts": {
+            "documents": len(documents),
+            "ai_sources": len(ai_sources),
+            "ai_connected": ai_connected,
+            "live_sources": len(live_sources),
+            "live_ai_connected": sum(
+                1 for source in live_sources if source.get("ai_enabled")
+            ),
+            "public_items": (
+                sum(1 for item in documents if item.get("visibility") == "public")
+                + sum(1 for item in ai_sources if item.get("source_visibility") == "public")
+                + sum(1 for item in live_sources if item.get("visibility") == "public")
+            ),
+            "staff_items": (
+                sum(1 for item in documents if item.get("visibility") == "staff")
+                + sum(
+                    1
+                    for item in ai_sources
+                    if item.get("source_visibility") in {"staff", "staff_only"}
+                )
+                + sum(1 for item in live_sources if item.get("visibility") == "staff_only")
+            ),
+        },
+    }
 
 
 def knowledge_document_or_error(doc_key: str) -> dict[str, Any]:
@@ -1083,22 +1240,28 @@ async def analytics_export(
     )
 
 
-@app.get("/knowledge", response_class=HTMLResponse, name="knowledge_legacy")
-async def knowledge_legacy(request: Request) -> RedirectResponse:
-    return knowledge_redirect(request)
-
-
-@app.get("/settings/knowledge", response_class=HTMLResponse, name="knowledge_page")
+@app.get("/knowledge", response_class=HTMLResponse, name="knowledge_page")
 async def knowledge_page(request: Request) -> HTMLResponse:
     if redirect := login_redirect(request):
         return redirect
+    summary = knowledge_sources_summary()
     return templates.TemplateResponse(
         request=request,
         name="knowledge.html",
         context=template_context(
             request,
-            page_title="Knowledge Base",
-            documents=list_documents(),
+            page_title="Knowledge",
+            documents=summary["documents"],
+            ai_sources=summary["ai_sources"],
+            live_sources=summary["live_sources"],
+            knowledge_counts=summary["counts"],
+            kb_status=get_kb_status(),
+            source_types=sorted(SOURCE_TYPES),
+            live_source_types=sorted(KNOWLEDGE_SOURCE_TYPES),
+            visibilities=sorted(VISIBILITIES),
+            live_visibilities=sorted(KNOWLEDGE_VISIBILITIES),
+            live_sync_modes=sorted(KNOWLEDGE_SYNC_MODES),
+            default_guild_id=os.getenv("GUILD_ID", "").strip(),
             recent_audit=recent_knowledge_audit(),
             message=request.session.pop("knowledge_message", None),
             error=request.session.pop("knowledge_error", None),
@@ -1106,13 +1269,34 @@ async def knowledge_page(request: Request) -> HTMLResponse:
     )
 
 
-@app.get("/knowledge/{doc_key}", response_class=HTMLResponse, name="knowledge_detail_legacy")
-async def knowledge_detail_legacy(request: Request, doc_key: str) -> RedirectResponse:
+@app.get("/settings/knowledge", response_class=HTMLResponse, name="knowledge_settings_legacy")
+async def knowledge_settings_legacy(request: Request) -> RedirectResponse:
+    return knowledge_redirect(request)
+
+
+@app.get("/settings/knowledge/{doc_key}", response_class=HTMLResponse, name="knowledge_detail_settings_legacy")
+async def knowledge_detail_settings_legacy(request: Request, doc_key: str) -> RedirectResponse:
     return knowledge_redirect(request, doc_key)
 
 
+@app.get("/settings/knowledge/{doc_key}/preview", response_class=HTMLResponse, name="knowledge_preview_settings_legacy")
+async def knowledge_preview_settings_legacy(request: Request, doc_key: str) -> RedirectResponse:
+    return RedirectResponse(
+        url=request.url_for("knowledge_preview", doc_key=doc_key),
+        status_code=status.HTTP_303_SEE_OTHER,
+    )
+
+
+@app.get("/settings/knowledge/{doc_key}/edit", response_class=HTMLResponse, name="knowledge_edit_settings_legacy")
+async def knowledge_edit_settings_legacy(request: Request, doc_key: str) -> RedirectResponse:
+    return RedirectResponse(
+        url=request.url_for("knowledge_edit", doc_key=doc_key),
+        status_code=status.HTTP_303_SEE_OTHER,
+    )
+
+
 @app.get(
-    "/settings/knowledge/{doc_key}",
+    "/knowledge/{doc_key}",
     response_class=HTMLResponse,
     name="knowledge_detail",
 )
@@ -1133,16 +1317,8 @@ async def knowledge_detail(request: Request, doc_key: str) -> HTMLResponse:
     )
 
 
-@app.get("/knowledge/{doc_key}/preview", response_class=HTMLResponse, name="knowledge_preview_legacy")
-async def knowledge_preview_legacy(request: Request, doc_key: str) -> RedirectResponse:
-    return RedirectResponse(
-        url=request.url_for("knowledge_preview", doc_key=doc_key),
-        status_code=status.HTTP_303_SEE_OTHER,
-    )
-
-
 @app.get(
-    "/settings/knowledge/{doc_key}/preview",
+    "/knowledge/{doc_key}/preview",
     response_class=HTMLResponse,
     name="knowledge_preview",
 )
@@ -1161,16 +1337,8 @@ async def knowledge_preview(request: Request, doc_key: str) -> HTMLResponse:
     )
 
 
-@app.get("/knowledge/{doc_key}/edit", response_class=HTMLResponse, name="knowledge_edit_legacy")
-async def knowledge_edit_legacy(request: Request, doc_key: str) -> RedirectResponse:
-    return RedirectResponse(
-        url=request.url_for("knowledge_edit", doc_key=doc_key),
-        status_code=status.HTTP_303_SEE_OTHER,
-    )
-
-
 @app.get(
-    "/settings/knowledge/{doc_key}/edit",
+    "/knowledge/{doc_key}/edit",
     response_class=HTMLResponse,
     name="knowledge_edit",
 )

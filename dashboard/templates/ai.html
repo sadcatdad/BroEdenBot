@@ -5,7 +5,7 @@
     <p class="eyebrow">Gemini foundation</p>
     <h1>AI Framework</h1>
   </div>
-  <a class="button" href="{{ url_for('ai_kb_page') }}">AI Knowledge Base</a>
+  <a class="button" href="{{ url_for('ai_kb_page') }}">Connected Sources</a>
 </div>
 
 {% if ai.error %}<div class="alert error">{{ ai.error }}</div>{% endif %}
@@ -57,7 +57,7 @@
       <p class="eyebrow">Member feedback</p>
       <h2>Recent /ask Feedback</h2>
     </div>
-    <a class="button secondary" href="{{ url_for('ai_kb_page') }}">Edit KB</a>
+    <a class="button secondary" href="{{ url_for('knowledge_page') }}">Manage Knowledge</a>
   </div>
   <div class="table-wrap">
     <table>

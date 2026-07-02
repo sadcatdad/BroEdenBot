@@ -5,12 +5,15 @@ from __future__ import annotations
 import hashlib
 import json
 import re
+import sqlite3
 from datetime import datetime, timezone
 from typing import Any, Iterable, Optional
 
 import aiosqlite
 
 from utils.ai_kb import chunk_text, normalize_kb_text
+from utils.settings import settings_database_path
+from utils.sqlite import configure_sync_connection
 
 
 KNOWLEDGE_SOURCE_TYPES = {
@@ -83,6 +86,7 @@ async def initialize_live_knowledge_schema(
             channel_name TEXT NOT NULL,
             source_type TEXT NOT NULL,
             enabled INTEGER NOT NULL DEFAULT 1,
+            ai_enabled INTEGER NOT NULL DEFAULT 1,
             visibility TEXT NOT NULL DEFAULT 'public',
             sync_mode TEXT NOT NULL DEFAULT 'live',
             last_synced_message_id INTEGER,
@@ -113,13 +117,18 @@ async def initialize_live_knowledge_schema(
         )
         """
     )
+    cursor = await connection.execute("PRAGMA table_info(knowledge_sources)")
+    source_columns = {row[1] for row in await cursor.fetchall()}
+    await cursor.close()
+    if "ai_enabled" not in source_columns:
+        await connection.execute(
+            "ALTER TABLE knowledge_sources ADD COLUMN ai_enabled INTEGER NOT NULL DEFAULT 1"
+        )
     cursor = await connection.execute("PRAGMA table_info(knowledge_entries)")
     columns = {row[1] for row in await cursor.fetchall()}
     await cursor.close()
     if "content_hash" not in columns:
-        await connection.execute(
-            "ALTER TABLE knowledge_entries ADD COLUMN content_hash TEXT"
-        )
+        await connection.execute("ALTER TABLE knowledge_entries ADD COLUMN content_hash TEXT")
     await connection.execute(
         """
         CREATE INDEX IF NOT EXISTS idx_knowledge_sources_enabled
@@ -157,6 +166,7 @@ async def upsert_knowledge_source(
     visibility: str,
     sync_mode: str = "live",
     enabled: bool = True,
+    ai_enabled: bool = True,
 ) -> None:
     source_type = validate_source_type(source_type)
     visibility = validate_visibility(visibility)
@@ -165,13 +175,14 @@ async def upsert_knowledge_source(
     await connection.execute(
         """
         INSERT INTO knowledge_sources (
-            guild_id, channel_id, channel_name, source_type, enabled,
+            guild_id, channel_id, channel_name, source_type, enabled, ai_enabled,
             visibility, sync_mode, created_at, updated_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(guild_id, channel_id) DO UPDATE SET
             channel_name = excluded.channel_name,
             source_type = excluded.source_type,
             enabled = excluded.enabled,
+            ai_enabled = excluded.ai_enabled,
             visibility = excluded.visibility,
             sync_mode = excluded.sync_mode,
             updated_at = excluded.updated_at
@@ -182,6 +193,7 @@ async def upsert_knowledge_source(
             channel_name,
             source_type,
             1 if enabled else 0,
+            1 if ai_enabled else 0,
             visibility,
             sync_mode,
             now,
@@ -456,6 +468,7 @@ async def upsert_knowledge_entry_from_message(
         source_message_id=message_id,
         source_type=source["source_type"],
         visibility=source["visibility"],
+        ai_enabled=bool(source["ai_enabled"]),
         title=title,
         content=content,
         indexed_at=indexed_at,
@@ -509,6 +522,7 @@ async def upsert_ai_kb_source_for_entry(
     source_message_id: int,
     source_type: str,
     visibility: str,
+    ai_enabled: bool,
     title: str,
     content: str,
     indexed_at: str,
@@ -524,6 +538,10 @@ async def upsert_ai_kb_source_for_entry(
         "indexed_at": indexed_at,
     }
     metadata_json = json.dumps(metadata, sort_keys=True)
+    if not ai_enabled:
+        await delete_ai_kb_source(connection, source_name)
+        return
+
     cursor = await connection.execute(
         "SELECT id, created_at FROM ai_kb_sources WHERE source_name = ?",
         (source_name,),
@@ -535,10 +553,10 @@ async def upsert_ai_kb_source_for_entry(
             """
             INSERT INTO ai_kb_sources (
                 created_at, updated_at, source_name, source_type,
-                source_visibility, raw_content, metadata_json
-            ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                source_visibility, ai_enabled, raw_content, metadata_json
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
             """,
-            (now, now, source_name, source_type, visibility, raw_text, metadata_json),
+            (now, now, source_name, source_type, visibility, 1, raw_text, metadata_json),
         )
         source_id = cursor.lastrowid
         await cursor.close()
@@ -548,10 +566,11 @@ async def upsert_ai_kb_source_for_entry(
             """
             UPDATE ai_kb_sources
             SET updated_at = ?, source_type = ?, source_visibility = ?,
+                ai_enabled = ?,
                 raw_content = ?, metadata_json = ?
             WHERE id = ?
             """,
-            (now, source_type, visibility, raw_text, metadata_json, source_id),
+            (now, source_type, visibility, 1, raw_text, metadata_json, source_id),
         )
     await connection.execute("DELETE FROM ai_kb_chunks WHERE source_name = ?", (source_name,))
     for index, chunk in enumerate(chunk_text(raw_text)):
@@ -559,9 +578,9 @@ async def upsert_ai_kb_source_for_entry(
             """
             INSERT INTO ai_kb_chunks (
                 source_id, created_at, updated_at, source_name, source_type,
-                source_visibility, section_title, chunk_index, content,
+                source_visibility, ai_enabled, section_title, chunk_index, content,
                 normalized_content, metadata_json
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 source_id,
@@ -570,6 +589,7 @@ async def upsert_ai_kb_source_for_entry(
                 source_name,
                 source_type,
                 visibility,
+                1,
                 chunk.section_title,
                 index,
                 chunk.content,
@@ -660,3 +680,259 @@ def live_entries_as_sources(
             )
         )
     return results
+
+
+def _connect() -> sqlite3.Connection:
+    path = settings_database_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    return configure_sync_connection(sqlite3.connect(path, timeout=30))
+
+
+def initialize_live_knowledge_schema_sync() -> None:
+    with _connect() as connection:
+        connection.execute(
+            """
+            CREATE TABLE IF NOT EXISTS knowledge_sources (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                guild_id INTEGER NOT NULL,
+                channel_id INTEGER NOT NULL,
+                channel_name TEXT NOT NULL,
+                source_type TEXT NOT NULL,
+                enabled INTEGER NOT NULL DEFAULT 1,
+                ai_enabled INTEGER NOT NULL DEFAULT 1,
+                visibility TEXT NOT NULL DEFAULT 'public',
+                sync_mode TEXT NOT NULL DEFAULT 'live',
+                last_synced_message_id INTEGER,
+                last_synced_at TEXT,
+                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                UNIQUE(guild_id, channel_id)
+            )
+            """
+        )
+        connection.execute(
+            """
+            CREATE TABLE IF NOT EXISTS knowledge_entries (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                guild_id INTEGER NOT NULL,
+                source_channel_id INTEGER NOT NULL,
+                source_message_id INTEGER NOT NULL,
+                source_type TEXT NOT NULL,
+                visibility TEXT NOT NULL,
+                title TEXT,
+                content TEXT NOT NULL,
+                content_hash TEXT,
+                author_id INTEGER,
+                created_at TEXT,
+                edited_at TEXT,
+                indexed_at TEXT NOT NULL,
+                UNIQUE(guild_id, source_message_id)
+            )
+            """
+        )
+        connection.execute(
+            """
+            CREATE TABLE IF NOT EXISTS dashboard_actions (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                action_type TEXT NOT NULL,
+                payload_json TEXT NOT NULL,
+                status TEXT NOT NULL DEFAULT 'pending',
+                requested_by TEXT,
+                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                processed_at TEXT,
+                result_message TEXT
+            )
+            """
+        )
+        _ensure_column(connection, "knowledge_sources", "ai_enabled", "INTEGER NOT NULL DEFAULT 1")
+        _ensure_column(connection, "knowledge_entries", "content_hash", "TEXT")
+        connection.execute(
+            """
+            CREATE INDEX IF NOT EXISTS idx_knowledge_sources_enabled
+            ON knowledge_sources (guild_id, enabled, sync_mode)
+            """
+        )
+        connection.execute(
+            """
+            CREATE INDEX IF NOT EXISTS idx_knowledge_entries_visibility
+            ON knowledge_entries (guild_id, visibility, source_type)
+            """
+        )
+        connection.execute(
+            """
+            CREATE INDEX IF NOT EXISTS idx_knowledge_entries_channel
+            ON knowledge_entries (guild_id, source_channel_id, indexed_at)
+            """
+        )
+        connection.commit()
+
+
+def _ensure_column(
+    connection: sqlite3.Connection,
+    table: str,
+    column: str,
+    definition: str,
+) -> None:
+    columns = {
+        str(row["name"])
+        for row in connection.execute(f'PRAGMA table_info("{table}")').fetchall()
+    }
+    if column not in columns:
+        connection.execute(f'ALTER TABLE "{table}" ADD COLUMN {column} {definition}')
+
+
+def list_live_knowledge_sources_sync() -> list[dict[str, Any]]:
+    initialize_live_knowledge_schema_sync()
+    with _connect() as connection:
+        rows = connection.execute(
+            """
+            SELECT
+                s.*,
+                COUNT(e.id) AS entry_count,
+                MAX(e.indexed_at) AS latest_indexed_at
+            FROM knowledge_sources AS s
+            LEFT JOIN knowledge_entries AS e
+              ON e.guild_id = s.guild_id
+             AND e.source_channel_id = s.channel_id
+            GROUP BY s.id
+            ORDER BY s.enabled DESC, s.channel_name COLLATE NOCASE
+            """
+        ).fetchall()
+    return [dict(row) for row in rows]
+
+
+def upsert_live_knowledge_source_sync(
+    *,
+    guild_id: int,
+    channel_id: int,
+    channel_name: str,
+    source_type: str,
+    visibility: str,
+    sync_mode: str,
+    enabled: bool,
+    ai_enabled: bool,
+) -> None:
+    initialize_live_knowledge_schema_sync()
+    source_type = validate_source_type(source_type)
+    visibility = validate_visibility(visibility)
+    sync_mode = validate_sync_mode(sync_mode)
+    now = utcnow_iso()
+    with _connect() as connection:
+        connection.execute(
+            """
+            INSERT INTO knowledge_sources (
+                guild_id, channel_id, channel_name, source_type, enabled,
+                ai_enabled, visibility, sync_mode, created_at, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(guild_id, channel_id) DO UPDATE SET
+                channel_name = excluded.channel_name,
+                source_type = excluded.source_type,
+                enabled = excluded.enabled,
+                ai_enabled = excluded.ai_enabled,
+                visibility = excluded.visibility,
+                sync_mode = excluded.sync_mode,
+                updated_at = excluded.updated_at
+            """,
+            (
+                guild_id,
+                channel_id,
+                channel_name,
+                source_type,
+                1 if enabled else 0,
+                1 if ai_enabled else 0,
+                visibility,
+                sync_mode,
+                now,
+                now,
+            ),
+        )
+        if not ai_enabled:
+            _delete_ai_kb_sources_for_channel_sync(
+                connection,
+                guild_id=guild_id,
+                source_channel_id=channel_id,
+            )
+        connection.commit()
+
+
+def delete_live_knowledge_source_sync(
+    *,
+    guild_id: int,
+    channel_id: int,
+) -> int:
+    initialize_live_knowledge_schema_sync()
+    with _connect() as connection:
+        _delete_ai_kb_sources_for_channel_sync(
+            connection,
+            guild_id=guild_id,
+            source_channel_id=channel_id,
+        )
+        cursor = connection.execute(
+            """
+            DELETE FROM knowledge_entries
+            WHERE guild_id = ? AND source_channel_id = ?
+            """,
+            (guild_id, channel_id),
+        )
+        deleted = int(cursor.rowcount or 0)
+        connection.execute(
+            """
+            DELETE FROM knowledge_sources
+            WHERE guild_id = ? AND channel_id = ?
+            """,
+            (guild_id, channel_id),
+        )
+        connection.commit()
+    return deleted
+
+
+def queue_live_knowledge_sync(
+    *,
+    guild_id: int,
+    channel_id: int,
+    limit: int,
+    requested_by: str,
+) -> int:
+    initialize_live_knowledge_schema_sync()
+    payload_json = json.dumps(
+        {
+            "guild_id": int(guild_id),
+            "channel_id": int(channel_id),
+            "limit": max(1, min(int(limit or 200), 1000)),
+        },
+        sort_keys=True,
+    )
+    with _connect() as connection:
+        cursor = connection.execute(
+            """
+            INSERT INTO dashboard_actions (
+                action_type, payload_json, status, requested_by
+            ) VALUES ('sync_knowledge_source', ?, 'pending', ?)
+            """,
+            (payload_json, requested_by),
+        )
+        connection.commit()
+        return int(cursor.lastrowid)
+
+
+def _delete_ai_kb_sources_for_channel_sync(
+    connection: sqlite3.Connection,
+    *,
+    guild_id: int,
+    source_channel_id: int,
+) -> None:
+    pattern = f'"guild_id": "{guild_id}"'
+    channel_pattern = f'"channel_id": "{source_channel_id}"'
+    rows = connection.execute(
+        """
+        SELECT source_name
+        FROM ai_kb_sources
+        WHERE source_name LIKE ?
+          AND metadata_json LIKE ?
+          AND metadata_json LIKE ?
+        """,
+        ("live-discord:%", f"%{pattern}%", f"%{channel_pattern}%"),
+    ).fetchall()
+    for row in rows:
+        connection.execute("DELETE FROM ai_kb_chunks WHERE source_name = ?", (row["source_name"],))
+        connection.execute("DELETE FROM ai_kb_sources WHERE source_name = ?", (row["source_name"],))

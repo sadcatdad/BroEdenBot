@@ -36,10 +36,14 @@
       Markdown or plain text content
       <textarea class="knowledge-editor ai-kb-editor" name="raw_content" rows="28" maxlength="{{ max_source_chars }}" required>{{ source.raw_content if source else "" }}</textarea>
     </label>
+    <label class="checkbox-line">
+      <input type="checkbox" name="ai_enabled" value="1" {{ "checked" if not source or source.ai_enabled else "" }}>
+      Use this source for AI retrieval
+    </label>
     <p class="muted">Paste markdown or plain text content here. Saving will replace the searchable chunks for this source. Maximum size: 2 MB. File upload is not enabled in Phase 1.</p>
     <div class="action-buttons">
       <button class="button" type="submit">Save source</button>
-      <a class="button secondary" href="{{ url_for('ai_kb_page') }}">Cancel</a>
+      <a class="button secondary" href="{{ url_for('knowledge_page') }}">Cancel</a>
     </div>
   </form>
 </section>

@@ -3544,6 +3544,15 @@ class Stats(commands.Cog):
                     success, message = await self._process_discord_metadata_refresh(
                         payload,
                     )
+                elif action["action_type"] == "sync_knowledge_source":
+                    knowledge_cog = self.bot.get_cog("KnowledgeSources")
+                    if knowledge_cog is None:
+                        success = False
+                        message = "Knowledge source cog is not loaded."
+                    else:
+                        success, message = await knowledge_cog.process_dashboard_sync(
+                            payload,
+                        )
                 else:
                     success = False
                     message = "Unsupported dashboard action."

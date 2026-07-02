@@ -282,6 +282,15 @@ th { color: var(--muted); font-size: .73rem; letter-spacing: .06em; text-transfo
   margin-bottom: 1rem;
 }
 .action-buttons { display: flex; flex-wrap: wrap; gap: .7rem; }
+.checkbox-line {
+  display: flex;
+  align-items: center;
+  gap: .55rem;
+  color: var(--muted);
+  font-weight: 700;
+}
+.checkbox-line input { width: auto; }
+.compact-stack { gap: .55rem; justify-content: center; }
 .operations-columns { margin: 1rem 0; }
 details summary { color: var(--muted); cursor: pointer; }
 .log-panel { padding: .85rem 0; border-top: 1px solid var(--border); }

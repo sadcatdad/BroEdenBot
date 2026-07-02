@@ -2,33 +2,40 @@
 {% block content %}
 <div class="page-heading">
   <div>
-    <p class="eyebrow">Allowlisted local documents</p>
+    <p class="eyebrow">Unified sources</p>
     <h1>Knowledge</h1>
   </div>
-  <form method="post" action="{{ url_for('knowledge_reindex_all') }}">
-    <input type="hidden" name="csrf" value="{{ csrf_token }}">
-    <button class="button" type="submit">Reindex all knowledge</button>
-  </form>
+  <div class="action-buttons">
+    <a class="button secondary" href="{{ url_for('ai_kb_new') }}">Add text source</a>
+    <form method="post" action="{{ url_for('knowledge_reindex_all') }}">
+      <input type="hidden" name="csrf" value="{{ csrf_token }}">
+      <button class="button" type="submit">Reindex file knowledge</button>
+    </form>
+  </div>
 </div>
-<p class="muted">Only the fixed documents below are accessible. Public and staff knowledge remain separate, and reindex requests are handled by the live bot process.</p>
+<p class="muted">Manage public and staff knowledge in one place. AI-enabled sources can be retrieved by AI tools according to their visibility; staff-only knowledge is never used for member-facing answers.</p>
 {% if message %}<div class="alert success">{{ message }}</div>{% endif %}
 {% if error %}<div class="alert error">{{ error }}</div>{% endif %}
-<div class="settings-layout">
-{% include "_settings_nav.html" %}
-<div>
+
+<section class="card-grid four">
+  <article class="card"><p class="label">File documents</p><p class="metric">{{ knowledge_counts.documents }}</p></article>
+  <article class="card"><p class="label">AI text sources</p><p class="metric">{{ knowledge_counts.ai_sources }}</p><p class="muted">{{ knowledge_counts.ai_connected }} connected</p></article>
+  <article class="card"><p class="label">Discord sources</p><p class="metric">{{ knowledge_counts.live_sources }}</p><p class="muted">{{ knowledge_counts.live_ai_connected }} connected</p></article>
+  <article class="card"><p class="label">Visibility</p><p class="metric">{{ knowledge_counts.public_items }}</p><p class="muted">{{ knowledge_counts.staff_items }} staff/internal</p></article>
+</section>
 
 <section class="card knowledge-filters" aria-label="Knowledge filters">
   <label>
     Search
-    <input id="knowledge-search" type="search" placeholder="Document name or path">
+    <input id="knowledge-search" type="search" placeholder="Name, path, type, source ID">
   </label>
   <label>
-    Category
-    <select id="knowledge-category">
-      <option value="">All categories</option>
-      {% for category in documents|map(attribute='category')|unique|sort %}
-      <option value="{{ category|lower }}">{{ category }}</option>
-      {% endfor %}
+    Kind
+    <select id="knowledge-kind">
+      <option value="">All kinds</option>
+      <option value="file">File documents</option>
+      <option value="ai">Text sources</option>
+      <option value="discord">Discord sources</option>
     </select>
   </label>
   <label>
@@ -37,42 +44,42 @@
       <option value="">All visibility</option>
       <option value="public">Public</option>
       <option value="staff">Staff</option>
+      <option value="staff_only">Staff only</option>
       <option value="internal">Internal</option>
     </select>
   </label>
   <label>
-    Status
-    <select id="knowledge-status">
-      <option value="">All statuses</option>
-      <option value="found">Found</option>
-      <option value="missing">Missing</option>
-      <option value="empty">Empty</option>
-      <option value="unreadable">Unreadable</option>
+    AI
+    <select id="knowledge-ai">
+      <option value="">All AI states</option>
+      <option value="enabled">AI enabled</option>
+      <option value="disabled">AI disabled</option>
+      <option value="na">Not an AI source</option>
     </select>
   </label>
 </section>
 
 <section class="card">
+  <div class="section-heading">
+    <div>
+      <p class="eyebrow">All sources</p>
+      <h2>Knowledge Items</h2>
+    </div>
+  </div>
   <div class="table-wrap">
     <table id="knowledge-table">
       <thead>
-        <tr><th>Document</th><th>Category</th><th>Visibility</th><th>Path</th><th>Size / words</th><th>Modified</th><th>Status</th><th>Actions</th></tr>
+        <tr><th>Item</th><th>Kind</th><th>Visibility</th><th>AI</th><th>Details</th><th>Updated</th><th>Actions</th></tr>
       </thead>
       <tbody>
       {% for document in documents %}
-      <tr
-        data-search="{{ (document.display_name ~ ' ' ~ document.relative_path)|lower }}"
-        data-category="{{ document.category|lower }}"
-        data-visibility="{{ document.visibility }}"
-        data-status="{{ document.status }}"
-      >
+      <tr data-kind="file" data-visibility="{{ document.visibility }}" data-ai="na" data-search="{{ (document.display_name ~ ' ' ~ document.relative_path ~ ' ' ~ document.category)|lower }}">
         <td><strong>{{ document.display_name }}</strong><br><small class="muted">{{ "Editable" if document.editable else "Read-only" }}</small></td>
-        <td>{{ document.category }}</td>
+        <td><span class="badge">file</span></td>
         <td><span class="badge visibility-{{ document.visibility }}">{{ document.visibility }}</span></td>
-        <td><code>{{ document.relative_path }}</code></td>
-        <td>{{ document.size_bytes }} bytes<br><small class="muted">{{ document.word_count }} words</small></td>
+        <td><span class="badge status-empty">file cache</span></td>
+        <td><code>{{ document.relative_path }}</code><br><small class="muted">{{ document.size_bytes }} bytes · {{ document.word_count }} words · {{ document.status }}</small></td>
         <td>{{ document.modified_at or "—" }}</td>
-        <td><span class="badge status-{{ document.status }}">{{ document.status }}</span></td>
         <td>
           <div class="table-actions">
             <a class="button secondary small" href="{{ url_for('knowledge_detail', doc_key=document.doc_key) }}">View</a>
@@ -88,9 +95,124 @@
         </td>
       </tr>
       {% endfor %}
+
+      {% for source in ai_sources %}
+      <tr data-kind="ai" data-visibility="{{ source.source_visibility }}" data-ai="{{ 'enabled' if source.ai_enabled else 'disabled' }}" data-search="{{ (source.source_name ~ ' ' ~ source.source_type ~ ' ' ~ source.source_visibility)|lower }}">
+        <td><strong>{{ source.source_name }}</strong></td>
+        <td><span class="badge">text source</span></td>
+        <td><span class="badge visibility-{{ source.source_visibility }}">{{ source.source_visibility }}</span></td>
+        <td>
+          <form method="post" action="{{ url_for('knowledge_ai_toggle', source_name=source.source_name) }}">
+            <input type="hidden" name="csrf" value="{{ csrf_token }}">
+            <input type="hidden" name="ai_enabled" value="{{ '0' if source.ai_enabled else '1' }}">
+            <button class="button {{ 'secondary' if source.ai_enabled else '' }} small" type="submit">{{ "Enabled" if source.ai_enabled else "Disabled" }}</button>
+          </form>
+        </td>
+        <td><span class="badge">{{ source.source_type }}</span><br><small class="muted">{{ source.chunk_count }} chunks</small></td>
+        <td>{{ source.updated_at }}</td>
+        <td>
+          <div class="table-actions">
+            <a class="button secondary small" href="{{ url_for('ai_kb_edit', source_name=source.source_name) }}">Edit</a>
+            <form method="post" action="{{ url_for('ai_kb_delete', source_name=source.source_name) }}">
+              <input type="hidden" name="csrf" value="{{ csrf_token }}">
+              <input type="hidden" name="confirm" value="{{ source.source_name }}">
+              <button class="button danger small" type="submit">Delete</button>
+            </form>
+          </div>
+        </td>
+      </tr>
+      {% endfor %}
+
+      {% for source in live_sources %}
+      <tr data-kind="discord" data-visibility="{{ source.visibility }}" data-ai="{{ 'enabled' if source.ai_enabled else 'disabled' }}" data-search="{{ (source.channel_name ~ ' ' ~ source.channel_id ~ ' ' ~ source.source_type ~ ' ' ~ source.visibility)|lower }}">
+        <td><strong>{{ source.channel_name }}</strong><br><small class="muted">{{ source.channel_id }}</small></td>
+        <td><span class="badge">Discord</span></td>
+        <td><span class="badge visibility-{{ source.visibility }}">{{ source.visibility }}</span></td>
+        <td><span class="badge {{ 'status-active' if source.ai_enabled else 'status-empty' }}">{{ "enabled" if source.ai_enabled else "disabled" }}</span></td>
+        <td><span class="badge">{{ source.source_type }}</span><br><small class="muted">{{ source.entry_count or 0 }} entries · {{ source.sync_mode }} · {{ "enabled" if source.enabled else "disabled" }}</small></td>
+        <td>{{ source.latest_indexed_at or source.last_synced_at or source.updated_at }}</td>
+        <td>
+          <div class="table-actions">
+            <form method="post" action="{{ url_for('knowledge_live_sync', guild_id=source.guild_id, channel_id=source.channel_id) }}">
+              <input type="hidden" name="csrf" value="{{ csrf_token }}">
+              <input type="hidden" name="limit" value="200">
+              <button class="button small" type="submit">Sync</button>
+            </form>
+            <form method="post" action="{{ url_for('knowledge_live_remove', guild_id=source.guild_id, channel_id=source.channel_id) }}">
+              <input type="hidden" name="csrf" value="{{ csrf_token }}">
+              <button class="button danger small" type="submit">Remove</button>
+            </form>
+          </div>
+        </td>
+      </tr>
+      {% endfor %}
       </tbody>
     </table>
   </div>
+</section>
+
+<section class="card">
+  <div class="section-heading">
+    <div>
+      <p class="eyebrow">Discord source</p>
+      <h2>Add or Update Channel / Forum Post</h2>
+    </div>
+  </div>
+  <form method="post" action="{{ url_for('knowledge_live_save') }}" class="stack">
+    <input type="hidden" name="csrf" value="{{ csrf_token }}">
+    <div class="two-column">
+      <label>
+        Guild ID
+        <input name="guild_id" value="{{ default_guild_id }}" inputmode="numeric" required>
+      </label>
+      <label>
+        Display name
+        <input name="channel_name" placeholder="Survival Guide forum post" required>
+      </label>
+    </div>
+    <div>
+      <label>Known channel</label>
+      <channel-single-select input-name="channel_id" value-format="csv" placeholder="Search known channels"></channel-single-select>
+      <p class="muted">Use the picker for known channels. For a specific forum post/thread, paste its thread ID below.</p>
+    </div>
+    <label>
+      Specific channel/thread ID
+      <input name="manual_channel_id" inputmode="numeric" placeholder="Forum post or thread ID">
+    </label>
+    <div class="two-column">
+      <label>
+        Source type
+        <select name="source_type" required>
+          {% for type in live_source_types %}
+          <option value="{{ type }}">{{ type }}</option>
+          {% endfor %}
+        </select>
+      </label>
+      <label>
+        Visibility
+        <select name="visibility" required>
+          {% for visibility in live_visibilities %}
+          <option value="{{ visibility }}">{{ visibility }}</option>
+          {% endfor %}
+        </select>
+      </label>
+    </div>
+    <div class="two-column">
+      <label>
+        Sync mode
+        <select name="sync_mode" required>
+          {% for mode in live_sync_modes %}
+          <option value="{{ mode }}">{{ mode }}</option>
+          {% endfor %}
+        </select>
+      </label>
+      <div class="stack compact-stack">
+        <label class="checkbox-line"><input type="checkbox" name="enabled" value="1" checked> Keep source enabled</label>
+        <label class="checkbox-line"><input type="checkbox" name="ai_enabled" value="1" checked> Use for AI retrieval</label>
+      </div>
+    </div>
+    <div class="action-buttons"><button class="button" type="submit">Save Discord source</button></div>
+  </form>
 </section>
 
 <section class="card">
@@ -113,25 +235,23 @@
     </table>
   </div>
   {% else %}
-  <p class="muted">No knowledge edits or reindex requests recorded yet.</p>
+  <p class="muted">No file edits or reindex requests recorded yet.</p>
   {% endif %}
 </section>
-</div>
-</div>
 
 <script>
 (() => {
   const rows = [...document.querySelectorAll("#knowledge-table tbody tr")];
-  const controls = ["knowledge-search", "knowledge-category", "knowledge-visibility", "knowledge-status"]
+  const controls = ["knowledge-search", "knowledge-kind", "knowledge-visibility", "knowledge-ai"]
     .map((id) => document.getElementById(id));
   const applyFilters = () => {
-    const [search, category, visibility, status] = controls.map((control) => control.value.toLowerCase());
+    const [search, kind, visibility, ai] = controls.map((control) => control.value.toLowerCase());
     rows.forEach((row) => {
       row.hidden = !(
         (!search || row.dataset.search.includes(search)) &&
-        (!category || row.dataset.category === category) &&
+        (!kind || row.dataset.kind === kind) &&
         (!visibility || row.dataset.visibility === visibility) &&
-        (!status || row.dataset.status === status)
+        (!ai || row.dataset.ai === ai)
       );
     });
   };

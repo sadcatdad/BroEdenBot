@@ -86,6 +86,7 @@ async def initialize_ai_kb_schema_async(connection: aiosqlite.Connection) -> Non
             source_name TEXT NOT NULL UNIQUE,
             source_type TEXT NOT NULL,
             source_visibility TEXT NOT NULL DEFAULT 'public',
+            ai_enabled INTEGER NOT NULL DEFAULT 1,
             raw_content TEXT NOT NULL,
             metadata_json TEXT
         )
@@ -101,6 +102,7 @@ async def initialize_ai_kb_schema_async(connection: aiosqlite.Connection) -> Non
             source_name TEXT NOT NULL,
             source_type TEXT NOT NULL,
             source_visibility TEXT NOT NULL DEFAULT 'public',
+            ai_enabled INTEGER NOT NULL DEFAULT 1,
             section_title TEXT,
             chunk_index INTEGER DEFAULT 0,
             content TEXT NOT NULL,
@@ -115,6 +117,17 @@ async def initialize_ai_kb_schema_async(connection: aiosqlite.Connection) -> Non
     await cursor.close()
     if "source_id" not in columns:
         await connection.execute("ALTER TABLE ai_kb_chunks ADD COLUMN source_id INTEGER")
+    if "ai_enabled" not in columns:
+        await connection.execute(
+            "ALTER TABLE ai_kb_chunks ADD COLUMN ai_enabled INTEGER NOT NULL DEFAULT 1"
+        )
+    cursor = await connection.execute("PRAGMA table_info(ai_kb_sources)")
+    source_columns = {row[1] for row in await cursor.fetchall()}
+    await cursor.close()
+    if "ai_enabled" not in source_columns:
+        await connection.execute(
+            "ALTER TABLE ai_kb_sources ADD COLUMN ai_enabled INTEGER NOT NULL DEFAULT 1"
+        )
     for column in ("source_type", "source_visibility", "source_name", "updated_at"):
         await connection.execute(
             f"CREATE INDEX IF NOT EXISTS idx_ai_kb_chunks_{column} "
@@ -131,16 +144,17 @@ def initialize_ai_kb_schema() -> None:
     with _connect() as connection:
         connection.execute(
             """
-            CREATE TABLE IF NOT EXISTS ai_kb_sources (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                created_at TEXT NOT NULL,
-                updated_at TEXT NOT NULL,
-                source_name TEXT NOT NULL UNIQUE,
-                source_type TEXT NOT NULL,
-                source_visibility TEXT NOT NULL DEFAULT 'public',
-                raw_content TEXT NOT NULL,
-                metadata_json TEXT
-            )
+        CREATE TABLE IF NOT EXISTS ai_kb_sources (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            source_name TEXT NOT NULL UNIQUE,
+            source_type TEXT NOT NULL,
+            source_visibility TEXT NOT NULL DEFAULT 'public',
+            ai_enabled INTEGER NOT NULL DEFAULT 1,
+            raw_content TEXT NOT NULL,
+            metadata_json TEXT
+        )
             """
         )
         connection.execute(
@@ -150,12 +164,13 @@ def initialize_ai_kb_schema() -> None:
                 source_id INTEGER,
                 created_at TEXT NOT NULL,
                 updated_at TEXT NOT NULL,
-                source_name TEXT NOT NULL,
-                source_type TEXT NOT NULL,
-                source_visibility TEXT NOT NULL DEFAULT 'public',
-                section_title TEXT,
-                chunk_index INTEGER DEFAULT 0,
-                content TEXT NOT NULL,
+            source_name TEXT NOT NULL,
+            source_type TEXT NOT NULL,
+            source_visibility TEXT NOT NULL DEFAULT 'public',
+            ai_enabled INTEGER NOT NULL DEFAULT 1,
+            section_title TEXT,
+            chunk_index INTEGER DEFAULT 0,
+            content TEXT NOT NULL,
                 normalized_content TEXT,
                 metadata_json TEXT,
                 FOREIGN KEY(source_id) REFERENCES ai_kb_sources(id) ON DELETE CASCADE
@@ -168,6 +183,18 @@ def initialize_ai_kb_schema() -> None:
         }
         if "source_id" not in columns:
             connection.execute("ALTER TABLE ai_kb_chunks ADD COLUMN source_id INTEGER")
+        if "ai_enabled" not in columns:
+            connection.execute(
+                "ALTER TABLE ai_kb_chunks ADD COLUMN ai_enabled INTEGER NOT NULL DEFAULT 1"
+            )
+        source_columns = {
+            row["name"]
+            for row in connection.execute("PRAGMA table_info(ai_kb_sources)").fetchall()
+        }
+        if "ai_enabled" not in source_columns:
+            connection.execute(
+                "ALTER TABLE ai_kb_sources ADD COLUMN ai_enabled INTEGER NOT NULL DEFAULT 1"
+            )
         for column in ("source_type", "source_visibility", "source_name", "updated_at"):
             connection.execute(
                 f"CREATE INDEX IF NOT EXISTS idx_ai_kb_chunks_{column} "
@@ -220,6 +247,7 @@ def upsert_kb_source(
     visibility: str,
     raw_text: str,
     metadata: Optional[dict[str, object]] = None,
+    ai_enabled: bool = True,
 ) -> dict[str, Any]:
     initialize_ai_kb_schema()
     name = str(source_name or "").strip()
@@ -248,10 +276,19 @@ def upsert_kb_source(
                 """
                 INSERT INTO ai_kb_sources (
                     created_at, updated_at, source_name, source_type,
-                    source_visibility, raw_content, metadata_json
-                ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                    source_visibility, ai_enabled, raw_content, metadata_json
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
                 """,
-                (now, now, name, normalized_type, normalized_visibility, content, metadata_json),
+                (
+                    now,
+                    now,
+                    name,
+                    normalized_type,
+                    normalized_visibility,
+                    1 if ai_enabled else 0,
+                    content,
+                    metadata_json,
+                ),
             )
             source_id = int(cursor.lastrowid)
         else:
@@ -260,10 +297,18 @@ def upsert_kb_source(
                 """
                 UPDATE ai_kb_sources
                 SET updated_at = ?, source_type = ?, source_visibility = ?,
-                    raw_content = ?, metadata_json = ?
+                    ai_enabled = ?, raw_content = ?, metadata_json = ?
                 WHERE id = ?
                 """,
-                (now, normalized_type, normalized_visibility, content, metadata_json, source_id),
+                (
+                    now,
+                    normalized_type,
+                    normalized_visibility,
+                    1 if ai_enabled else 0,
+                    content,
+                    metadata_json,
+                    source_id,
+                ),
             )
         connection.execute("DELETE FROM ai_kb_chunks WHERE source_name = ?", (name,))
         for index, chunk in enumerate(chunks):
@@ -271,9 +316,9 @@ def upsert_kb_source(
                 """
                 INSERT INTO ai_kb_chunks (
                     source_id, created_at, updated_at, source_name, source_type,
-                    source_visibility, section_title, chunk_index, content,
+                    source_visibility, ai_enabled, section_title, chunk_index, content,
                     normalized_content, metadata_json
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     source_id,
@@ -282,6 +327,7 @@ def upsert_kb_source(
                     name,
                     normalized_type,
                     normalized_visibility,
+                    1 if ai_enabled else 0,
                     chunk.section_title,
                     index,
                     chunk.content,
@@ -294,6 +340,7 @@ def upsert_kb_source(
         "source_name": name,
         "source_type": normalized_type,
         "visibility": normalized_visibility,
+        "ai_enabled": bool(ai_enabled),
         "chunk_count": len(chunks),
         "updated_at": now,
     }
@@ -317,12 +364,46 @@ def delete_kb_source(source_name: str) -> int:
     return count
 
 
+def set_kb_source_ai_enabled(source_name: str, enabled: bool) -> None:
+    initialize_ai_kb_schema()
+    name = str(source_name or "").strip()
+    if not name:
+        raise ValueError("Source name is required.")
+    with _connect() as connection:
+        connection.execute("BEGIN IMMEDIATE")
+        row = connection.execute(
+            "SELECT id FROM ai_kb_sources WHERE source_name = ?",
+            (name,),
+        ).fetchone()
+        if row is None:
+            raise ValueError("Source was not found.")
+        value = 1 if enabled else 0
+        now = _now()
+        connection.execute(
+            """
+            UPDATE ai_kb_sources
+            SET ai_enabled = ?, updated_at = ?
+            WHERE source_name = ?
+            """,
+            (value, now, name),
+        )
+        connection.execute(
+            """
+            UPDATE ai_kb_chunks
+            SET ai_enabled = ?, updated_at = ?
+            WHERE source_name = ?
+            """,
+            (value, now, name),
+        )
+        connection.commit()
+
+
 def get_kb_source(source_name: str) -> Optional[dict[str, Any]]:
     initialize_ai_kb_schema()
     with _connect() as connection:
         row = connection.execute(
             """
-            SELECT source_name, source_type, source_visibility, raw_content,
+            SELECT source_name, source_type, source_visibility, ai_enabled, raw_content,
                    metadata_json, created_at, updated_at
             FROM ai_kb_sources
             WHERE source_name = ?
@@ -341,6 +422,7 @@ def list_kb_sources() -> list[dict[str, Any]]:
                 """
                 SELECT
                     s.source_name, s.source_type, s.source_visibility,
+                    s.ai_enabled,
                     s.updated_at, COUNT(c.id) AS chunk_count
                 FROM ai_kb_sources AS s
                 LEFT JOIN ai_kb_chunks AS c ON c.source_name = s.source_name
@@ -359,9 +441,11 @@ def get_kb_status() -> dict[str, Any]:
             SELECT
                 COUNT(DISTINCT source_name) AS total_sources,
                 COUNT(*) AS total_chunks,
-                SUM(source_visibility = 'public') AS public_chunks,
+                SUM(ai_enabled = 1) AS enabled_chunks,
+                SUM(source_visibility = 'public' AND ai_enabled = 1) AS public_chunks,
                 SUM(CASE
-                    WHEN source_visibility IN ('staff', 'staff_only') THEN 1
+                    WHEN source_visibility IN ('staff', 'staff_only')
+                     AND ai_enabled = 1 THEN 1
                     ELSE 0
                 END) AS staff_chunks
             FROM ai_kb_chunks
@@ -389,6 +473,7 @@ def get_kb_status() -> dict[str, Any]:
     return {
         "total_sources": int(totals["total_sources"] or 0),
         "total_chunks": int(totals["total_chunks"] or 0),
+        "enabled_chunks": int(totals["enabled_chunks"] or 0),
         "public_chunks": int(totals["public_chunks"] or 0),
         "staff_chunks": int(totals["staff_chunks"] or 0),
         "by_type": by_type,
@@ -435,6 +520,7 @@ def search_kb(
         return []
     visibilities = _visibility_values(visibility)
     clauses = [
+        "ai_enabled = 1",
         "source_visibility IN ({})".format(",".join("?" for _ in visibilities))
     ]
     params: list[Any] = sorted(visibilities)

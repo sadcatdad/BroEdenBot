@@ -388,7 +388,8 @@ def pending_dashboard_actions(limit: int = 10) -> list[dict[str, Any]]:
             WHERE action_type IN (
                 'refresh_stat',
                 'reindex_knowledge',
-                'refresh_discord_metadata'
+                'refresh_discord_metadata',
+                'sync_knowledge_source'
             )
               AND status = 'pending'
             ORDER BY id

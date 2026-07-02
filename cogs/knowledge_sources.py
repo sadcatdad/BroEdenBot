@@ -208,6 +208,32 @@ class KnowledgeSources(commands.Cog):
             )
         return scanned, indexed, last_message_id
 
+    async def process_dashboard_sync(
+        self,
+        payload: dict[str, object],
+    ) -> tuple[bool, str]:
+        guild_id = int(payload.get("guild_id") or 0)
+        channel_id = int(payload.get("channel_id") or 0)
+        limit = max(1, min(int(payload.get("limit") or SYNC_LIMIT_DEFAULT), SYNC_LIMIT_MAX))
+        if guild_id <= 0 or channel_id <= 0:
+            return False, "Knowledge source sync payload is missing guild or channel ID."
+        source = await self._source_for_channel(guild_id, channel_id)
+        if source is None:
+            return False, "Knowledge source is not configured."
+        if not source["enabled"]:
+            return False, "Knowledge source is disabled."
+        channel = await self._fetch_channel(channel_id)
+        if not isinstance(channel, (discord.TextChannel, discord.ForumChannel, discord.Thread)):
+            return False, "Knowledge source channel or thread is unavailable."
+        scanned, indexed, _ = await self._sync_channel(channel, source, limit=limit)
+        db = self._db()
+        if db is not None:
+            await db.commit()
+        return True, (
+            f"Synced {source['channel_name']}: scanned {scanned}, "
+            f"indexed {indexed}."
+        )
+
     @sources.command(name="add", description="Add or update a Discord knowledge source")
     @app_commands.describe(
         channel="Text channel, forum channel, or specific forum post/thread to index",
