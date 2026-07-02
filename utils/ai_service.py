@@ -30,6 +30,12 @@ AI_BUDGET_MESSAGE = (
 AI_EMPTY_RESPONSE_MESSAGE = "AI returned an empty response. Please try again later."
 AI_GENERIC_ERROR_MESSAGE = "AI could not complete that request right now."
 
+# Fixed thinking-token cap for Gemini 2.5 calls that opt into reasoning via
+# allow_thinking. Bounded (not dynamic) so a long thinking pass cannot consume
+# the whole output budget and truncate the structured answer. The caller must
+# request enough max_output_tokens to cover this budget plus the answer itself.
+STRUCTURED_THINKING_BUDGET = 2048
+
 FUTURE_TASK_TYPES = {
     "ask_server_guide",
     "staff_context_user",
@@ -473,15 +479,18 @@ async def generate_ai_response(
         if response_schema is not None:
             config_kwargs["response_mime_type"] = "application/json"
             config_kwargs["response_schema"] = response_schema
-        if "gemini-2.5" in model.casefold() and not allow_thinking:
+        if "gemini-2.5" in model.casefold():
             # Gemini 2.5 Flash is a hybrid reasoning model. We disable thinking
-            # by default for latency/cost on extractive calls, but callers that
-            # perform reasoning-heavy synthesis (e.g. building a structured,
-            # multi-field summary from intermediate recaps) must opt back in via
-            # allow_thinking — otherwise the model tends to satisfy an all-
-            # required schema with empty field values instead of real content.
+            # by default for latency/cost on extractive calls. Reasoning-heavy
+            # synthesis (e.g. building a structured, multi-field summary from
+            # intermediate recaps) opts back in via allow_thinking — otherwise
+            # the model tends to satisfy an all-required schema with empty field
+            # values. When thinking is enabled we cap it to a fixed budget
+            # rather than leaving it dynamic, so the thinking pass cannot starve
+            # the answer's output-token budget and truncate the JSON.
+            thinking_budget = STRUCTURED_THINKING_BUDGET if allow_thinking else 0
             config_kwargs["thinking_config"] = types.ThinkingConfig(
-                thinking_budget=0
+                thinking_budget=thinking_budget
             )
         response = await client.aio.models.generate_content(
             model=model,

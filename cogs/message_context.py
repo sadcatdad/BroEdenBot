@@ -65,10 +65,12 @@ MAX_OUTPUT_CHARS = 3_900
 TRANSCRIPT_EXCERPT_CHARS = 400
 CHUNK_CALL_TIMEOUT_SECONDS = 45
 FINAL_CALL_TIMEOUT_SECONDS = 60
-# Output budget for the reasoning-heavy final synthesis call. Must leave room
-# for both Gemini's thinking tokens and the structured JSON answer; too small a
-# budget causes the model to emit a schema-valid object with empty fields.
-FINAL_SYNTHESIS_MAX_OUTPUT_TOKENS = 2048
+# Output budget for the reasoning-heavy final synthesis call. Must cover both
+# Gemini's thinking-token budget (STRUCTURED_THINKING_BUDGET, ~2048) and the
+# full structured JSON answer. Too small a budget either yields empty fields
+# (no room to reason) or a truncated, unparseable JSON object (no room to
+# finish writing it).
+FINAL_SYNTHESIS_MAX_OUTPUT_TOKENS = 6144
 STRUCTURED_TIMEOUT_BUFFER_SECONDS = 30
 STRUCTURED_TIMEOUT_MAX_SECONDS = 600
 TIMEFRAME_SECONDS = {
