@@ -344,7 +344,7 @@ class VCRewardAccountingTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(eligible_seconds, 1800)
         self.assertEqual(pulses_earned, 1)
-        self.assertEqual(pulses_paid, 1)
+        self.assertEqual(pulses_paid, 0)
 
     async def test_vcxp_bulk_sync_resets_stale_backpay_state(self):
         initialize_settings_from_env()
@@ -454,6 +454,62 @@ class VCRewardAccountingTests(unittest.IsolatedAsyncioTestCase):
         await cursor.close()
         self.assertEqual(row[0], "added")
         self.assertEqual(row[1], pulse_role.id)
+
+    async def test_automatic_vcxp_pulse_counts_eligible_time_across_sessions(self):
+        initialize_settings_from_env()
+        pulse_role = DummyRole(44444444444444444, position=10)
+        self.guild.roles[pulse_role.id] = pulse_role
+        set_setting("VCXP_ENABLED", "true")
+        set_setting("VCXP_TRIGGER_ROLE_ID", str(pulse_role.id))
+        set_setting("VC_XP_PULSE_MINUTES", "30")
+        set_setting("VCXP_REWARD_START_AT", "2026-06-25T00:00:00+00:00")
+        first_start = datetime(2026, 6, 25, 12, tzinfo=timezone.utc)
+        second_check = datetime(2026, 6, 25, 13, tzinfo=timezone.utc)
+        member = DummyMember(10, self.guild)
+        companion = DummyMember(11, self.guild)
+        member.voice = DummyState()
+        companion.voice = DummyState()
+        self.guild.members = [member, companion]
+        first_channel = DummyChannel(20, [member, companion])
+
+        await self.cog._start_session(member, first_channel, member.voice, first_start)
+        await self.cog._mark_channel_has_company(self.guild.id, first_channel)
+        await self.cog._close_session(
+            self.guild.id,
+            member.id,
+            first_start + timedelta(minutes=15),
+        )
+
+        second_channel = DummyChannel(21, [member])
+        self.guild.voice_channels = [second_channel]
+        await self.cog._start_session(
+            member,
+            second_channel,
+            member.voice,
+            second_check - timedelta(minutes=15, seconds=5),
+        )
+        await self.database.commit()
+
+        with patch("cogs.vc_stats.utc_now", return_value=second_check), patch(
+            "cogs.vc_stats.asyncio.sleep",
+            new=AsyncMock(),
+        ):
+            await self.cog._run_automatic_pulses()
+
+        self.assertIn(pulse_role, member.roles)
+        cursor = await self.database.execute(
+            """
+            SELECT eligible_seconds_snapshot, pulse_number, status
+            FROM vc_xp_pulses
+            WHERE guild_id = ? AND user_id = ?
+            """,
+            (self.guild.id, member.id),
+        )
+        row = await cursor.fetchone()
+        await cursor.close()
+        self.assertGreaterEqual(row[0], 30 * 60)
+        self.assertEqual(row[1], 1)
+        self.assertEqual(row[2], "added")
 
     async def test_automatic_vcxp_pulse_skips_muted_member(self):
         initialize_settings_from_env()

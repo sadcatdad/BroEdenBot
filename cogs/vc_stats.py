@@ -954,17 +954,13 @@ class VCStats(commands.Cog):
             INSERT INTO vc_xp_user_state (
                 guild_id, user_id, eligible_seconds_total,
                 pulses_earned, pulses_paid, updated_at
-            ) VALUES (?, ?, ?, ?, ?, ?)
+            ) VALUES (?, ?, ?, ?, 0, ?)
             ON CONFLICT(guild_id, user_id) DO UPDATE SET
                 eligible_seconds_total = excluded.eligible_seconds_total,
                 pulses_earned = excluded.pulses_earned,
-                pulses_paid = MAX(
-                    vc_xp_user_state.pulses_paid,
-                    excluded.pulses_paid
-                ),
                 updated_at = excluded.updated_at
             """,
-            (guild_id, user_id, eligible_seconds, pulses_earned, pulses_earned, now),
+            (guild_id, user_id, eligible_seconds, pulses_earned, now),
         )
         cursor = await self.bot.db.execute(
             """
@@ -1011,14 +1007,10 @@ class VCStats(commands.Cog):
                 INSERT INTO vc_xp_user_state (
                     guild_id, user_id, eligible_seconds_total,
                     pulses_earned, pulses_paid, updated_at
-                ) VALUES (?, ?, ?, ?, ?, ?)
+                ) VALUES (?, ?, ?, ?, 0, ?)
                 ON CONFLICT(guild_id, user_id) DO UPDATE SET
                     eligible_seconds_total = excluded.eligible_seconds_total,
                     pulses_earned = excluded.pulses_earned,
-                    pulses_paid = MAX(
-                        vc_xp_user_state.pulses_paid,
-                        excluded.pulses_paid
-                    ),
                     updated_at = excluded.updated_at
                 """,
                 [
@@ -1026,7 +1018,6 @@ class VCStats(commands.Cog):
                         guild_id,
                         user_id,
                         int(eligible_seconds),
-                        int(eligible_seconds) // self._xp_seconds_per_pulse,
                         int(eligible_seconds) // self._xp_seconds_per_pulse,
                         now,
                     )
@@ -1043,8 +1034,7 @@ class VCStats(commands.Cog):
         cursor = await self.bot.db.execute(
             """
             SELECT joined_at, reward_blocked_seconds, reward_state_started_at,
-                   self_muted, self_deafened, server_muted, server_deafened,
-                   vcxp_eligible_seconds_at_last_pulse
+                   self_muted, self_deafened, server_muted, server_deafened
             FROM vc_active_sessions
             WHERE guild_id = ? AND user_id = ?
             """,
@@ -1061,12 +1051,39 @@ class VCStats(commands.Cog):
         flags = tuple(int(row[index] or 0) for index in range(3, 7))
         if self._voice_reward_blocked(flags):
             blocked_seconds += self._elapsed_seconds(row[2], observed_at)
-        eligible_seconds = max(0, duration - min(duration, blocked_seconds))
-        last_pulse_eligible = min(
-            eligible_seconds,
-            max(0, int(row[7] or 0)),
+        active_eligible_seconds = max(0, duration - min(duration, blocked_seconds))
+
+        reward_start = self.vcxp_reward_start_at.isoformat()
+        cursor = await self.bot.db.execute(
+            """
+            SELECT COALESCE(SUM(counted_seconds), 0)
+            FROM vc_sessions
+            WHERE guild_id = ? AND user_id = ? AND reward_eligible = 1
+              AND left_at >= ?
+            """,
+            (member.guild.id, member.id, reward_start),
         )
-        return eligible_seconds, last_pulse_eligible
+        completed_eligible_seconds = int((await cursor.fetchone())[0] or 0)
+        await cursor.close()
+
+        cursor = await self.bot.db.execute(
+            """
+            SELECT COALESCE(pulses_paid, 0)
+            FROM vc_xp_user_state
+            WHERE guild_id = ? AND user_id = ?
+            """,
+            (member.guild.id, member.id),
+        )
+        state_row = await cursor.fetchone()
+        await cursor.close()
+        pulses_paid = int(state_row[0] or 0) if state_row else 0
+
+        eligible_seconds = completed_eligible_seconds + active_eligible_seconds
+        pulsed_seconds = min(
+            eligible_seconds,
+            max(0, pulses_paid * self._xp_seconds_per_pulse),
+        )
+        return eligible_seconds, pulsed_seconds
 
     async def _record_vcxp_pulse_attempt(
         self,
@@ -1117,7 +1134,7 @@ class VCStats(commands.Cog):
                     member.guild.id,
                     member.id,
                     eligible_seconds,
-                    pulse_number,
+                    eligible_seconds // self._xp_seconds_per_pulse,
                     pulse_number,
                     now,
                     now,
@@ -1319,8 +1336,8 @@ class VCStats(commands.Cog):
                         progress = await self._active_session_vcxp_progress(member, now)
                         if progress is None:
                             continue
-                        eligible_seconds, last_pulse_eligible = progress
-                        seconds_since_pulse = eligible_seconds - last_pulse_eligible
+                        eligible_seconds, pulsed_seconds = progress
+                        seconds_since_pulse = eligible_seconds - pulsed_seconds
                         if seconds_since_pulse < self._xp_seconds_per_pulse:
                             skipped_cooldown += 1
                             continue
@@ -1328,7 +1345,9 @@ class VCStats(commands.Cog):
                         if role in member.roles:
                             skipped_role_present += 1
                             continue
-                        pulse_number = eligible_seconds // self._xp_seconds_per_pulse
+                        pulse_number = (
+                            pulsed_seconds // self._xp_seconds_per_pulse
+                        ) + 1
                         attempted += 1
                         role_added, _ = await self._add_vcxp_pulse_role(
                             member,
@@ -2349,7 +2368,11 @@ class VCStats(commands.Cog):
         for _ in range(pulses):
             progress = await self._active_session_vcxp_progress(user, utc_now())
             eligible_seconds = progress[0] if progress else 0
-            pulse_number = max(1, eligible_seconds // self._xp_seconds_per_pulse)
+            pulsed_seconds = progress[1] if progress else 0
+            pulse_number = max(
+                1,
+                (pulsed_seconds // self._xp_seconds_per_pulse) + 1,
+            )
             succeeded, message = await self._add_vcxp_pulse_role(
                 user,
                 role,

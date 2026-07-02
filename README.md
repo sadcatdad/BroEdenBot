@@ -675,8 +675,9 @@ connects to MEE6, grants MEE6 XP directly, or manages VC level roles.
 
 Automatic pulses are disabled by default. When enabled and configured, the bot
 checks every five minutes, adds the configured trigger role only after a member
-has accumulated `VC_XP_PULSE_MINUTES` eligible active VC minutes, and then
-leaves that role alone for MEE6 to process. BroEdenBot skips members who are
+has accumulated `VC_XP_PULSE_MINUTES` eligible VC minutes, and then leaves that
+role alone for MEE6 to process. Eligible minutes carry across separate VC
+sessions after the VCXP reward-start cutoff. BroEdenBot skips members who are
 self-muted, server-muted, self-deafened, server-deafened, bots, or carrying the
 server bot role `1282775339566895239`. A member does not receive another pulse
 until another full interval of eligible VC time has passed, and the bot skips
@@ -1367,7 +1368,7 @@ updated from the authenticated local dashboard without rewriting `.env`.
 | `VCXP_TRIGGER_ROLE_ID` | Discord role ID temporarily added for each VC XP pulse. |
 | `VCXP_EXCLUDED_ROLE_IDS` | Comma-separated role IDs excluded from VC XP pulses only. Members with these roles remain visible in VC stats unless also excluded by `VC_EXCLUDED_ROLE_IDS`. |
 | `VCXP_REWARD_START_AT` | ISO timestamp for the earliest completed VC session that can earn VC XP. Defaults to the first bot startup time after this setting exists, preventing historical back-pay pulses. |
-| `VC_XP_PULSE_MINUTES` | Eligible active VC minutes required per pulse. Defaults to `30`. |
+| `VC_XP_PULSE_MINUTES` | Eligible VC minutes required per pulse across sessions. Defaults to `30`. |
 | `VCXP_ENABLED` | Enables automatic and manual role pulses when `true`. Defaults to `false`. |
 | `BANK_ALLOWED_ROLE_IDS` | Comma-separated Discord role IDs allowed to use bank commands. |
 | `STATS_ALLOWED_ROLE_IDS` | Comma-separated Discord role IDs allowed to create and refresh stats pages. |
