@@ -351,6 +351,7 @@ async def generate_ai_response(
     max_output_tokens: Optional[int] = None,
     temperature: Optional[float] = None,
     response_schema: Optional[dict[str, object]] = None,
+    allow_thinking: bool = False,
     user_id: Optional[object] = None,
     guild_id: Optional[object] = None,
     channel_id: Optional[object] = None,
@@ -472,7 +473,13 @@ async def generate_ai_response(
         if response_schema is not None:
             config_kwargs["response_mime_type"] = "application/json"
             config_kwargs["response_schema"] = response_schema
-        if "gemini-2.5" in model.casefold():
+        if "gemini-2.5" in model.casefold() and not allow_thinking:
+            # Gemini 2.5 Flash is a hybrid reasoning model. We disable thinking
+            # by default for latency/cost on extractive calls, but callers that
+            # perform reasoning-heavy synthesis (e.g. building a structured,
+            # multi-field summary from intermediate recaps) must opt back in via
+            # allow_thinking — otherwise the model tends to satisfy an all-
+            # required schema with empty field values instead of real content.
             config_kwargs["thinking_config"] = types.ThinkingConfig(
                 thinking_budget=0
             )

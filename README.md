@@ -1334,7 +1334,7 @@ updated from the authenticated local dashboard without rewriting `.env`.
 | `AI_DAILY_BUDGET_USD` | Daily estimated AI framework budget. Defaults to `0.35`. |
 | `AI_MONTHLY_BUDGET_USD` | Monthly estimated AI framework budget. Defaults to `10.00`. |
 | `AI_MAX_INPUT_TOKENS` | Maximum estimated framework input tokens. Defaults to `12000`. |
-| `AI_MAX_OUTPUT_TOKENS` | Maximum framework output tokens. Defaults to `1200`. |
+| `AI_MAX_OUTPUT_TOKENS` | Maximum framework output tokens. Defaults to `2048` (must leave room for both reasoning/thinking tokens and the answer on structured summaries). |
 | `AI_DEFAULT_TEMPERATURE` | Default framework generation temperature. Defaults to `0.4`. |
 | `AI_MEMBER_COOLDOWN_SECONDS` | Reusable member-facing AI cooldown helper value. Defaults to `20`. |
 | `AI_STAFF_COOLDOWN_SECONDS` | Reusable staff/admin AI cooldown helper value. Defaults to `5`. |

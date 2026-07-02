@@ -65,6 +65,10 @@ MAX_OUTPUT_CHARS = 3_900
 TRANSCRIPT_EXCERPT_CHARS = 400
 CHUNK_CALL_TIMEOUT_SECONDS = 45
 FINAL_CALL_TIMEOUT_SECONDS = 60
+# Output budget for the reasoning-heavy final synthesis call. Must leave room
+# for both Gemini's thinking tokens and the structured JSON answer; too small a
+# budget causes the model to emit a schema-valid object with empty fields.
+FINAL_SYNTHESIS_MAX_OUTPUT_TOKENS = 2048
 STRUCTURED_TIMEOUT_BUFFER_SECONDS = 30
 STRUCTURED_TIMEOUT_MAX_SECONDS = 600
 TIMEFRAME_SECONDS = {
@@ -1122,6 +1126,14 @@ Return a single JSON object that matches the required schema exactly.
 
 {JSON_FORMAT_RULES}
 """.strip()
+        # The final call synthesizes a structured, multi-field summary from the
+        # intermediate recaps. That is a reasoning-heavy step, so we opt into
+        # thinking (see generate_ai_response) and give it enough output budget
+        # for both the thinking tokens and the JSON — otherwise Gemini 2.5 Flash
+        # tends to return a schema-valid object with every field left empty.
+        final_max_output_tokens = max(
+            max_output_tokens, FINAL_SYNTHESIS_MAX_OUTPUT_TOKENS
+        )
         try:
             result = await asyncio.wait_for(
                 generate_ai_response(
@@ -1129,9 +1141,10 @@ Return a single JSON object that matches the required schema exactly.
                     prompt=prompt,
                     system_instruction=SYSTEM_INSTRUCTION,
                     requested_tier="default",
-                    max_output_tokens=max_output_tokens,
+                    max_output_tokens=final_max_output_tokens,
                     temperature=0.2,
                     response_schema=schema,
+                    allow_thinking=True,
                     user_id=interaction.user.id,
                     guild_id=interaction.guild_id,
                     channel_id=interaction.channel_id,
@@ -1165,7 +1178,39 @@ Return a single JSON object that matches the required schema exactly.
                 source_command,
             )
             return None, result.text
+        # Safety net: if the model returned a schema-valid but empty object
+        # (no summary and every list/section blank), the structured embed would
+        # render as useless "None noted." sections. Fall back to the recap text
+        # instead so staff always see the content we actually gathered.
+        if self._structured_result_is_empty(parsed):
+            logger.warning(
+                "Message-context structured synthesis returned an empty result "
+                "for %s (chunks=%s, recap_chars=%s, model=%s); "
+                "falling back to recap text",
+                source_command,
+                len(chunks),
+                len(combined),
+                result.model_used,
+            )
+            return None, combined
         return parsed, result.text
+
+    @staticmethod
+    def _structured_result_is_empty(parsed: object) -> bool:
+        """True when a parsed structured summary carries no usable content in
+        any field, so callers can fall back to rendering the recap text."""
+        if not isinstance(parsed, dict):
+            return True
+        for value in parsed.values():
+            if isinstance(value, str):
+                if value.strip():
+                    return False
+            elif isinstance(value, (list, tuple, dict)):
+                if len(value) > 0:
+                    return False
+            elif value not in (None, ""):
+                return False
+        return True
 
     async def _send_structured_analysis(
         self,

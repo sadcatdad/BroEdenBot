@@ -44,6 +44,32 @@ class MessageContextHelperTests(unittest.TestCase):
             "2026-06-21T00:00:00+00:00",
         )
 
+    def test_structured_result_emptiness_detection(self):
+        empty = MessageContext._structured_result_is_empty
+        # A schema-valid but content-free object should be treated as empty so
+        # the caller can fall back to the recap text instead of rendering blank
+        # "None noted." sections.
+        self.assertTrue(
+            empty(
+                {
+                    "summary": "",
+                    "activityOverview": [],
+                    "positiveContributions": [],
+                    "staffRelevantConcerns": [],
+                    "recurringPatterns": [],
+                    "messageReferences": [],
+                    "suggestedFollowUp": [],
+                    "limitations": "",
+                }
+            )
+        )
+        self.assertTrue(empty({}))
+        self.assertTrue(empty(None))
+        self.assertTrue(empty({"summary": "   ", "activityOverview": []}))
+        # Any populated field means the structured summary is usable.
+        self.assertFalse(empty({"summary": "Active in general chat."}))
+        self.assertFalse(empty({"summary": "", "activityOverview": ["Posted daily"]}))
+
     def test_fallback_message_id_is_deterministic(self):
         first = deterministic_import_id("chat.csv", 2, "123", "abc")
         second = deterministic_import_id("chat.csv", 2, "123", "abc")
