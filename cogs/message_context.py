@@ -50,7 +50,7 @@ from utils.message_context import (
     utcnow_iso,
 )
 from utils.sqlite import configure_connection
-from utils.settings import get_csv_ids_setting
+from utils.settings import get_csv_ids_setting, get_json_ids_setting
 from utils.ui import branded_embed
 
 
@@ -617,8 +617,20 @@ class MessageContext(commands.Cog):
         finally:
             await cursor.close()
 
-    @staticmethod
+    def _query_excluded_channel_ids(self) -> set[int]:
+        """Channels hidden from every /context read query.
+
+        Combines the env-configured tracking exclusions with the
+        dashboard-managed ``message_context_excluded_channel_ids`` setting so
+        staff-only channels can be kept out of results (including data that was
+        already stored before a channel was excluded) without a restart.
+        """
+        excluded = set(self.excluded_channel_ids)
+        excluded.update(get_json_ids_setting("message_context_excluded_channel_ids"))
+        return excluded
+
     def _filters(
+        self,
         guild_id: int,
         *,
         channel_id: Optional[int] = None,
@@ -630,6 +642,17 @@ class MessageContext(commands.Cog):
     ) -> tuple[list[str], list[object]]:
         conditions = ["m.guild_id = ?"]
         parameters: list[object] = [str(guild_id)]
+        excluded = self._query_excluded_channel_ids()
+        if excluded:
+            placeholders = ",".join("?" for _ in excluded)
+            conditions.append(
+                f"m.channel_id NOT IN ({placeholders}) "
+                f"AND (m.parent_channel_id IS NULL "
+                f"OR m.parent_channel_id NOT IN ({placeholders}))"
+            )
+            excluded_text = [str(cid) for cid in excluded]
+            parameters.extend(excluded_text)
+            parameters.extend(excluded_text)
         if channel_id:
             conditions.append("(m.channel_id = ? OR m.parent_channel_id = ?)")
             parameters.extend((str(channel_id), str(channel_id)))
@@ -1408,7 +1431,8 @@ Return a single JSON object that matches the required schema exactly.
             f"**Message Content Intent available:** {intent_text}\n"
             f"**Tracking mode:** {mode}\n"
             f"**Included channel IDs:** {len(self.included_channel_ids)}\n"
-            f"**Excluded channel IDs:** {len(self.excluded_channel_ids)}\n"
+            f"**Excluded channel IDs:** {len(self._query_excluded_channel_ids())} "
+            f"(query-time; {len(self.excluded_channel_ids)} also skip tracking)\n"
             f"**Database path:** `{self.database_path}`\n"
             f"**Database size:** {size_text}\n"
             f"**Total stored:** {row['total'] or 0:,}\n"

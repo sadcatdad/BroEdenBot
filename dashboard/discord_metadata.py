@@ -60,6 +60,7 @@ def picker_metadata() -> dict[str, Any]:
     )
     channel_keys = (
         "analytics_excluded_channel_ids",
+        "message_context_excluded_channel_ids",
         "knowledge_allowed_channel_ids",
         "ask_command_allowed_channel_ids",
         "bank_log_channel_id",

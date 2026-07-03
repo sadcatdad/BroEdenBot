@@ -332,6 +332,15 @@ SETTING_DEFINITIONS = (
         visible=False,
     ),
     SettingDefinition(
+        "message_context_excluded_channel_ids",
+        "dashboard_json",
+        "json_ids",
+        "Channels excluded from /context results (e.g. staff-only channels "
+        "that lower-level staff should not see surfaced).",
+        title="Context Excluded Channels",
+        picker="channel",
+    ),
+    SettingDefinition(
         "knowledge_allowed_channel_ids",
         "dashboard_json",
         "json_ids",
@@ -517,6 +526,22 @@ def get_int_setting(key: str, default: int = 0) -> int:
 def get_csv_ids_setting(key: str) -> list[int]:
     value = get_setting(key, "") or ""
     return [int(item) for item in value.split(",") if item.strip().isdigit()]
+
+
+def get_json_ids_setting(key: str) -> list[int]:
+    """Read a ``json_ids`` (or legacy CSV) setting as a list of ints."""
+    text = str(get_setting(key, "") or "").strip()
+    if not text:
+        return []
+    if text.startswith("["):
+        import json
+
+        try:
+            parsed = json.loads(text)
+        except json.JSONDecodeError:
+            return []
+        return [int(item) for item in parsed if str(item).strip().isdigit()]
+    return [int(item) for item in text.split(",") if item.strip().isdigit()]
 
 
 def normalize_setting_value(key: str, value: str) -> str:
