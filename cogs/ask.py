@@ -170,30 +170,6 @@ def _fallback_answer_from_sources(chunks: list[dict[str, object]]) -> str:
     )
 
 
-def _guide_keywords(question: str) -> str:
-    words = re.findall(r"[a-z0-9']+", question.casefold())
-    ignored = {
-        "about",
-        "could",
-        "does",
-        "have",
-        "how",
-        "what",
-        "when",
-        "where",
-        "which",
-        "with",
-        "would",
-        "your",
-    }
-    keywords = []
-    for word in words:
-        if len(word) < 3 or word in ignored or word in keywords:
-            continue
-        keywords.append(word)
-    return " ".join(keywords[:5])
-
-
 def _feedback_sources(chunks: list[dict[str, object]]) -> list[dict[str, object]]:
     sources = []
     for chunk in chunks[:6]:
@@ -220,7 +196,6 @@ class AskResponseView(discord.ui.View):
     ):
         super().__init__(timeout=15 * 60)
         self.owner_id = owner_id
-        self.keywords = _guide_keywords(question)
         self.db = db
         self.feedback_id = feedback_id
 
@@ -248,21 +223,6 @@ class AskResponseView(discord.ui.View):
             ephemeral=True,
             allowed_mentions=discord.AllowedMentions.none(),
         )
-
-    @discord.ui.button(
-        label="Search Guide",
-        emoji="🔎",
-        style=discord.ButtonStyle.secondary,
-    )
-    async def search_guide(
-        self,
-        interaction: discord.Interaction,
-        button: discord.ui.Button,
-    ) -> None:
-        suggestion = "Try /guide search with a few keywords from your question."
-        if self.keywords:
-            suggestion += f"\nSuggested query: `{self.keywords}`"
-        await interaction.response.send_message(suggestion, ephemeral=True)
 
     def _mark_feedback_used(self) -> None:
         for child in self.children:

@@ -305,11 +305,10 @@ class KnowledgeManagerRouteTests(KnowledgeManagerTestCase):
             response = self.client.get(path)
             self.assertEqual(response.status_code, 200)
         from cogs.ask import Ask
-        from cogs.guide import Guide
         from cogs.mod_ai import ModAI
         from cogs.staff_ai import StaffAI
 
-        self.assertTrue(all((Ask, Guide, ModAI, StaffAI)))
+        self.assertTrue(all((Ask, ModAI, StaffAI)))
 
 
 if __name__ == "__main__":

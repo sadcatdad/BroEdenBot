@@ -88,7 +88,7 @@ class BotClient(commands.Bot):
         self._ready_logged = True
         try:
             await self.change_presence(
-                activity=discord.Game(name="/ask • /guide search"),
+                activity=discord.Game(name="/ask"),
             )
         except discord.HTTPException:
             logger.warning("Could not update bot presence")

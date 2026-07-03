@@ -46,7 +46,7 @@ class AskFormattingTests(unittest.TestCase):
             if isinstance(child, discord.ui.Button)
         }
         self.assertFalse(labels_to_disabled["Open Ticket"])
-        self.assertFalse(labels_to_disabled["Search Guide"])
+        self.assertNotIn("Search Guide", labels_to_disabled)
         self.assertTrue(labels_to_disabled["Marked Helpful"])
         self.assertTrue(labels_to_disabled["Still Confused"])
 

@@ -34,7 +34,6 @@ maintenance.
 ## Member-facing tools
 
 - `cogs/ask.py` — Private Gemini answers grounded only in public knowledge sources.
-- `cogs/guide.py` — Deterministic public-guide search without AI.
 - `cogs/poll.py` — Persistent button polls and visual result boards.
 - `cogs/queue.py` — Voice-channel queues and legacy prefix commands.
 - `cogs/leaderboards.py` — Staff-managed scores with public PNG leaderboards.

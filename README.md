@@ -22,7 +22,6 @@ For a module-by-module architecture and reliability map, see
 | Feature | Who can use it |
 | --- | --- |
 | `/ask` | All server members |
-| `/guide search` | All server members |
 | `/knowledge sources add`, `/knowledge sources list`, `/knowledge sources remove`, `/knowledge sources sync` | Administrators or members with **Manage Server** |
 | `/bot help`, `/bot status`, `/bot logs`, `/bot restart`, `/bot deploy` | Users listed in `BOT_OWNER_USER_IDS`; administrators only when `BOT_OWNER_ALLOW_ADMINS=true` |
 | `/ai test`, `/ai status`, `/ai kb` commands | Users listed in `BOT_OWNER_USER_IDS`; administrators only when `BOT_OWNER_ALLOW_ADMINS=true` |
@@ -136,7 +135,6 @@ have **View Channel**, **Send Messages** (or **Send Messages in Threads**), and
   activity using `data/channel_categories.json`.
 - `/stats activity heatmap [period] [source] [timezone] [channel]` — Summarizes
   activity by local day, hour, and broad time block.
-- `/guide search <query>` — Searches public knowledge sources without Gemini.
 - `/ask <question>` — Answers from public guidance with private follow-up
   buttons.
 - `/staffai help`, `/staffai status`, `/staffai ask`, `/staffai search`,
@@ -221,12 +219,12 @@ events, verification, NSFW access, server features, and support.
   mentions are not allowed to notify users or roles.
 - Cooldown, configuration, channel-restriction, out-of-scope, and staff-only
   redirects are also shown ephemerally.
-- Successful answers include `Open Ticket`, `Search Guide`, `This Helped`, and
-  `Still Confused` buttons. Only the member who ran `/ask` can use them.
-  `This Helped` and `Still Confused` acknowledge the member privately and then
-  disable the feedback buttons on that response. The selection is stored
-  locally for dashboard review; it does not publish feedback, alert staff, or
-  retrain Gemini.
+- Successful answers include `Open Ticket`, `This Helped`, and `Still Confused`
+  buttons. Only the member who ran `/ask` can use them. `This Helped` and
+  `Still Confused` acknowledge the member privately and then disable the
+  feedback buttons on that response. The selection is stored locally for
+  dashboard review; it does not publish feedback, alert staff, or retrain
+  Gemini.
 
 `/ask` uses Gemini with only `public` sources in the AI Knowledge Base
 (`ai_kb_sources` and `ai_kb_chunks`). Import public rules, guides, FAQs, role
@@ -261,17 +259,6 @@ response, the private embed says it cannot answer safely. If Gemini fails, the
 private embed directs the member to the support-ticket channel. Missing
 `GEMINI_API_KEY` configuration is reported ephemerally.
 
-### `/guide search <query>`
-
-Performs a deterministic, case-insensitive search of public live Discord
-knowledge sources, returning up to three short matching snippets.
-
-- `query` — Required keywords or topic, from 2 to 200 characters.
-- Responses are ephemeral and available to all server members.
-- A 15-second per-user cooldown limits repeated searches.
-- It does not use Gemini or read staff/private data, imported chat history, or
-  activity statistics.
-
 ### `/knowledge sources`
 
 Configures Discord text channels, whole forum channels, or individual forum
@@ -304,7 +291,7 @@ thread messages across the forum; specific forum-post sources index only that
 selected thread. Useful non-image attachment names and URLs are kept; empty
 image-only messages and duplicate normalized content are ignored.
 
-Public `/ask` and `/guide search` only read entries with `visibility=public`.
+Public `/ask` only reads entries with `visibility=public`.
 Staff-only live sources use `visibility=staff_only` and are available only to
 private staff surfaces such as `/staffai` and ModAI knowledge search. Staff-only
 entries are never returned to member-facing `/ask`.
