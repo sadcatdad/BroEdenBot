@@ -203,6 +203,13 @@ SETTING_DEFINITIONS = (
         picker="role",
     ),
     SettingDefinition(
+        "VCXP_EXCLUDED_VOICE_CHANNEL_IDS",
+        "vcxp",
+        "csv_ids",
+        "Voice channels that do not count toward VC XP pulses.",
+        picker="channel",
+    ),
+    SettingDefinition(
         "VCXP_REWARD_START_AT",
         "vcxp",
         "datetime",

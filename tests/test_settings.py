@@ -113,6 +113,10 @@ class SettingsDatabaseTests(unittest.TestCase):
         set_setting("VC_XP_PULSE_MINUTES", "35")
         set_setting("VCXP_EXCLUDED_ROLE_IDS", "34567890123456789")
         set_setting(
+            "VCXP_EXCLUDED_VOICE_CHANNEL_IDS",
+            "45678901234567890",
+        )
+        set_setting(
             "VCSTATS_ALLOWED_ROLE_IDS",
             "12345678901234567,23456789012345678",
         )
@@ -125,6 +129,10 @@ class SettingsDatabaseTests(unittest.TestCase):
         self.assertEqual(
             get_csv_ids_setting("VCXP_EXCLUDED_ROLE_IDS"),
             [34567890123456789],
+        )
+        self.assertEqual(
+            get_csv_ids_setting("VCXP_EXCLUDED_VOICE_CHANNEL_IDS"),
+            [45678901234567890],
         )
 
     def test_database_read_error_uses_cached_value(self):

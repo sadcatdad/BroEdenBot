@@ -1072,6 +1072,7 @@ their shared Discord role:
 ACTIVITY_EXCLUDED_ROLE_IDS=1282775339566895239
 VC_EXCLUDED_ROLE_IDS=1282775339566895239
 VCXP_EXCLUDED_ROLE_IDS=
+VCXP_EXCLUDED_VOICE_CHANNEL_IDS=
 EXCLUDED_VOICE_CHANNEL_IDS=
 VC_EXCLUDED_USER_IDS=983091180885643326,716390085896962058
 ```
@@ -1081,7 +1082,9 @@ and members with any `ACTIVITY_EXCLUDED_ROLE_IDS`. Live VC tracking ignores bots
 `VC_EXCLUDED_USER_IDS`, and members with any `VC_EXCLUDED_ROLE_IDS`; excluded
 members do not receive VC rewards or automatic VC XP pulses. Use
 `VCXP_EXCLUDED_ROLE_IDS` when a role should be visible in VC stats but should
-not earn VC XP pulses. The Voice dashboard also ignores `VC_EXCLUDED_USER_IDS`,
+not earn VC XP pulses. Use `VCXP_EXCLUDED_VOICE_CHANNEL_IDS` when a voice
+channel should remain visible in VC stats but should not count toward VC XP
+pulses. The Voice dashboard also ignores `VC_EXCLUDED_USER_IDS`,
 `EXCLUDED_VOICE_CHANNEL_IDS`, and rows marked with `ignored_at`.
 
 Historical exports usually do not contain role membership. Generate a current
@@ -1407,6 +1410,7 @@ updated from the authenticated local dashboard without rewriting `.env`.
 | `VCREWARDS_ALLOWED_ROLE_IDS` | Optional role IDs allowed to use `/vcrewards audit`. Falls back to `VCSTATS_ALLOWED_ROLE_IDS`. |
 | `VCXP_TRIGGER_ROLE_ID` | Discord role ID temporarily added for each VC XP pulse. |
 | `VCXP_EXCLUDED_ROLE_IDS` | Comma-separated role IDs excluded from VC XP pulses only. Members with these roles remain visible in VC stats unless also excluded by `VC_EXCLUDED_ROLE_IDS`. |
+| `VCXP_EXCLUDED_VOICE_CHANNEL_IDS` | Comma-separated voice channel IDs excluded from VC XP pulse eligibility only. Sessions in these channels remain visible in VC stats. |
 | `VCXP_REWARD_START_AT` | ISO timestamp for the earliest completed VC session that can earn VC XP. Defaults to the first bot startup time after this setting exists, preventing historical back-pay pulses. |
 | `VC_XP_PULSE_MINUTES` | Eligible VC minutes required per pulse across sessions. Defaults to `30`. |
 | `VCXP_ENABLED` | Enables automatic and manual role pulses when `true`. Defaults to `false`. |

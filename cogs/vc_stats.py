@@ -109,6 +109,10 @@ class VCStats(commands.Cog):
             get_csv_ids_setting("VCXP_EXCLUDED_ROLE_IDS")
         )
 
+    @property
+    def vcxp_excluded_voice_channel_ids(self) -> set[int]:
+        return set(get_csv_ids_setting("VCXP_EXCLUDED_VOICE_CHANNEL_IDS"))
+
     def _member_excluded(self, member: Optional[discord.Member]) -> bool:
         return bool(
             member
@@ -160,6 +164,22 @@ class VCStats(commands.Cog):
             return "", ()
         placeholders = ", ".join("?" for _ in ids)
         return f"AND user_id NOT IN ({placeholders})", ids
+
+    def _excluded_vcxp_channel_sql(
+        self,
+        column: str = "channel_id",
+    ) -> Tuple[str, Tuple[int, ...]]:
+        ids = tuple(sorted(self.vcxp_excluded_voice_channel_ids))
+        if not ids:
+            return "", ()
+        placeholders = ", ".join("?" for _ in ids)
+        return f"AND ({column} IS NULL OR {column} NOT IN ({placeholders}))", ids
+
+    def _channel_xp_excluded(self, channel_id: Optional[int]) -> bool:
+        return bool(
+            channel_id
+            and int(channel_id) in self.vcxp_excluded_voice_channel_ids
+        )
 
     @property
     def vcxp_enabled(self) -> bool:
@@ -936,14 +956,16 @@ class VCStats(commands.Cog):
             eligible_seconds = 0
         else:
             reward_start = self.vcxp_reward_start_at.isoformat()
+            channel_sql, channel_parameters = self._excluded_vcxp_channel_sql()
             cursor = await self.bot.db.execute(
-                """
+                f"""
                 SELECT COALESCE(SUM(counted_seconds), 0)
                 FROM vc_sessions
                 WHERE guild_id = ? AND user_id = ? AND reward_eligible = 1
                   AND left_at >= ?
+                  {channel_sql}
                 """,
-                (guild_id, user_id, reward_start),
+                (guild_id, user_id, reward_start, *channel_parameters),
             )
             eligible_seconds = int((await cursor.fetchone())[0] or 0)
             await cursor.close()
@@ -980,15 +1002,22 @@ class VCStats(commands.Cog):
         excluded_sql, excluded_parameters = self._excluded_user_sql(
             self._xp_excluded_user_ids_for_guild(guild)
         )
+        channel_sql, channel_parameters = self._excluded_vcxp_channel_sql()
         rows = await self._fetchall(
             f"""
             SELECT user_id, COALESCE(SUM(counted_seconds), 0)
             FROM vc_sessions
             WHERE guild_id = ? AND reward_eligible = 1 AND left_at >= ?
               {excluded_sql}
+              {channel_sql}
             GROUP BY user_id
             """,
-            (guild_id, reward_start, *excluded_parameters),
+            (
+                guild_id,
+                reward_start,
+                *excluded_parameters,
+                *channel_parameters,
+            ),
         )
         now = utc_now().isoformat()
         await self.bot.db.execute(
@@ -1034,6 +1063,7 @@ class VCStats(commands.Cog):
         cursor = await self.bot.db.execute(
             """
             SELECT joined_at, reward_blocked_seconds, reward_state_started_at,
+                   channel_id,
                    self_muted, self_deafened, server_muted, server_deafened
             FROM vc_active_sessions
             WHERE guild_id = ? AND user_id = ?
@@ -1048,20 +1078,27 @@ class VCStats(commands.Cog):
         joined_at = parse_timestamp(row[0])
         duration = max(0, int((observed_at - joined_at).total_seconds()))
         blocked_seconds = int(row[1] or 0)
-        flags = tuple(int(row[index] or 0) for index in range(3, 7))
+        flags = tuple(int(row[index] or 0) for index in range(4, 8))
         if self._voice_reward_blocked(flags):
             blocked_seconds += self._elapsed_seconds(row[2], observed_at)
-        active_eligible_seconds = max(0, duration - min(duration, blocked_seconds))
+        active_eligible_seconds = 0
+        if not self._channel_xp_excluded(row[3]):
+            active_eligible_seconds = max(
+                0,
+                duration - min(duration, blocked_seconds),
+            )
 
         reward_start = self.vcxp_reward_start_at.isoformat()
+        channel_sql, channel_parameters = self._excluded_vcxp_channel_sql()
         cursor = await self.bot.db.execute(
-            """
+            f"""
             SELECT COALESCE(SUM(counted_seconds), 0)
             FROM vc_sessions
             WHERE guild_id = ? AND user_id = ? AND reward_eligible = 1
               AND left_at >= ?
+              {channel_sql}
             """,
-            (member.guild.id, member.id, reward_start),
+            (member.guild.id, member.id, reward_start, *channel_parameters),
         )
         completed_eligible_seconds = int((await cursor.fetchone())[0] or 0)
         await cursor.close()
@@ -1315,6 +1352,13 @@ class VCStats(commands.Cog):
                     )
                     continue
                 for channel in guild.voice_channels + guild.stage_channels:
+                    if self._channel_xp_excluded(channel.id):
+                        skipped_channel_members = len(
+                            [member for member in channel.members if not member.bot]
+                        )
+                        checked += skipped_channel_members
+                        skipped_excluded += skipped_channel_members
+                        continue
                     for member in channel.members:
                         checked += 1
                         if member.bot:
@@ -2030,6 +2074,7 @@ class VCStats(commands.Cog):
         excluded_sql, excluded_parameters = self._excluded_user_sql(
             self._xp_excluded_user_ids_for_guild(guild)
         )
+        channel_sql, channel_parameters = self._excluded_vcxp_channel_sql()
         period_rows = await self._fetchall(
             f"""
             SELECT user_id, MAX(username), MAX(display_name),
@@ -2038,9 +2083,16 @@ class VCStats(commands.Cog):
             WHERE guild_id = ? AND reward_eligible = 1 AND left_at >= ?
               AND left_at >= ?
               {excluded_sql}
+              {channel_sql}
             GROUP BY user_id
             """,
-            (guild.id, self._cutoff(days), reward_start, *excluded_parameters),
+            (
+                guild.id,
+                self._cutoff(days),
+                reward_start,
+                *excluded_parameters,
+                *channel_parameters,
+            ),
         )
         period_by_user = {
             row[0]: (row[1] or "", row[2] or "", int(row[3] or 0))
@@ -2120,6 +2172,8 @@ class VCStats(commands.Cog):
             f"Eligible time per pulse: **{self.vcxp_minutes_per_pulse} minutes**\n"
             f"Reward start: **{self.vcxp_reward_start_at.isoformat()}**\n"
             f"VC XP excluded roles: **{len(self.vcxp_excluded_role_ids)} configured**\n"
+            "VC XP excluded voice channels: "
+            f"**{len(self.vcxp_excluded_voice_channel_ids)} configured**\n"
             f"Status: {issue or '**Ready**'}\n\n"
             "BroEdenBot only adds the configured role. MEE6 awards XP and removes "
             "the role afterward.",

@@ -455,6 +455,103 @@ class VCRewardAccountingTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(row[0], "added")
         self.assertEqual(row[1], pulse_role.id)
 
+    async def test_analytics_excluded_voice_channel_does_not_block_vcxp(self):
+        initialize_settings_from_env()
+        pulse_role = DummyRole(44444444444444444, position=10)
+        self.guild.roles[pulse_role.id] = pulse_role
+        set_setting("VCXP_ENABLED", "true")
+        set_setting("VCXP_TRIGGER_ROLE_ID", str(pulse_role.id))
+        set_setting("VC_XP_PULSE_MINUTES", "30")
+        channel_id = 22222222222222222
+        set_setting("EXCLUDED_VOICE_CHANNEL_IDS", str(channel_id))
+        now = datetime(2026, 6, 25, 13, tzinfo=timezone.utc)
+        member = DummyMember(10, self.guild)
+        member.voice = DummyState()
+        self.guild.members = [member]
+        channel = DummyChannel(channel_id, [member])
+        self.guild.voice_channels = [channel]
+        await self.cog._start_session(
+            member,
+            channel,
+            member.voice,
+            now - timedelta(minutes=30, seconds=5),
+        )
+        await self.database.commit()
+
+        with patch("cogs.vc_stats.utc_now", return_value=now), patch(
+            "cogs.vc_stats.asyncio.sleep",
+            new=AsyncMock(),
+        ):
+            await self.cog._run_automatic_pulses()
+
+        self.assertIn(pulse_role, member.roles)
+
+    async def test_vcxp_excluded_voice_channel_does_not_count_active_minutes(self):
+        initialize_settings_from_env()
+        pulse_role = DummyRole(44444444444444444, position=10)
+        self.guild.roles[pulse_role.id] = pulse_role
+        set_setting("VCXP_ENABLED", "true")
+        set_setting("VCXP_TRIGGER_ROLE_ID", str(pulse_role.id))
+        set_setting("VC_XP_PULSE_MINUTES", "30")
+        channel_id = 22222222222222222
+        set_setting("VCXP_EXCLUDED_VOICE_CHANNEL_IDS", str(channel_id))
+        now = datetime(2026, 6, 25, 13, tzinfo=timezone.utc)
+        member = DummyMember(10, self.guild)
+        member.voice = DummyState()
+        self.guild.members = [member]
+        channel = DummyChannel(channel_id, [member])
+        self.guild.voice_channels = [channel]
+        await self.cog._start_session(
+            member,
+            channel,
+            member.voice,
+            now - timedelta(minutes=45),
+        )
+        await self.database.commit()
+
+        progress = await self.cog._active_session_vcxp_progress(member, now)
+        self.assertEqual(progress[0], 0)
+
+        with patch("cogs.vc_stats.utc_now", return_value=now), patch(
+            "cogs.vc_stats.asyncio.sleep",
+            new=AsyncMock(),
+        ):
+            await self.cog._run_automatic_pulses()
+
+        self.assertNotIn(pulse_role, member.roles)
+        cursor = await self.database.execute("SELECT COUNT(*) FROM vc_xp_pulses")
+        count = (await cursor.fetchone())[0]
+        await cursor.close()
+        self.assertEqual(count, 0)
+
+    async def test_vcxp_excluded_voice_channel_does_not_count_completed_sessions(self):
+        initialize_settings_from_env()
+        set_setting("VCXP_REWARD_START_AT", "2026-06-25T00:00:00+00:00")
+        channel_id = 22222222222222222
+        set_setting("VCXP_EXCLUDED_VOICE_CHANNEL_IDS", str(channel_id))
+        started_at = datetime(2026, 6, 25, 12, tzinfo=timezone.utc)
+        member = DummyMember(10, self.guild)
+        companion = DummyMember(11, self.guild)
+        member.voice = DummyState()
+        companion.voice = DummyState()
+        self.guild.members = [member, companion]
+        channel = DummyChannel(channel_id, [member, companion])
+
+        await self.cog._start_session(member, channel, member.voice, started_at)
+        await self.cog._mark_channel_has_company(self.guild.id, channel)
+        await self.cog._close_session(
+            self.guild.id,
+            member.id,
+            started_at + timedelta(minutes=45),
+        )
+        eligible_seconds, pulses_earned, pulses_paid = (
+            await self.cog._sync_xp_user_state(self.guild.id, member.id)
+        )
+
+        self.assertEqual(eligible_seconds, 0)
+        self.assertEqual(pulses_earned, 0)
+        self.assertEqual(pulses_paid, 0)
+
     async def test_automatic_vcxp_pulse_counts_eligible_time_across_sessions(self):
         initialize_settings_from_env()
         pulse_role = DummyRole(44444444444444444, position=10)

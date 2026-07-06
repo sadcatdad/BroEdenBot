@@ -97,12 +97,14 @@ class DashboardRouteTests(unittest.TestCase):
         self.assertIn("VCXP_TRIGGER_ROLE_ID", settings.text)
         self.assertIn("<role-single-select", settings.text)
 
-    def test_vcxp_excluded_roles_use_csv_role_picker(self):
+    def test_vcxp_exclusions_use_discord_pickers(self):
         self.login()
         settings = self.client.get("/settings")
         self.assertEqual(settings.status_code, 200)
         self.assertIn("VCXP_EXCLUDED_ROLE_IDS", settings.text)
-        self.assertIn('value-format="csv"', settings.text)
+        self.assertIn('<role-multi-select input-name="value" setting-key="VCXP_EXCLUDED_ROLE_IDS"', settings.text)
+        self.assertIn("VCXP_EXCLUDED_VOICE_CHANNEL_IDS", settings.text)
+        self.assertIn('<channel-multi-select input-name="value" setting-key="VCXP_EXCLUDED_VOICE_CHANNEL_IDS"', settings.text)
 
     def test_permission_roles_and_channels_use_discord_pickers(self):
         self.login()
