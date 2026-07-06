@@ -236,6 +236,8 @@ class DashboardNavigationMetadataTests(unittest.TestCase):
         self.assertIn("Browse ${label}", script)
         self.assertIn("this.panelOpen || Boolean(query)", script)
         self.assertIn("slice(0, max)", script)
+        self.assertIn("const csvValues = () => raw.split", script)
+        self.assertIn("return csvValues();", script)
         self.assertIn("discord-picker-panel", script)
         self.assertIn(".discord-picker-panel[hidden] { display: none; }", styles)
         self.assertIn(".discord-picker-option {\n  display: flex;", styles)
@@ -245,7 +247,7 @@ class DashboardNavigationMetadataTests(unittest.TestCase):
         self.assertIn("text-decoration: none", styles)
         base_template = (root / "dashboard/templates/base.html").read_text()
         self.assertIn("styles.css') }}?v=knowledge-unified1", base_template)
-        self.assertIn("discord_pickers.js') }}?v=knowledge-unified1", base_template)
+        self.assertIn("discord_pickers.js') }}?v=picker-single-values2", base_template)
 
     def test_category_selection_matches_child_channels(self):
         self.assertTrue(

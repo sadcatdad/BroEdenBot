@@ -26,13 +26,14 @@ class DiscordObjectPicker extends HTMLElement {
   initialValues() {
     const raw = this.getAttribute("value") || "";
     if (!raw.trim()) return [];
+    const csvValues = () => raw.split(",").map((item) => item.trim()).filter(Boolean);
     try {
       const parsed = JSON.parse(raw);
       if (Array.isArray(parsed)) return parsed.map(String);
     } catch (_error) {
-      return raw.split(",").map((item) => item.trim()).filter(Boolean);
+      return csvValues();
     }
-    return [];
+    return csvValues();
   }
 
   async loadObjects() {
