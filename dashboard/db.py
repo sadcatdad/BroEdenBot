@@ -264,6 +264,7 @@ def vcxp_overview(limit: int = 5) -> dict[str, Any]:
         "unpaid_pulses": 0,
         "active_pulses": 0,
         "paid_24h": 0,
+        "failed_24h": 0,
         "recent_statuses": [],
         "issues": [],
         "status": "Not configured",
@@ -325,6 +326,18 @@ def vcxp_overview(limit: int = 5) -> dict[str, Any]:
                     ).fetchone()[0]
                     or 0
                 )
+                result["failed_24h"] = int(
+                    connection.execute(
+                        """
+                        SELECT COUNT(*)
+                        FROM vc_xp_pulses
+                        WHERE granted_at >= ?
+                          AND status = ?
+                        """,
+                        (day_start, "add_failed"),
+                    ).fetchone()[0]
+                    or 0
+                )
                 result["recent_statuses"] = [
                     dict(row)
                     for row in connection.execute(
@@ -358,15 +371,24 @@ def vcxp_overview(limit: int = 5) -> dict[str, Any]:
         result["issues"].append(
             "Restart the bot once so the VC XP accounting tables are created."
         )
+    if result["failed_24h"]:
+        result["issues"].append(
+            f"{result['failed_24h']:,} role adds failed in the last 24 hours. "
+            "Check the recent errors with /vcrewards audit."
+        )
 
     blocking_issues = [
         issue
         for issue in result["issues"]
         if not issue.startswith("Refresh Discord metadata")
         and not issue.startswith("Use a nonzero removal delay")
+        and "role adds failed in the last 24 hours" not in issue
     ]
     if blocking_issues:
         result["status"] = "Needs setup"
+    elif enabled and result["failed_24h"]:
+        result["status"] = "Degraded"
+        result["status_class"] = "warning-text"
     elif enabled:
         result["status"] = "Enabled"
         result["status_class"] = "good"

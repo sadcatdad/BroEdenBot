@@ -9,6 +9,7 @@ import time
 from datetime import datetime, timedelta, timezone
 from typing import Dict, Iterable, List, Literal, Optional, Tuple
 
+import aiohttp
 import discord
 from discord import app_commands
 from discord.ext import commands, tasks
@@ -38,6 +39,7 @@ MINIMUM_ELIGIBLE_SECONDS = 5 * 60
 HEARTBEAT_SECONDS = 60
 XP_PULSE_CHECK_SECONDS = 5 * 60
 VCXP_ROLE_ADD_DELAY_SECONDS = 1.75
+VCXP_ROLE_ADD_RETRY_DELAYS = (2.0, 8.0)
 DEFAULT_VCXP_EXCLUDED_ROLE_IDS = {1282775339566895239}
 MAX_EXPORT_BYTES = 24 * 1024 * 1024
 MAX_CURRENT_LINES = 75
@@ -1224,10 +1226,39 @@ class VCStats(commands.Cog):
                 return False, "The member already has the trigger role."
 
             try:
-                await member.add_roles(
-                    role,
-                    reason="BroEdenBot eligible VC time XP role pulse",
-                )
+                attempts = 0
+                while True:
+                    attempts += 1
+                    try:
+                        await member.add_roles(
+                            role,
+                            reason="BroEdenBot eligible VC time XP role pulse",
+                        )
+                        break
+                    except (aiohttp.ClientConnectionError, asyncio.TimeoutError):
+                        if attempts > len(VCXP_ROLE_ADD_RETRY_DELAYS):
+                            raise
+                        delay = VCXP_ROLE_ADD_RETRY_DELAYS[attempts - 1]
+                        logger.warning(
+                            "VC XP role add hit a transient network error; "
+                            "retrying: guild=%s user=%s role=%s attempt=%s "
+                            "delay_seconds=%s",
+                            member.guild.id,
+                            member.id,
+                            role.id,
+                            attempts,
+                            delay,
+                        )
+                        await asyncio.sleep(delay)
+                if attempts > 1:
+                    logger.info(
+                        "VC XP role add recovered after retry: "
+                        "guild=%s user=%s role=%s attempts=%s",
+                        member.guild.id,
+                        member.id,
+                        role.id,
+                        attempts,
+                    )
             except (
                 discord.Forbidden,
                 discord.HTTPException,
@@ -1259,6 +1290,37 @@ class VCStats(commands.Cog):
                     type(exc).__name__,
                 )
                 return False, f"Role add failed ({type(exc).__name__})."
+            except (aiohttp.ClientConnectionError, asyncio.TimeoutError) as exc:
+                error = f"{type(exc).__name__} after {attempts} attempts"
+                try:
+                    await self._record_vcxp_pulse_attempt(
+                        member,
+                        role,
+                        eligible_seconds,
+                        pulse_number,
+                        "add_failed",
+                        error,
+                    )
+                except Exception as record_exc:
+                    logger.exception(
+                        "VC XP pulse failure log write failed: "
+                        "guild=%s user=%s role=%s error_type=%s",
+                        member.guild.id,
+                        member.id,
+                        role.id,
+                        type(record_exc).__name__,
+                    )
+                logger.error(
+                    "VC XP role add exhausted transient retries: "
+                    "guild=%s user=%s role=%s error_type=%s attempts=%s",
+                    member.guild.id,
+                    member.id,
+                    role.id,
+                    type(exc).__name__,
+                    attempts,
+                    exc_info=True,
+                )
+                return False, f"Role add failed ({error})."
             except Exception as exc:
                 try:
                     await self._record_vcxp_pulse_attempt(
@@ -2234,6 +2296,7 @@ class VCStats(commands.Cog):
         state_exists = await self._table_exists("vc_xp_user_state")
         pulses_exists = await self._table_exists("vc_xp_pulses")
         added_last_day = 0
+        failed_last_day = 0
         recent_rows = []
         if pulses_exists:
             day_ago = (utc_now() - timedelta(hours=24)).isoformat()
@@ -2249,6 +2312,16 @@ class VCStats(commands.Cog):
                 (guild.id, day_ago),
             )
             added_last_day = int(rows[0][0] or 0)
+            rows = await self._fetchall(
+                """
+                SELECT COUNT(*)
+                FROM vc_xp_pulses
+                WHERE guild_id = ? AND granted_at >= ?
+                  AND status = 'add_failed'
+                """,
+                (guild.id, day_ago),
+            )
+            failed_last_day = int(rows[0][0] or 0)
             recent_rows = await self._fetchall(
                 """
                 SELECT user_id, status, error, granted_at
@@ -2303,7 +2376,8 @@ class VCStats(commands.Cog):
         )
         state_text = (
             "Legacy unpaid-pulse backlog: **disabled**\n"
-            f"Role adds in last 24h: **{added_last_day:,}**"
+            f"Role adds in last 24h: **{added_last_day:,}**\n"
+            f"Failed role adds in last 24h: **{failed_last_day:,}**"
             if state_exists and pulses_exists
             else "VCXP state tables not found yet."
         )

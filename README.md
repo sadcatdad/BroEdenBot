@@ -722,6 +722,14 @@ server bot role `1282775339566895239`. A member does not receive another pulse
 until another full interval of eligible VC time has passed, and the bot skips
 the add if the member already has the trigger role.
 
+Discord role adds can fail temporarily when the host loses DNS or network
+connectivity. BroEdenBot retries transient connection failures twice within the
+same pulse check before recording `add_failed`; an unsuccessful pulse remains
+unpaid and is eligible again on the next five-minute check. The Overview page
+and `/vcrewards audit` show successful and failed role-add totals for the last
+24 hours so staff can distinguish eligibility skips from Discord connectivity
+problems.
+
 VC XP has a reward-start cutoff so old tracked history does not create
 back-pay pulses. On first startup, if `VCXP_REWARD_START_AT` is not already
 set, BroEdenBot stores the current UTC timestamp and only completed sessions
@@ -739,8 +747,9 @@ and how many VCXP-only excluded roles are configured.
 Runs a read-only safety audit of the role-pulse bridge. It reports whether
 VCXP is enabled, whether the trigger role exists and is manageable, pulse
 interval, members currently holding the trigger role, and recent pulse
-statuses/errors. It never grants or removes roles, calls MEE6, starts a payout,
-or changes VCXP accounting.
+statuses/errors, plus successful and failed role-add totals for the last 24
+hours. It never grants or removes roles, calls MEE6, starts a payout, or changes
+VCXP accounting.
 
 ### `/vcrewards preview [days] [include_left_members]`
 
@@ -819,8 +828,10 @@ Before leaving automation on, run `/vcrewards audit` and check the local web
 dashboard Overview page. The dashboard's VC XP readiness card summarizes the
 stored trigger role ID, latest role snapshot name when available, pulse
 interval, reward-start cutoff, VCXP-only excluded-role count, legacy backlog
-snapshot, and recent role-add activity. The Discord audit remains the source of
-truth for live role hierarchy and Manage Roles checks.
+snapshot, and successful/failed role-add activity. A `Degraded` status means
+recent role adds failed; use `/vcrewards audit` to see the stored error types.
+The Discord audit remains the source of truth for live role hierarchy and
+Manage Roles checks.
 
 ## Stats commands
 

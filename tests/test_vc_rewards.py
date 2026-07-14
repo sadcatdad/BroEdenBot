@@ -5,6 +5,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from unittest.mock import AsyncMock, patch
 
+import aiohttp
 import aiosqlite
 
 from cogs.vc_stats import VCStats
@@ -56,6 +57,20 @@ class DummyMember:
         if role not in self.roles:
             self.roles.append(role)
             role.members.append(self)
+
+
+class FlakyDummyMember(DummyMember):
+    def __init__(self, member_id, guild, *, failures):
+        super().__init__(member_id, guild)
+        self.failures_remaining = failures
+        self.add_attempts = 0
+
+    async def add_roles(self, role, *, reason=None):
+        self.add_attempts += 1
+        if self.failures_remaining:
+            self.failures_remaining -= 1
+            raise aiohttp.ClientConnectionError("temporary DNS failure")
+        await super().add_roles(role, reason=reason)
 
 
 class DummyChannel:
@@ -454,6 +469,58 @@ class VCRewardAccountingTests(unittest.IsolatedAsyncioTestCase):
         await cursor.close()
         self.assertEqual(row[0], "added")
         self.assertEqual(row[1], pulse_role.id)
+
+    async def test_vcxp_role_add_retries_transient_network_failure(self):
+        pulse_role = DummyRole(44444444444444444, position=10)
+        member = FlakyDummyMember(10, self.guild, failures=2)
+        self.guild.members = [member]
+
+        with patch("cogs.vc_stats.asyncio.sleep", new=AsyncMock()) as sleep:
+            succeeded, message = await self.cog._add_vcxp_pulse_role(
+                member,
+                pulse_role,
+                30 * 60,
+                1,
+            )
+
+        self.assertTrue(succeeded)
+        self.assertEqual(message, "Pulse 1 role added.")
+        self.assertEqual(member.add_attempts, 3)
+        self.assertEqual(sleep.await_count, 2)
+        cursor = await self.database.execute(
+            "SELECT status, error FROM vc_xp_pulses"
+        )
+        rows = await cursor.fetchall()
+        await cursor.close()
+        self.assertEqual(rows, [("added", None)])
+
+    async def test_vcxp_role_add_records_exhausted_network_retries(self):
+        pulse_role = DummyRole(44444444444444444, position=10)
+        member = FlakyDummyMember(10, self.guild, failures=3)
+        self.guild.members = [member]
+
+        with patch("cogs.vc_stats.asyncio.sleep", new=AsyncMock()) as sleep:
+            succeeded, message = await self.cog._add_vcxp_pulse_role(
+                member,
+                pulse_role,
+                30 * 60,
+                1,
+            )
+
+        self.assertFalse(succeeded)
+        self.assertIn("after 3 attempts", message)
+        self.assertEqual(member.add_attempts, 3)
+        self.assertEqual(sleep.await_count, 2)
+        cursor = await self.database.execute(
+            "SELECT status, error FROM vc_xp_pulses"
+        )
+        row = await cursor.fetchone()
+        await cursor.close()
+        self.assertEqual(row[0], "add_failed")
+        self.assertEqual(
+            row[1],
+            "ClientConnectionError after 3 attempts",
+        )
 
     async def test_analytics_excluded_voice_channel_does_not_block_vcxp(self):
         initialize_settings_from_env()

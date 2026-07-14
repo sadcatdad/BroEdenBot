@@ -640,12 +640,16 @@ class DashboardDatabaseTests(unittest.TestCase):
 
                 result = vcxp_overview()
 
-            self.assertEqual(result["status"], "Enabled")
+            self.assertEqual(result["status"], "Degraded")
             self.assertEqual(result["trigger_role_name"], "pulse")
             self.assertEqual(result["unpaid_users"], 0)
             self.assertEqual(result["unpaid_pulses"], 0)
             self.assertEqual(result["active_pulses"], 1)
             self.assertEqual(result["paid_24h"], 1)
+            self.assertEqual(result["failed_24h"], 1)
+            self.assertTrue(
+                any("role adds failed" in issue for issue in result["issues"])
+            )
 
     def test_vcxp_overview_ignores_stale_unpaid_state_before_reward_start(self):
         with tempfile.TemporaryDirectory() as temporary_directory:
