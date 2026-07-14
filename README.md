@@ -828,6 +828,14 @@ Tracked stats pages update when relevant membership changes occur. Role
 rosters and reports can contain an **Export Members to CSV** button; authorized
 stats users receive that export privately.
 
+All generated stats and leaderboard PNGs share the centralized Bro Eden visual
+system: dark dashboard-derived tokens, consistent type and spacing, bounded
+text truncation, avatar fallbacks, explicit empty states, and per-file size
+validation. Leaderboards use mobile-readable portrait pages with 10 rows;
+role rosters use 12 rows. Longer results create additional PNGs instead of
+shrinking every row. See [Stats Visual System](docs/stats-visual-system.md) for
+profiles, components, diagnostics, tests, and the sample generator.
+
 ### `/stats role <role> [channel] [image]`
 
 Creates a tracked graphical roster of everyone who currently has a role.
@@ -1264,7 +1272,7 @@ Subtracts points from a user without allowing the total to fall below zero.
 
 ### `/leaderboards <name>`
 
-Displays a leaderboard as a wide paginated graphic, ten members per page. The
+Displays a leaderboard as a portrait paginated graphic, ten members per page. The
 graphic uses the same dark visual system as stats leaderboards, including
 avatars, medal ranks, progress rails, point pills, and a live timestamp.
 Empty leaderboards display a friendly empty state. If an avatar cannot be
@@ -1416,6 +1424,7 @@ updated from the authenticated local dashboard without rewriting `.env`.
 | `VCXP_ENABLED` | Enables automatic and manual role pulses when `true`. Defaults to `false`. |
 | `BANK_ALLOWED_ROLE_IDS` | Comma-separated Discord role IDs allowed to use bank commands. |
 | `STATS_ALLOWED_ROLE_IDS` | Comma-separated Discord role IDs allowed to create and refresh stats pages. |
+| `STATS_IMAGE_TARGET_BYTES` | Maximum accepted size for each generated stats PNG. Defaults to `8000000` (8 MB); oversized pages are optimized or re-rendered within the documented minimum dimensions, and are never silently uploaded above the target. |
 | `DASHBOARD_ENABLED` | Enables the local dashboard when `true`. |
 | `DASHBOARD_HOST` | Dashboard bind address. Use `0.0.0.0` for access from the local network. |
 | `DASHBOARD_PORT` | Dashboard port. Defaults to `3000`. |

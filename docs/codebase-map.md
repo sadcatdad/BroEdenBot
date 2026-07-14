@@ -78,8 +78,15 @@ maintenance.
   existing text and VC activity tables, including dashboard summaries,
   leaderboards, heatmap data, and content-free CSV exports.
 - `utils/member_filter.py` — Current-member filtering safeguards.
-- `utils/compact_roster.py` — Multi-page roster image rendering.
-- `utils/stats_reports.py` — Analytics PNG cards.
+- `utils/stats_visuals/` — Central dashboard-derived brand tokens, profiles,
+  reusable Pillow components, avatar cache/fallbacks, deterministic pagination,
+  structured render results, diagnostics, and per-PNG byte-limit enforcement.
+- `utils/compact_roster.py`, `utils/ranked_graphic.py`, and
+  `utils/stats_reports.py` — Compatibility adapters into the centralized stats
+  visual system.
+- `scripts/generate_stats_visual_samples.py` — Deterministic ignored visual
+  review set for overview, activity, role, leaderboard, empty, and stress
+  states.
 - `scripts/import_discord_history.py` — Streaming metadata-only history import,
   dedupe, batching, and optional archiving.
 - `scripts/import_staff_context.py` — Separate streaming CSV importer for
