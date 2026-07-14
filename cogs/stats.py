@@ -25,7 +25,7 @@ from utils.knowledge_manager import process_knowledge_reindex
 from utils.ranked_graphic import (
     RankedGraphicItem,
     RankedGraphicSection,
-    render_ranked_graphic,
+    render_ranked_graphic_result,
 )
 from utils.settings import get_csv_ids_setting
 from utils.exclusions import member_is_excluded
@@ -722,6 +722,11 @@ class Stats(commands.Cog):
                 image_data,
             )
         except Exception:
+            logger.exception(
+                "Role roster render failed guild=%s role=%s",
+                interaction.guild_id,
+                role.id,
+            )
             await interaction.followup.send(
                 "I could not generate the roster graphic.", ephemeral=True
             )
@@ -1401,16 +1406,24 @@ class Stats(commands.Cog):
         missing_role: Optional[discord.Role] = None,
     ) -> bool:
         now = self._utcnow()
-        png = await self._render_report_png(
-            report_type=report_type,
-            title=title,
-            body=body,
-            updated_at=now,
-            role_1=role_1,
-            role_2=role_2,
-            has_role=has_role,
-            missing_role=missing_role,
-        )
+        try:
+            png = await self._render_report_png(
+                report_type=report_type,
+                title=title,
+                body=body,
+                updated_at=now,
+                role_1=role_1,
+                role_2=role_2,
+                has_role=has_role,
+                missing_role=missing_role,
+            )
+        except Exception:
+            logger.exception(
+                "Tracked stats report render failed guild=%s type=%s",
+                interaction.guild_id,
+                report_type,
+            )
+            return False
         file = discord.File(
             io.BytesIO(png),
             filename=f"{report_type}_report.png",
@@ -2353,6 +2366,11 @@ class Stats(commands.Cog):
                 image_data,
             )
         except Exception:
+            logger.exception(
+                "Tracked role roster render failed guild=%s role=%s",
+                guild_id,
+                role_id,
+            )
             return False
         roster_assets = [
             (roster_file.filename, roster_file.fp.getvalue())
@@ -2451,7 +2469,12 @@ class Stats(commands.Cog):
         items = [
             CompactRosterItem(
                 label=self._member_username(member),
-                avatar_url=str(member.display_avatar.replace(size=32).url),
+                avatar_url=str(
+                    member.display_avatar.replace(
+                        size=64,
+                        static_format="png",
+                    ).url
+                ),
             )
             for member in members
         ]
@@ -3258,7 +3281,12 @@ class Stats(commands.Cog):
                             else f"@{username or user_id} • Left server"
                         ),
                         avatar_url=(
-                            str(member.display_avatar.replace(size=64).url)
+                            str(
+                                member.display_avatar.replace(
+                                    size=128,
+                                    static_format="png",
+                                ).url
+                            )
                             if member
                             else None
                         ),
@@ -3347,7 +3375,12 @@ class Stats(commands.Cog):
                                 else f"@{username or user_id} • Left server"
                             ),
                             avatar_url=(
-                                str(member.display_avatar.replace(size=64).url)
+                                str(
+                                    member.display_avatar.replace(
+                                        size=128,
+                                        static_format="png",
+                                    ).url
+                                )
                                 if member
                                 else None
                             ),
@@ -3363,14 +3396,14 @@ class Stats(commands.Cog):
             title = "Voice Activity Leaders"
             subtitle = f"{period_label} • completed VC sessions"
 
-        png = await render_ranked_graphic(
+        result = await render_ranked_graphic_result(
             title=title,
             subtitle=subtitle,
             sections=sections,
             updated_at=self._utcnow(),
             accent_color=COLOR,
         )
-        return [(f"stats_{report_type}_leaderboard.png", png)]
+        return result.attachments(f"stats_{report_type}_leaderboard.png")
 
     async def _tracked_activity_rows(
         self,
@@ -3419,6 +3452,12 @@ class Stats(commands.Cog):
                 config,
             )
         except Exception:
+            logger.exception(
+                "Tracked activity render failed guild=%s report=%s type=%s",
+                guild_id,
+                record_id,
+                report_type,
+            )
             return False
 
         try:
@@ -4700,6 +4739,11 @@ class Stats(commands.Cog):
                     config or {},
                 )
             except Exception:
+                logger.exception(
+                    "Activity stats render failed guild=%s type=%s",
+                    interaction.guild_id,
+                    report_type,
+                )
                 await interaction.followup.send(
                     "I could not generate the activity graphic.",
                     ephemeral=True,
