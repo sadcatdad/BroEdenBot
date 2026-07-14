@@ -37,3 +37,6 @@ __pycache__/
 staff_context.db
 message_context.db
 /backups/knowledge/
+
+# Deterministic local visual-review artifacts (generated, never committed).
+/dev-output/
