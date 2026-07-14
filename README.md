@@ -728,7 +728,11 @@ same pulse check before recording `add_failed`; an unsuccessful pulse remains
 unpaid and is eligible again on the next five-minute check. The Overview page
 and `/vcrewards audit` show successful and failed role-add totals for the last
 24 hours so staff can distinguish eligibility skips from Discord connectivity
-problems.
+problems. The dashboard labels this condition `Degraded`: automatic pulses are
+still enabled, but recent Discord role-add requests failed. Owners and admins
+can use **Clear failed XP pulses** to delete only the `add_failed` audit rows
+after reviewing them. Clearing failures does not change eligible time, paid
+pulse accounting, successful role-add history, or Discord roles.
 
 VC XP has a reward-start cutoff so old tracked history does not create
 back-pay pulses. On first startup, if `VCXP_REWARD_START_AT` is not already

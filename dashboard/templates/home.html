@@ -50,8 +50,18 @@
       <p class="eyebrow">MEE6 bridge</p>
       <h2>VC XP Role-Pulse Readiness</h2>
     </div>
-    <a class="button secondary small" href="{{ url_for('settings') }}">Open VC XP Settings</a>
+    <div class="action-buttons">
+      <a class="button secondary small" href="{{ url_for('settings') }}">Open VC XP Settings</a>
+      {% if can_write and vcxp.failed_24h %}
+      <form method="post" action="{{ url_for('clear_failed_vcxp_pulses') }}" onsubmit="return confirm('Clear all failed VC XP pulse records? Successful pulses and reward accounting will not be changed.');">
+        <input type="hidden" name="csrf" value="{{ csrf_token }}">
+        <button class="button danger small" type="submit">Clear failed XP pulses</button>
+      </form>
+      {% endif %}
+    </div>
   </div>
+  {% if vcxp_message %}<div class="alert success">{{ vcxp_message }}</div>{% endif %}
+  {% if vcxp_error %}<div class="alert error">{{ vcxp_error }}</div>{% endif %}
   <div class="status-list">
     <div><span>Status</span><strong class="{{ vcxp.status_class }}">{{ vcxp.status }}</strong></div>
     <div><span>Automatic pulses</span><strong>{{ "Enabled" if vcxp.enabled else "Disabled" }}</strong></div>

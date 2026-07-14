@@ -38,6 +38,7 @@ from dashboard.db import (
     ai_usage_overview,
     bank_overview,
     database_status,
+    delete_failed_vcxp_pulses,
     find_bank_database_path,
     find_database_path,
     import_history,
@@ -487,12 +488,38 @@ async def home(request: Request) -> HTMLResponse:
             database=database,
             bank_database=bank_database,
             vcxp=vcxp_overview(),
+            vcxp_message=request.session.pop("vcxp_message", None),
+            vcxp_error=request.session.pop("vcxp_error", None),
             ai_usage=ai_usage,
             discord_token_status=safe_setting("DISCORD_TOKEN"),
             gemini_key_status=safe_setting("GEMINI_API_KEY"),
             gemini_models_configured=all(os.getenv(name, "").strip() for name in model_names),
             current_time=datetime.now().astimezone(),
         ),
+    )
+
+
+@app.post("/vcxp/failed/clear", name="clear_failed_vcxp_pulses")
+async def clear_failed_vcxp_pulses(request: Request) -> RedirectResponse:
+    if redirect := login_redirect(request):
+        return redirect
+    await require_action_csrf(request)
+    if not is_admin(request):
+        raise HTTPException(status_code=403, detail="Admin access is required.")
+    try:
+        deleted = delete_failed_vcxp_pulses()
+    except (OSError, sqlite3.Error) as exc:
+        request.session["vcxp_error"] = (
+            f"Failed VC XP pulses could not be cleared: {type(exc).__name__}."
+        )
+    else:
+        request.session["vcxp_message"] = (
+            f"Cleared {deleted:,} failed VC XP pulse "
+            f"record{'s' if deleted != 1 else ''}. Reward accounting was unchanged."
+        )
+    return RedirectResponse(
+        url=request.url_for("home"),
+        status_code=status.HTTP_303_SEE_OTHER,
     )
 
 

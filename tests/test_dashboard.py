@@ -11,7 +11,13 @@ from unittest.mock import patch
 from fastapi.testclient import TestClient
 
 from dashboard.app import app, validate_dashboard_config
-from dashboard.db import ai_usage_overview, bank_overview, import_history, vcxp_overview
+from dashboard.db import (
+    ai_usage_overview,
+    bank_overview,
+    delete_failed_vcxp_pulses,
+    import_history,
+    vcxp_overview,
+)
 from utils.settings import get_setting, initialize_settings_from_env, set_setting
 
 
@@ -159,6 +165,103 @@ class DashboardRouteTests(unittest.TestCase):
         )
         self.assertEqual(response.status_code, 303)
         self.assertEqual(get_setting("ASK_COOLDOWN_SECONDS"), "45")
+
+    def test_admin_can_clear_only_failed_vcxp_pulse_records(self):
+        now = "2099-01-01T00:00:00+00:00"
+        set_setting("VCXP_ENABLED", "true")
+        connection = sqlite3.connect(self.database)
+        connection.execute(
+            """
+            CREATE TABLE vc_xp_pulses (
+                id INTEGER PRIMARY KEY,
+                status TEXT,
+                error TEXT,
+                granted_at TEXT
+            )
+            """
+        )
+        connection.executemany(
+            """
+            INSERT INTO vc_xp_pulses (status, error, granted_at)
+            VALUES (?, ?, ?)
+            """,
+            [
+                ("added", None, now),
+                ("add_failed", "ClientConnectorDNSError", now),
+                ("add_failed", "TimeoutError", now),
+            ],
+        )
+        connection.execute(
+            """
+            CREATE TABLE vc_xp_user_state (
+                guild_id INTEGER,
+                user_id INTEGER,
+                pulses_earned INTEGER,
+                pulses_paid INTEGER
+            )
+            """
+        )
+        connection.commit()
+        connection.close()
+
+        self.login()
+        overview = self.client.get("/")
+        token = re.search(
+            r'name="csrf" value="([^"]+)"', overview.text
+        ).group(1)
+        self.assertIn("Degraded", overview.text)
+        self.assertIn("Clear failed XP pulses", overview.text)
+        response = self.client.post(
+            "/vcxp/failed/clear",
+            data={"csrf": token},
+            follow_redirects=False,
+        )
+
+        self.assertEqual(response.status_code, 303)
+        connection = sqlite3.connect(self.database)
+        rows = connection.execute(
+            "SELECT status FROM vc_xp_pulses ORDER BY id"
+        ).fetchall()
+        connection.close()
+        self.assertEqual(rows, [("added",)])
+        refreshed = self.client.get("/")
+        self.assertIn("Cleared 2 failed VC XP pulse records", refreshed.text)
+        self.assertNotIn("Degraded", refreshed.text)
+
+    def test_clear_failed_vcxp_pulses_rejects_invalid_csrf(self):
+        connection = sqlite3.connect(self.database)
+        connection.execute(
+            """
+            CREATE TABLE vc_xp_pulses (
+                id INTEGER PRIMARY KEY,
+                status TEXT,
+                error TEXT,
+                granted_at TEXT
+            )
+            """
+        )
+        connection.execute(
+            """
+            INSERT INTO vc_xp_pulses (status, error, granted_at)
+            VALUES ('add_failed', 'TimeoutError', '2099-01-01T00:00:00+00:00')
+            """
+        )
+        connection.commit()
+        connection.close()
+        self.login()
+
+        response = self.client.post(
+            "/vcxp/failed/clear",
+            data={"csrf": "invalid"},
+            follow_redirects=False,
+        )
+
+        self.assertEqual(response.status_code, 400)
+        with sqlite3.connect(self.database) as connection:
+            count = connection.execute(
+                "SELECT COUNT(*) FROM vc_xp_pulses WHERE status = 'add_failed'"
+            ).fetchone()[0]
+        self.assertEqual(count, 1)
 
     def test_forbidden_setting_update_is_rejected(self):
         self.login()
@@ -650,6 +753,48 @@ class DashboardDatabaseTests(unittest.TestCase):
             self.assertTrue(
                 any("role adds failed" in issue for issue in result["issues"])
             )
+
+    def test_delete_failed_vcxp_pulses_preserves_successes_and_accounting(self):
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            database = Path(temporary_directory) / "data.db"
+            connection = sqlite3.connect(database)
+            connection.execute(
+                "CREATE TABLE vc_xp_pulses (id INTEGER PRIMARY KEY, status TEXT)"
+            )
+            connection.execute(
+                """
+                CREATE TABLE vc_xp_user_state (
+                    guild_id INTEGER,
+                    user_id INTEGER,
+                    pulses_earned INTEGER,
+                    pulses_paid INTEGER
+                )
+                """
+            )
+            connection.executemany(
+                "INSERT INTO vc_xp_pulses (status) VALUES (?)",
+                [("added",), ("add_failed",), ("add_failed",)],
+            )
+            connection.execute(
+                "INSERT INTO vc_xp_user_state VALUES (1, 10, 5, 4)"
+            )
+            connection.commit()
+            connection.close()
+
+            with patch.dict(os.environ, {"DATABASE_PATH": str(database)}):
+                deleted = delete_failed_vcxp_pulses()
+
+            connection = sqlite3.connect(database)
+            statuses = connection.execute(
+                "SELECT status FROM vc_xp_pulses ORDER BY id"
+            ).fetchall()
+            state = connection.execute(
+                "SELECT pulses_earned, pulses_paid FROM vc_xp_user_state"
+            ).fetchone()
+            connection.close()
+            self.assertEqual(deleted, 2)
+            self.assertEqual(statuses, [("added",)])
+            self.assertEqual(state, (5, 4))
 
     def test_vcxp_overview_ignores_stale_unpaid_state_before_reward_start(self):
         with tempfile.TemporaryDirectory() as temporary_directory:

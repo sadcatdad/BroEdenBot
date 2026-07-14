@@ -85,6 +85,11 @@ def readonly_connection(path: Path) -> sqlite3.Connection:
     return configure_sync_connection(connection, readonly=True)
 
 
+def writable_connection(path: Path) -> sqlite3.Connection:
+    connection = sqlite3.connect(path, timeout=30)
+    return configure_sync_connection(connection)
+
+
 def table_names(connection: sqlite3.Connection) -> set[str]:
     rows = connection.execute(
         "SELECT name FROM sqlite_master WHERE type = 'table'"
@@ -372,17 +377,25 @@ def vcxp_overview(limit: int = 5) -> dict[str, Any]:
             "Restart the bot once so the VC XP accounting tables are created."
         )
     if result["failed_24h"]:
-        result["issues"].append(
-            f"{result['failed_24h']:,} role adds failed in the last 24 hours. "
-            "Check the recent errors with /vcrewards audit."
-        )
+        if enabled:
+            result["issues"].append(
+                f"Degraded: {result['failed_24h']:,} role adds failed in the "
+                "last 24 hours, although automatic pulses are still running. "
+                "Check the recent errors with /vcrewards audit."
+            )
+        else:
+            result["issues"].append(
+                f"Recent failures: {result['failed_24h']:,} role adds failed "
+                "in the last 24 hours. Automatic pulses are currently disabled."
+            )
 
     blocking_issues = [
         issue
         for issue in result["issues"]
         if not issue.startswith("Refresh Discord metadata")
         and not issue.startswith("Use a nonzero removal delay")
-        and "role adds failed in the last 24 hours" not in issue
+        and not issue.startswith("Degraded:")
+        and not issue.startswith("Recent failures:")
     ]
     if blocking_issues:
         result["status"] = "Needs setup"
@@ -397,6 +410,24 @@ def vcxp_overview(limit: int = 5) -> dict[str, Any]:
         result["status_class"] = "warning-text"
 
     return result
+
+
+def delete_failed_vcxp_pulses() -> int:
+    """Delete failed VCXP audit rows without changing reward accounting."""
+    path = find_database_path()
+    if not path.is_file():
+        raise FileNotFoundError(f"Shared database was not found: {path}")
+    with writable_connection(path) as connection:
+        if "vc_xp_pulses" not in table_names(connection):
+            return 0
+        connection.execute("BEGIN IMMEDIATE")
+        cursor = connection.execute(
+            "DELETE FROM vc_xp_pulses WHERE status = ?",
+            ("add_failed",),
+        )
+        deleted = max(0, int(cursor.rowcount or 0))
+        connection.commit()
+    return deleted
 
 
 def ai_dashboard_visible() -> bool:
