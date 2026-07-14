@@ -12,19 +12,28 @@ from datetime import datetime, timezone
 from typing import Any, Optional
 
 from utils.settings import settings_database_path
-from utils.sqlite import configure_sync_connection
+from utils.sqlite import AutoClosingSQLiteConnection, configure_sync_connection
 
 
 def _connect() -> sqlite3.Connection:
     path = settings_database_path()
     path.parent.mkdir(parents=True, exist_ok=True)
-    connection = sqlite3.connect(path, timeout=30)
+    connection = sqlite3.connect(
+        path,
+        timeout=30,
+        factory=AutoClosingSQLiteConnection,
+    )
     return configure_sync_connection(connection)
 
 
 def _readonly_connect() -> sqlite3.Connection:
     path = settings_database_path()
-    connection = sqlite3.connect(f"{path.as_uri()}?mode=ro", uri=True, timeout=5)
+    connection = sqlite3.connect(
+        f"{path.as_uri()}?mode=ro",
+        uri=True,
+        timeout=5,
+        factory=AutoClosingSQLiteConnection,
+    )
     return configure_sync_connection(connection, readonly=True)
 
 

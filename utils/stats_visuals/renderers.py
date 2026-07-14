@@ -95,6 +95,9 @@ async def render_ranked_graphic_result(
     page_number: Optional[int] = None,
     page_count: Optional[int] = None,
     target_bytes: Optional[int] = None,
+    banner_bytes: Optional[bytes] = None,
+    background_bytes: Optional[bytes] = None,
+    footer_text: Optional[str] = None,
 ) -> RenderResult:
     sections = list(sections)
     display_pages = _ranked_pages(sections)
@@ -128,7 +131,13 @@ async def render_ranked_graphic_result(
             shown_count: int = shown_count,
         ) -> Image.Image:
             canvas = base_canvas(
-                width, height, PORTRAIT_LEADERBOARD, state, accent
+                width,
+                height,
+                PORTRAIT_LEADERBOARD,
+                state,
+                accent,
+                background_bytes=background_bytes,
+                banner_bytes=banner_bytes,
             )
             draw_header(
                 canvas,
@@ -190,7 +199,7 @@ async def render_ranked_graphic_result(
                     )
             draw_footer(
                 canvas,
-                left_text="BRO EDEN • COMMUNITY STATS",
+                left_text=footer_text or "BRO EDEN • COMMUNITY STATS",
                 right_text="Updated {}".format(format_timestamp(updated_at)),
             )
             return canvas.image

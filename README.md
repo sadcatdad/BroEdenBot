@@ -5,7 +5,8 @@ server guidance, moderation guidance, staff notes, voice-channel activity
 tracking, live statistics, queues, polls, leaderboards, and bank tracking.
 
 The bot loads every Python cog in `cogs/` and synchronizes its application
-commands when it starts.
+commands when it starts. If `ENABLED_MODULES` is set, mapped cogs load only
+when their module name is enabled; leaving it blank preserves load-all behavior.
 
 For a module-by-module architecture and reliability map, see
 [docs/codebase-map.md](docs/codebase-map.md).
@@ -29,7 +30,7 @@ For a module-by-module architecture and reliability map, see
 | `/context help`, `/context status`, `/context search`, `/context summarize`, `/context timeline`, `/context user`, `/context channel` | Roles listed in `MESSAGE_CONTEXT_ALLOWED_ROLE_IDS` or users listed in `BOT_OWNER_USER_IDS` |
 | `/rulecard draft` and **Draft Rule Reminder** message action | Administrators or roles listed in `MODAI_ALLOWED_ROLE_IDS` |
 | `/checklist` commands and management controls | Roles listed in `CHECKLIST_ALLOWED_ROLE_IDS` or users listed in `BOT_OWNER_USER_IDS` |
-| `/reminder add`, `/reminder manage` | Internal staff only: administrators, `BOT_OWNER_USER_IDS`, `REMINDER_ALLOWED_ROLE_IDS`, or configured staff/admin roles |
+| `/reminder add`, `/reminder manage`, `/remind subscribe`, `/timezone`, `/time`, `!time` | Internal staff only: administrators, `BOT_OWNER_USER_IDS`, `REMINDER_ALLOWED_ROLE_IDS`, or configured staff/admin roles |
 | ModAI commands and context menus | Administrators or roles listed in `MODAI_ALLOWED_ROLE_IDS` |
 | Staff-note commands | Administrators or roles listed in `STAFF_NOTES_ALLOWED_ROLE_IDS` |
 | `/staffnote delete` | Administrators only |
@@ -40,12 +41,15 @@ For a module-by-module architecture and reliability map, see
 | `/vcstats reset` | Administrators only |
 | `/vcrewards pulse` | Administrators only |
 | Bank commands | Administrators or roles listed in `BANK_ALLOWED_ROLE_IDS` |
-| Stats creation and refresh commands | Administrators or roles listed in `STATS_ALLOWED_ROLE_IDS` |
+| Stats creation, banner replacement, and refresh commands | Administrators or roles listed in `STATS_ALLOWED_ROLE_IDS` |
 | `/stats delete` and `/stats reset` | Administrators only |
 | `/poll`, `/queue dashboard`, and member queue actions | All server members |
 | Queue lock/unlock/move/remove/pull controls | Administrators or members with **Manage Channels** |
-| `/leaderboards` | All server members |
-| Leaderboard create/delete/add/remove commands | Administrators or members with **Manage Server** |
+| `/leaderboards`, `/points`, `!points` | All server members |
+| `/leaderboard create`, `/leaderboard edit` | Administrators or members with **Manage Server** |
+| `/leaderboard add`, `/leaderboard remove` | Configured bot owners, administrators, moderators, or staff roles |
+| `/leaderboard delete`, `/leaderboard role ...` | Users listed in `BOT_OWNER_USER_IDS` |
+| `/leaderboard reset` | Bot owners, administrators, configured admin roles, or `LEADERBOARD_RESET_ROLE_IDS` |
 
 For staff-restricted features, an empty role-ID environment variable makes the
 feature effectively administrator-only. This does not apply to `/ask` or the
@@ -55,18 +59,21 @@ owner-only by default when their broader access settings are blank.
 ## Internal reminder commands
 
 Reminders live in `data.db` and are checked by a background task every 45
-seconds. Pending reminders survive bot restarts because only the database row is
-the source of truth. The command group is for internal staff use only. All setup
-and management responses are private; the fired reminder posts in the selected
-channel, mentions the target member outside the embed so Discord pings them, and
-marks the row as `sent`. If the target channel is missing or the bot cannot send
-there, the reminder is marked `failed` with a short reason instead of retrying
-forever.
+seconds. Pending reminders survive restarts because the database is the source
+of truth. Setup and management responses are private. Fired reminders post in
+the chosen channel and ping only an explicitly selected target or explicit
+user/role mentions in the reminder text.
 
-- `/reminder add [who] <message> <date_time> <channel>` — Schedule a reminder.
-  `who` defaults to the caller. Use local community time; supported formats
-  include `2026-07-01`, `2026-07-01 7:30 PM`, and
-  `07/01/2026 7:30 PM`. Date-only reminders default to 9:00 AM local time.
+- `/reminder add <channel> [who]` — Opens a modal for the message and time.
+  `who` defaults to nobody. Natural-language inputs include `in 2 hours`,
+  `tomorrow 9am`, and `Friday 7:30pm`, alongside ISO and US date formats.
+- `/remind subscribe` — Opens a modal and posts a public bell card in the
+  current channel. Members can subscribe for a persistent confirmation DM,
+  cancel from that DM, and receive the scheduled DM after a restart.
+- `/timezone [timezone]` — Privately views or sets the staff member's personal
+  IANA timezone used by reminder and time phrases.
+- `/time <when>` and `!time <when>` — Produce Discord timestamp codes; the slash
+  response is private and the prefix response is public.
 - `/reminder manage` — Privately list pending reminders created by you or aimed
   at you. The panel supports selecting a reminder, editing message/time,
   editing the channel, editing the target when permitted, and deleting the
@@ -80,6 +87,54 @@ reminders, including self-reminders. The reminder timezone defaults to
 community standard changes. Reminder sends require the bot to have **View
 Channel**, **Send Messages** or **Send Messages in Threads**, and **Embed
 Links** in the selected channel.
+
+## DISBOARD bump rewards
+
+Verified responses from the configured official DISBOARD bot award
+`BUMP_POINTS_PER_SUCCESS` points, trigger the configured reward role, and offer
+the bumper persistent Yes/No reminder controls plus a one-use Bump Leaderboard
+button. `!bumpscores` displays the branded Bump Legends board in ten-row pages.
+Opted-in reminders run after two hours and may ping `BUMP_PING_ROLE_ID`.
+
+The weekly publisher posts the leaderboard to `BUMP_LEADERBOARD_CHANNEL_ID`.
+Detection requires Guild Messages and Message Content intents. Reward-role
+handoff requires **Manage Roles** with Bro Eden above the configured role.
+Installation never renames or deletes pre-existing custom leaderboards that
+happen to use historical RiffBot bump-board names.
+
+## Daily message streaks
+
+Qualifying public messages maintain current and longest daily streaks in
+`data.db`. Bots, webhooks, commands, short messages, duplicate messages, private
+staff channels, and configured excluded channels do not count. Deleted source
+messages are removed and affected streaks are recomputed.
+
+- `!streak` — Shows the caller's current/longest streak and any unread milestone.
+- `/streak leaderboard [streak_type]` — Shows current or longest streaks in
+  ten-row graphical pages.
+
+Milestones begin at 7, 14, 30, 45, 60, and 100 days and continue at the
+configured rolling thresholds. `STREAK_LEADERBOARD_CHANNEL_ID` receives the
+persistent weekly tracker; `STREAK_TIMEZONE` controls day boundaries.
+
+The bot writes a per-guild heartbeat while streak tracking is online. When a
+heartbeat gap exceeds `STREAK_RESTORE_GAP_MINUTES`, the next startup queues an
+automatic Discord-history scan from the last heartbeat through the restart.
+Recovered messages are evaluated with the same public-channel, word-count,
+duplicate, bot, webhook, and command rules as live messages, using each
+message's original timestamp for the streak date. Requests are durable, capped
+by `STREAK_RESTORE_MAX_DAYS` and `STREAK_RESTORE_MAX_MESSAGES`, and return to
+the pending queue if the bot stops during processing.
+
+The dashboard has a top-level **Streaks** page with current/longest data,
+heartbeat and restore status, an audited add/remove-day correction form, and a
+**Restore Streaks** button. The button queues a selected date range even while
+the bot is offline; the bot processes it after it returns. Manual changes edit
+the qualifying-day source history and recalculate both current and longest
+streaks instead of directly overwriting cached totals. Owner/admin write access
+and CSRF validation are required; viewer accounts are read-only. A manual
+remove remains an exclusion so a later broad history restore cannot silently
+re-add that deliberately removed day; a subsequent manual add supersedes it.
 
 ## Internal checklist commands
 
@@ -867,6 +922,12 @@ After running the command, a modal asks for:
   `<role name> Members`.
 - `Body` — Optional supporting text, up to 500 characters.
 
+### `/stats banner <tracker> <image>`
+
+Replaces the saved banner bytes for an existing tracked role roster and
+refreshes the same Discord post in place. The image must be 8 MB or smaller;
+the tracker field autocompletes active role rosters in the current server.
+
 ### `/stats refresh`
 
 Immediately refreshes every tracked stats page in the server, including role
@@ -1251,18 +1312,28 @@ destructive and cannot be undone through the bot.
 
 ## Leaderboard commands
 
-Viewing leaderboards is public. Creating, deleting, and changing scores
-requires **Manage Server** or administrator permission.
+Viewing leaderboards and point summaries is public. Create/edit uses **Manage
+Server**; score changes use configured staff access; deletion and live
+milestone-role rules are owner-only. Destructive reset/delete actions require a
+private confirmation.
 
-### `/leaderboard create <name>`
+### `/leaderboard create <name> [image]`
 
-Creates a named leaderboard. Existing leaderboards are preserved.
+Creates a named leaderboard and opens a modal for its description and accent.
+An optional image attachment becomes its persisted graphical banner. Existing
+leaderboards are preserved.
 
 - `name` — Name used to identify the leaderboard, up to 50 characters.
 
+### `/leaderboard edit <leaderboard> [image]`
+
+Updates the description, `auto` or hex accent, and optional replacement banner.
+Omitting `image` preserves the existing banner.
+
 ### `/leaderboard delete <name>`
 
-Deletes a leaderboard and all point records attached to it.
+Owner-only. Confirms before deleting a leaderboard, its point records, and its
+milestone rules, then attempts to remove roles managed by those rules.
 
 - `name` — Existing leaderboard name. Discord provides autocomplete.
 
@@ -1285,11 +1356,28 @@ Subtracts points from a user without allowing the total to fall below zero.
 - `points` — Numeric point amount supplied as text. Negative values are treated
   as positive and values are rounded to two decimal places.
 
+### `/leaderboard reset <leaderboard>`
+
+Confirms before clearing every score while preserving the leaderboard itself,
+then reconciles milestone roles.
+
+### `/leaderboard role add|remove|list|sync`
+
+Owner-only controls for roles awarded at point thresholds. Bro Eden needs
+**Manage Roles**, its role must be above each reward role, and a managed role
+can belong to only one leaderboard milestone rule.
+
+### `/points [user]` and `!points`
+
+Shows up to 20 leaderboard totals and ranks for the selected member or caller,
+plus current/longest streak information when available.
+
 ### `/leaderboards <name>`
 
 Displays a leaderboard as a portrait paginated graphic, ten members per page. The
-graphic uses the same dark visual system as stats leaderboards, including
-avatars, medal ranks, progress rails, point pills, and a live timestamp.
+graphic uses the same dark visual system as stats leaderboards, including the
+uploaded banner, automatic or configured accent, avatars, medal ranks, progress
+rails, point pills, and a live timestamp.
 Empty leaderboards display a friendly empty state. If an avatar cannot be
 downloaded, the leaderboard still renders with a placeholder.
 
@@ -1376,11 +1464,28 @@ updated from the authenticated local dashboard without rewriting `.env`.
 | Variable | Purpose |
 | --- | --- |
 | `DISCORD_TOKEN` | Discord bot token. Required. |
+| `ENABLED_MODULES` | Optional comma/space-separated module gate. Keep existing values and add `bumps,reminders,streaks,stats`; blank loads every cog. |
 | `BOT_OWNER_USER_IDS` | Comma-separated Discord user IDs allowed to use `/bot` commands. |
 | `BOT_OWNER_ALLOW_ADMINS` | Allows server administrators to use `/bot` when `true`. Defaults to `false`. |
 | `CHECKLIST_ALLOWED_ROLE_IDS` | Comma-separated Discord role IDs allowed to use `/checklist`; bot owners are also allowed. Blank makes checklist management owner-only. |
 | `REMINDER_ALLOWED_ROLE_IDS` | Comma-separated Discord role IDs allowed to use internal staff reminders. Administrators, bot owners, and configured staff/admin roles are also allowed. |
 | `REMINDER_TIMEZONE` | IANA timezone used for `/reminder add` and edit date/time input. Defaults to `America/Chicago`. |
+| `DISBOARD_BOT_USER_ID` | Official DISBOARD bot user ID trusted for verified success responses. |
+| `BUMP_REWARD_ROLE_ID` | Role granted after a verified bump for the external XP/reward handoff. |
+| `BUMP_PING_ROLE_ID` | Optional role pinged with opted-in two-hour bump reminders. |
+| `BUMP_LEADERBOARD_CHANNEL_ID` | Channel receiving the seven-day Bump Legends post. |
+| `BUMP_POINTS_PER_SUCCESS` | Bump points awarded per verified success. Defaults to `1000`. |
+| `STREAK_TIMEZONE` | IANA timezone used for daily streak boundaries. Defaults to `America/Chicago`. |
+| `STREAK_MIN_WORDS` | Minimum word count for a qualifying streak message. Defaults to `4`. |
+| `STREAK_DUPLICATE_LOOKBACK_DAYS` | Exact-message duplicate lookback window. Defaults to `30`. |
+| `STREAK_EXCLUDED_CHANNEL_IDS` | Additional channels excluded from streak qualification. |
+| `STREAK_LEADERBOARD_CHANNEL_ID` | Channel receiving the persistent weekly streak tracker. |
+| `STREAK_RESTORE_ENABLED` | Enables automatic history recovery after a heartbeat gap. Defaults to `true`. |
+| `STREAK_RESTORE_GAP_MINUTES` | Missing-heartbeat duration that queues automatic recovery. Defaults to `10`. |
+| `STREAK_RESTORE_MAX_DAYS` | Maximum date span accepted by one automatic or dashboard restore. Defaults to `14`. |
+| `STREAK_RESTORE_MAX_MESSAGES` | Maximum Discord messages scanned by one restore request. Defaults to `50000`. |
+| `LEADERBOARD_RESET_ROLE_IDS` | Additional roles allowed to reset custom leaderboard points. |
+| `AUDIT_LOG_THREAD_ID` | Optional existing thread for selected mention-safe leaderboard audit events. |
 | `GEMINI_API_KEY` | Gemini API key used by `/ask`, `/staffai`, `/context`, and ModAI. |
 | `AI_ENABLED` | Enables shared AI framework calls when `true`. Missing `GEMINI_API_KEY` still disables framework calls. Defaults to `true`. |
 | `AI_MODEL_FAST` | Fast/cheap framework model tier. Defaults to `gemini-2.5-flash-lite`. |
@@ -1594,7 +1699,8 @@ Discord login is confirmed working, and never share
 ### Phase 1.5 runtime settings
 
 The Settings section has sidebar entries for Bot Configuration, Permissions &
-Access, Discord Roles & Channels, Imports, Dashboard Users, and Advanced.
+Access, Discord Roles & Channels, Feature Settings, Imports, Dashboard Users,
+and Advanced.
 Knowledge now lives in its own top-level tab. Updates are validated, stored as
 text in the shared `data.db`
 `bot_settings` table, and recorded in `bot_settings_audit` when the value
@@ -1606,7 +1712,10 @@ setting so a temporary SQLite read error does not drop runtime behavior back to
 older `.env` values.
 
 Editable settings include `/ask` channels and cooldown, staff/owner permission
-IDs, voice/channel exclusions, bank access, and VC XP role-pulse controls.
+IDs, voice/channel exclusions, bank access, VC XP role-pulse controls, and the
+transferred bump, reminder, streak/recovery, stats, and leaderboard settings.
+Those transferred settings are consolidated under **Feature Settings** rather
+than duplicated across the general permissions and advanced pages.
 Role and channel permission settings use the same Discord metadata selectors
 as the Discord Roles & Channels page; user ID allowlists remain plain ID
 fields. The dashboard Overview page also shows a
@@ -1908,6 +2017,13 @@ cd ~/BroEdenBot
 The deployment script should restart the bot. If it does not, restart the bot
 service or process manually so updated cogs and slash-command definitions are
 loaded and synchronized.
+
+The example bot and dashboard systemd units run a read-only SQLite quick check
+before every start. A missing virtual environment, missing runtime database, or
+failed integrity check prevents the service from starting, and systemd limits
+repeated restart attempts. Keep runtime databases on a filesystem that has been
+verified healthy; do not point either service at a mount reporting USB resets,
+I/O errors, an aborted journal, or a read-only remount.
 
 After the owner IDs and Pi permissions are configured, `/bot deploy` provides
 the confirmation-gated Discord shortcut. Historical imports are never launched

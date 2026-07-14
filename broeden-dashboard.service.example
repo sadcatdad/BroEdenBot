@@ -1,15 +1,27 @@
 [Unit]
 Description=BroEdenBot local dashboard
-After=network.target
+StartLimitIntervalSec=300
+StartLimitBurst=3
+After=network-online.target
+Wants=network-online.target
+RequiresMountsFor=/home/sadcatdad/BroEdenBot
 
 [Service]
 Type=simple
 User=sadcatdad
 WorkingDirectory=/home/sadcatdad/BroEdenBot
 EnvironmentFile=/home/sadcatdad/BroEdenBot/.env
+ExecStartPre=/usr/bin/test -x /home/sadcatdad/BroEdenBot/.venv/bin/uvicorn
+ExecStartPre=/usr/bin/test -r /home/sadcatdad/BroEdenBot/data.db
+ExecStartPre=/usr/bin/test -r /home/sadcatdad/BroEdenBot/message_context.db
+ExecStartPre=/usr/bin/sqlite3 -readonly /home/sadcatdad/BroEdenBot/data.db "PRAGMA quick_check(1);"
+ExecStartPre=/usr/bin/sqlite3 -readonly /home/sadcatdad/BroEdenBot/message_context.db "PRAGMA quick_check(1);"
 ExecStart=/home/sadcatdad/BroEdenBot/.venv/bin/uvicorn dashboard.app:app --host 0.0.0.0 --port 3000
+TimeoutStartSec=180
+TimeoutStopSec=30
 Restart=on-failure
-RestartSec=5
+RestartSec=10
+Environment=PYTHONUNBUFFERED=1
 
 [Install]
 WantedBy=multi-user.target

@@ -13,7 +13,7 @@ import aiosqlite
 
 from utils.ai_kb import chunk_text, normalize_kb_text
 from utils.settings import settings_database_path
-from utils.sqlite import configure_sync_connection
+from utils.sqlite import AutoClosingSQLiteConnection, configure_sync_connection
 
 
 KNOWLEDGE_SOURCE_TYPES = {
@@ -685,7 +685,13 @@ def live_entries_as_sources(
 def _connect() -> sqlite3.Connection:
     path = settings_database_path()
     path.parent.mkdir(parents=True, exist_ok=True)
-    return configure_sync_connection(sqlite3.connect(path, timeout=30))
+    return configure_sync_connection(
+        sqlite3.connect(
+            path,
+            timeout=30,
+            factory=AutoClosingSQLiteConnection,
+        )
+    )
 
 
 def initialize_live_knowledge_schema_sync() -> None:

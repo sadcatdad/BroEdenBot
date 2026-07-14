@@ -689,6 +689,146 @@ class Stats(commands.Cog):
             )
         )
 
+    @stats.command(
+        name="banner",
+        description="Replace the banner on a tracked role roster",
+    )
+    @app_commands.describe(
+        tracker="Existing tracked role roster to update",
+        image="Replacement banner image (16:3 recommended, 8 MB maximum)",
+    )
+    @app_commands.guild_only()
+    @app_commands.check(has_stats_access)
+    async def banner(
+        self,
+        interaction: discord.Interaction,
+        tracker: str,
+        image: discord.Attachment,
+    ) -> None:
+        if not tracker.isdigit():
+            await interaction.response.send_message(
+                "Select a tracked role roster from the suggestions.",
+                ephemeral=True,
+            )
+            return
+        if not self._is_image_attachment(image):
+            await interaction.response.send_message(
+                "The replacement banner must be an image attachment.",
+                ephemeral=True,
+            )
+            return
+        if image.size > 8_000_000:
+            await interaction.response.send_message(
+                "The banner image must be 8 MB or smaller.",
+                ephemeral=True,
+            )
+            return
+
+        await interaction.response.defer(ephemeral=True)
+        try:
+            image_data = await image.read()
+        except (discord.Forbidden, discord.HTTPException):
+            await interaction.followup.send(
+                "I could not download the replacement banner.",
+                ephemeral=True,
+            )
+            return
+
+        refreshed = await self._replace_roster_banner(
+            guild_id=interaction.guild_id,
+            message_id=int(tracker),
+            image_url=image.url,
+            image_data=image_data,
+        )
+        if refreshed is None:
+            message = "That tracked role roster could not be found."
+        elif refreshed:
+            message = "The tracked role roster banner was updated in place."
+        else:
+            message = (
+                "The new banner was saved, but the Discord post could not be "
+                "refreshed. Check the bot's channel permissions and run "
+                "`/stats refresh`."
+            )
+        await interaction.followup.send(message, ephemeral=True)
+
+    @banner.autocomplete("tracker")
+    async def banner_tracker_autocomplete(
+        self,
+        interaction: discord.Interaction,
+        current: str,
+    ) -> list[app_commands.Choice[str]]:
+        if not interaction.guild_id or not await has_stats_access(interaction):
+            return []
+        cursor = await self.bot.db.execute(
+            """
+            SELECT message_id, channel_id, role_id, title
+            FROM role_stat_embeds
+            WHERE guild_id = ? AND status = 'active'
+            ORDER BY created_at DESC
+            LIMIT 25
+            """,
+            (interaction.guild_id,),
+        )
+        rows = await cursor.fetchall()
+        await cursor.close()
+        search = current.strip().casefold()
+        choices = []
+        for message_id, channel_id, role_id, title in rows:
+            channel = self._get_channel(interaction.guild, channel_id)
+            role = interaction.guild.get_role(role_id)
+            label = title or (
+                f"{role.name} Members" if role else f"Role {role_id} Members"
+            )
+            channel_name = getattr(channel, "name", f"channel-{channel_id}")
+            choice_name = f"{label} — #{channel_name}"
+            if search and search not in choice_name.casefold():
+                continue
+            choices.append(
+                app_commands.Choice(
+                    name=choice_name[:100],
+                    value=str(message_id),
+                )
+            )
+        return choices
+
+    async def _replace_roster_banner(
+        self,
+        *,
+        guild_id: int,
+        message_id: int,
+        image_url: str,
+        image_data: bytes,
+    ) -> Optional[bool]:
+        cursor = await self.bot.db.execute(
+            """
+            SELECT
+                id, guild_id, channel_id, message_id, role_id, title, body,
+                image_url, image_data, graphic_enabled
+            FROM role_stat_embeds
+            WHERE guild_id = ? AND message_id = ? AND status = 'active'
+            """,
+            (guild_id, message_id),
+        )
+        row = await cursor.fetchone()
+        await cursor.close()
+        if row is None:
+            return None
+
+        await self.bot.db.execute(
+            """
+            UPDATE role_stat_embeds
+            SET image_url = ?, image_data = ?
+            WHERE id = ?
+            """,
+            (image_url, image_data, row[0]),
+        )
+        await self.bot.db.commit()
+        updated_row = list(row)
+        updated_row[7] = image_url
+        updated_row[8] = image_data
+        return await self._refresh_row(tuple(updated_row))
+
     async def _create_role_embed(
         self,
         interaction: discord.Interaction,

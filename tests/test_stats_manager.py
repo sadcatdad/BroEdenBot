@@ -5,7 +5,7 @@ import sqlite3
 import tempfile
 import unittest
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 
 import aiosqlite
 from fastapi.testclient import TestClient
@@ -388,6 +388,60 @@ class StatsCogSchemaCompatibilityTests(unittest.IsolatedAsyncioTestCase):
             await cursor.close()
             self.assertIn("status", columns)
             self.assertIn("last_error", columns)
+        await database.close()
+
+    async def test_replace_roster_banner_persists_bytes_and_refreshes_same_row(self):
+        from cogs.stats import Stats
+
+        database = await aiosqlite.connect(":memory:")
+        await database.execute(
+            """
+            CREATE TABLE role_stat_embeds (
+                id INTEGER PRIMARY KEY,
+                guild_id INTEGER NOT NULL,
+                channel_id INTEGER NOT NULL,
+                message_id INTEGER NOT NULL,
+                role_id INTEGER NOT NULL,
+                title TEXT NOT NULL,
+                body TEXT,
+                image_url TEXT,
+                image_data BLOB,
+                graphic_enabled INTEGER NOT NULL DEFAULT 1,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                status TEXT NOT NULL DEFAULT 'active'
+            )
+            """
+        )
+        await database.execute(
+            """
+            INSERT INTO role_stat_embeds (
+                id, guild_id, channel_id, message_id, role_id, title, body,
+                created_at, updated_at
+            ) VALUES (1, 10, 20, 30, 40, 'Roster', 'Body', 'now', 'now')
+            """
+        )
+        await database.commit()
+        cog = Stats(type("Bot", (), {"db": database})())
+        cog._refresh_row = AsyncMock(return_value=True)
+
+        result = await cog._replace_roster_banner(
+            guild_id=10,
+            message_id=30,
+            image_url="https://example.com/banner.png",
+            image_data=b"replacement-image",
+        )
+
+        self.assertTrue(result)
+        cursor = await database.execute(
+            "SELECT image_url, image_data FROM role_stat_embeds WHERE id = 1"
+        )
+        stored = await cursor.fetchone()
+        await cursor.close()
+        self.assertEqual(stored[0], "https://example.com/banner.png")
+        self.assertEqual(stored[1], b"replacement-image")
+        cog._refresh_row.assert_awaited_once()
+        self.assertEqual(cog._refresh_row.await_args.args[0][8], b"replacement-image")
         await database.close()
 
 

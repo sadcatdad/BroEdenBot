@@ -1,0 +1,130 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="page-heading">
+  <div>
+    <p class="eyebrow">Activity streak administration</p>
+    <h1>Streaks</h1>
+    <p class="muted">Review source days, repair individual records, and recover qualifying messages after bot downtime.</p>
+  </div>
+  <a class="button secondary" href="{{ url_for('settings_features') }}#streaks">Configure Streaks</a>
+</div>
+
+{% if message %}<div class="alert success">{{ message }}</div>{% endif %}
+{% if error %}<div class="alert error">{{ error }}</div>{% endif %}
+
+<section class="card-grid">
+  <article class="card"><p class="label">Tracked members</p><p class="metric">{{ "{:,}".format(streaks.summary.members) }}</p></article>
+  <article class="card"><p class="label">Active streaks</p><p class="metric good">{{ "{:,}".format(streaks.summary.active) }}</p></article>
+  <article class="card"><p class="label">Qualified days</p><p class="metric">{{ "{:,}".format(streaks.summary.tracked_days) }}</p></article>
+  <article class="card"><p class="label">Best longest streak</p><p class="metric">{{ "{:,}".format(streaks.summary.best_longest) }} days</p></article>
+</section>
+
+<section class="two-column streak-admin-grid">
+  <article class="card">
+    <div class="section-heading">
+      <div>
+        <p class="eyebrow">Downtime failsafe</p>
+        <h2>Restore Streaks</h2>
+      </div>
+      {% if streaks.runtime and streaks.runtime.last_restore_status %}<span class="badge status-{{ streaks.runtime.last_restore_status }}">{{ streaks.runtime.last_restore_status }}</span>{% endif %}
+    </div>
+    <p class="muted">Queues a Discord history scan. The request stays pending if the bot is offline and runs when the local bot process returns.</p>
+    {% if streaks.runtime %}
+    <div class="status-list compact-grid">
+      <div><strong>Last heartbeat</strong><span>{{ streaks.runtime.last_heartbeat_at or "Never" }}</span></div>
+      <div><strong>Last restore</strong><span>{{ streaks.runtime.last_restore_at or "Never" }}</span></div>
+      <div><strong>Result</strong><span>{{ streaks.runtime.last_restore_detail or "No restore completed yet" }}</span></div>
+    </div>
+    {% else %}
+    <div class="alert warning">No bot heartbeat has been recorded yet. Manual restore requests can still be queued.</div>
+    {% endif %}
+    {% if can_write %}
+    <form method="post" action="{{ url_for('streaks_restore') }}" class="stack">
+      <input type="hidden" name="csrf" value="{{ csrf_token }}">
+      <label>Guild ID<input name="guild_id" value="{{ streaks.guild_id }}" inputmode="numeric" required></label>
+      <div class="form-grid two">
+        <label>Start date<input type="date" name="start_date" value="{{ streaks.today }}" max="{{ streaks.today }}" required></label>
+        <label>End date<input type="date" name="end_date" value="{{ streaks.today }}" max="{{ streaks.today }}" required></label>
+      </div>
+      <button class="button" type="submit">Restore Streaks</button>
+    </form>
+    {% else %}
+    <p class="muted">Viewer accounts can monitor recovery but cannot queue it.</p>
+    {% endif %}
+  </article>
+
+  <article class="card">
+    <p class="eyebrow">Audited correction</p>
+    <h2>Manual adjustment</h2>
+    <p class="muted">Add or remove one qualifying source day. Cached current and longest values are recalculated from the source-day history.</p>
+    {% if can_write %}
+    <form method="post" action="{{ url_for('streaks_adjust') }}" class="stack">
+      <input type="hidden" name="csrf" value="{{ csrf_token }}">
+      <label>Guild ID<input name="guild_id" value="{{ streaks.guild_id }}" inputmode="numeric" required></label>
+      <label>Member user ID<input name="user_id" inputmode="numeric" required></label>
+      <div class="form-grid two">
+        <label>Action
+          <select name="action"><option value="add">Add qualifying day</option><option value="remove">Remove qualifying day</option></select>
+        </label>
+        <label>Activity date<input type="date" name="activity_date" value="{{ streaks.today }}" max="{{ streaks.today }}" required></label>
+      </div>
+      <label>Reason<input name="reason" maxlength="500" placeholder="Why this correction is needed" required></label>
+      <button class="button secondary" type="submit">Save Adjustment</button>
+    </form>
+    {% else %}
+    <p class="muted">Viewer accounts cannot modify source days.</p>
+    {% endif %}
+  </article>
+</section>
+
+<section class="card">
+  <div class="section-heading">
+    <div><p class="eyebrow">Current data</p><h2>Member streaks</h2></div>
+    <form method="get" action="{{ url_for('streaks_page') }}" class="inline-search">
+      <input name="q" value="{{ streaks.query }}" placeholder="Search name or user ID" aria-label="Search streak members">
+      <button class="button secondary small" type="submit">Search</button>
+    </form>
+  </div>
+  {% if streaks.members %}
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>Member</th><th>User ID</th><th>Current</th><th>Longest</th><th>Last qualified</th><th>Tracked days</th><th>Updated</th></tr></thead>
+      <tbody>
+      {% for member in streaks.members %}
+      <tr>
+        <td>{{ member.label|display_name }}{% if member.username %}<br><small class="muted">@{{ member.username|display_name }}</small>{% endif %}</td>
+        <td><code>{{ member.user_id }}</code></td>
+        <td><strong>{{ member.effective_current }} days</strong>{% if member.effective_current != member.current_streak %}<br><small class="warning-text">stored {{ member.current_streak }}</small>{% endif %}</td>
+        <td>{{ member.longest_streak }} days</td>
+        <td>{{ member.last_qualified_date or "—" }}</td>
+        <td>{{ member.tracked_days }}</td>
+        <td>{{ member.updated_at }}</td>
+      </tr>
+      {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {% else %}<div class="empty-state">No matching streak records were found.</div>{% endif %}
+</section>
+
+<section class="two-column streak-history-grid">
+  <article class="card">
+    <p class="eyebrow">Recovery queue</p><h2>Recent restore requests</h2>
+    <div class="table-wrap"><table>
+      <thead><tr><th>ID</th><th>Range</th><th>Source</th><th>Status</th><th>Recovered</th></tr></thead>
+      <tbody>{% for restore in streaks.restores %}<tr>
+        <td>#{{ restore.id }}</td><td>{{ restore.start_at_utc }}<br>{{ restore.end_at_utc }}</td><td>{{ restore.request_source }}<br><small class="muted">{{ restore.requested_by }}</small></td><td><span class="badge status-{{ restore.status }}">{{ restore.status }}</span>{% if restore.error %}<br><small class="warning-text">{{ restore.error }}</small>{% endif %}</td><td>{{ restore.days_restored }} days<br><small class="muted">{{ restore.messages_scanned }} messages · {{ restore.members_restored }} members</small></td>
+      </tr>{% else %}<tr><td colspan="5" class="muted">No restore requests yet.</td></tr>{% endfor %}</tbody>
+    </table></div>
+  </article>
+  <article class="card">
+    <p class="eyebrow">Change audit</p><h2>Recent manual adjustments</h2>
+    <div class="table-wrap"><table>
+      <thead><tr><th>ID</th><th>Member / Date</th><th>Action</th><th>Reason</th><th>Changed by</th></tr></thead>
+      <tbody>{% for item in streaks.adjustments %}<tr>
+        <td>#{{ item.id }}</td><td><code>{{ item.user_id }}</code><br>{{ item.activity_date }}</td><td>{{ item.action }}</td><td>{{ item.reason }}</td><td>{{ item.changed_by }}<br><small class="muted">{{ item.created_at }}</small></td>
+      </tr>{% else %}<tr><td colspan="5" class="muted">No manual adjustments yet.</td></tr>{% endfor %}</tbody>
+    </table></div>
+  </article>
+</section>
+{% endblock %}

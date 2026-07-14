@@ -10,7 +10,7 @@ from datetime import datetime, timezone
 from typing import Any, Optional
 
 from utils.settings import settings_database_path
-from utils.sqlite import configure_sync_connection
+from utils.sqlite import AutoClosingSQLiteConnection, configure_sync_connection
 
 
 STAT_TABLES = {
@@ -37,7 +37,11 @@ def parse_stat_id(stat_id: str) -> tuple[str, int]:
 def _connect() -> sqlite3.Connection:
     path = settings_database_path()
     path.parent.mkdir(parents=True, exist_ok=True)
-    connection = sqlite3.connect(path, timeout=30)
+    connection = sqlite3.connect(
+        path,
+        timeout=30,
+        factory=AutoClosingSQLiteConnection,
+    )
     return configure_sync_connection(connection)
 
 

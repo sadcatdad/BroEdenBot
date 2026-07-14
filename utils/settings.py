@@ -6,6 +6,7 @@ import os
 import re
 import sqlite3
 import logging
+from contextlib import closing
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -93,14 +94,14 @@ SETTING_DEFINITIONS = (
     ),
     SettingDefinition(
         "REMINDER_ALLOWED_ROLE_IDS",
-        "permissions",
+        "reminders",
         "csv_ids",
         "Roles allowed to use internal staff reminders.",
         picker="role",
     ),
     SettingDefinition(
         "REMINDER_TIMEZONE",
-        "advanced",
+        "reminders",
         "string",
         "IANA timezone used for reminder date/time input.",
         default="America/Chicago",
@@ -114,10 +115,118 @@ SETTING_DEFINITIONS = (
     ),
     SettingDefinition(
         "STATS_ALLOWED_ROLE_IDS",
-        "permissions",
+        "stats_features",
         "csv_ids",
         "Roles allowed to create and refresh stats.",
         picker="role",
+    ),
+    SettingDefinition(
+        "STREAK_TIMEZONE",
+        "streaks",
+        "string",
+        "Timezone used for daily message streak boundaries.",
+        default="America/Chicago",
+    ),
+    SettingDefinition(
+        "STREAK_MIN_WORDS",
+        "streaks",
+        "int",
+        "Minimum words required for a message to count toward a streak.",
+        default="4",
+        minimum=4,
+    ),
+    SettingDefinition(
+        "STREAK_DUPLICATE_LOOKBACK_DAYS",
+        "streaks",
+        "int",
+        "Days of qualifying message hashes checked for exact duplicates.",
+        default="30",
+        minimum=1,
+    ),
+    SettingDefinition(
+        "STREAK_EXCLUDED_CHANNEL_IDS",
+        "streaks",
+        "csv_ids",
+        "Additional channels excluded from activity streaks.",
+        picker="channel",
+    ),
+    SettingDefinition(
+        "STREAK_LEADERBOARD_CHANNEL_ID",
+        "streaks",
+        "csv_ids",
+        "Channel used for the persistent weekly streak leaderboard.",
+        picker="channel",
+        single=True,
+    ),
+    SettingDefinition(
+        "STREAK_RESTORE_ENABLED",
+        "streaks",
+        "bool",
+        "Automatically queue Discord history recovery when a heartbeat gap is detected.",
+        default="true",
+    ),
+    SettingDefinition(
+        "STREAK_RESTORE_GAP_MINUTES",
+        "streaks",
+        "int",
+        "Minimum missing-heartbeat gap before automatic streak recovery is queued.",
+        default="10",
+        minimum=2,
+    ),
+    SettingDefinition(
+        "STREAK_RESTORE_MAX_DAYS",
+        "streaks",
+        "int",
+        "Maximum number of calendar days accepted by one restore request.",
+        default="14",
+        minimum=1,
+    ),
+    SettingDefinition(
+        "STREAK_RESTORE_MAX_MESSAGES",
+        "streaks",
+        "int",
+        "Maximum Discord messages scanned by one restore request.",
+        default="50000",
+        minimum=100,
+    ),
+    SettingDefinition(
+        "DISBOARD_BOT_USER_ID",
+        "bumps",
+        "csv_ids",
+        "Official DISBOARD bot user ID trusted for successful bump responses.",
+        single=True,
+    ),
+    SettingDefinition(
+        "BUMP_REWARD_ROLE_ID",
+        "bumps",
+        "csv_ids",
+        "Temporary external-automation role granted after a verified bump.",
+        picker="role",
+        single=True,
+    ),
+    SettingDefinition(
+        "BUMP_PING_ROLE_ID",
+        "bumps",
+        "csv_ids",
+        "Role pinged with opted-in two-hour bump reminders.",
+        picker="role",
+        single=True,
+    ),
+    SettingDefinition(
+        "BUMP_LEADERBOARD_CHANNEL_ID",
+        "bumps",
+        "csv_ids",
+        "Channel that receives the Bump Legends leaderboard every seven days.",
+        picker="channel",
+        single=True,
+    ),
+    SettingDefinition(
+        "BUMP_POINTS_PER_SUCCESS",
+        "bumps",
+        "int",
+        "Points awarded for each verified successful DISBOARD bump.",
+        default="1000",
+        minimum=1,
     ),
     SettingDefinition(
         "ACTIVITY_EXCLUDED_ROLE_IDS",
@@ -179,6 +288,21 @@ SETTING_DEFINITIONS = (
         "permissions",
         "csv_ids",
         "Users allowed to use owner-only bot controls.",
+    ),
+    SettingDefinition(
+        "LEADERBOARD_RESET_ROLE_IDS",
+        "stats_features",
+        "csv_ids",
+        "Additional roles allowed to reset leaderboard points.",
+        picker="role",
+    ),
+    SettingDefinition(
+        "AUDIT_LOG_THREAD_ID",
+        "permissions",
+        "csv_ids",
+        "Existing Discord thread used for selected audit events.",
+        picker="channel",
+        single=True,
     ),
     SettingDefinition(
         "VCXP_ENABLED",
@@ -427,7 +551,7 @@ def _connect(*, readonly: bool = False) -> sqlite3.Connection:
 
 
 def initialize_settings_from_env() -> None:
-    with _connect() as connection:
+    with closing(_connect()) as connection:
         connection.execute(
             """
             CREATE TABLE IF NOT EXISTS bot_settings (
@@ -486,7 +610,7 @@ def get_setting(key: str, default: Optional[str] = None) -> Optional[str]:
     if definition and definition.editable:
         cache_key = (str(settings_database_path()), key)
         try:
-            with _connect(readonly=True) as connection:
+            with closing(_connect(readonly=True)) as connection:
                 row = connection.execute(
                     "SELECT value FROM bot_settings WHERE key = ?",
                     (key,),
@@ -617,7 +741,7 @@ def set_setting(key: str, value: str, *, changed_by: str = "system") -> str:
     normalized = normalize_setting_value(key, value)
     definition = DEFINITIONS_BY_KEY[key]
     now = datetime.now(timezone.utc).isoformat()
-    with _connect() as connection:
+    with closing(_connect()) as connection:
         connection.execute("BEGIN IMMEDIATE")
         row = connection.execute(
             "SELECT value FROM bot_settings WHERE key = ?",
@@ -667,6 +791,10 @@ def settings_for_dashboard() -> dict[str, list[dict[str, object]]]:
         "models": [],
         "dashboard_json": [],
         "advanced": [],
+        "bumps": [],
+        "reminders": [],
+        "streaks": [],
+        "stats_features": [],
     }
     for definition in SETTING_DEFINITIONS:
         if not definition.visible:
@@ -691,7 +819,7 @@ def settings_for_dashboard() -> dict[str, list[dict[str, object]]]:
 
 def recent_setting_changes(limit: int = 10) -> list[dict[str, object]]:
     try:
-        with _connect(readonly=True) as connection:
+        with closing(_connect(readonly=True)) as connection:
             rows = connection.execute(
                 """
                 SELECT key, old_value, new_value, changed_by, changed_at

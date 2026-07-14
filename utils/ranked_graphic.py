@@ -19,6 +19,11 @@ async def render_ranked_graphic(
     updated_at: datetime,
     accent_color: int,
     total_entries: Optional[int] = None,
+    banner_bytes: Optional[bytes] = None,
+    background_bytes: Optional[bytes] = None,
+    layout: str = "default",
+    footer_text: Optional[str] = None,
+    force_columns: Optional[int] = None,
 ) -> bytes:
     """Return the first page for legacy callers.
 
@@ -32,6 +37,9 @@ async def render_ranked_graphic(
         updated_at=updated_at,
         accent_color=accent_color,
         total_entries=total_entries,
+        banner_bytes=banner_bytes,
+        background_bytes=background_bytes,
+        footer_text=footer_text,
     )
     return result.pages[0].png
 

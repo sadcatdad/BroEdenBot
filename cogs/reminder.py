@@ -6,14 +6,15 @@ import asyncio
 import logging
 import os
 import re
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any, Iterable, Optional
-from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError, available_timezones
 
 import discord
 from discord import app_commands
 from discord.ext import commands, tasks
 
+from config import COLOR
 from utils.settings import get_csv_ids_setting, get_setting
 from utils.ui import SUCCESS_COLOR, branded_embed, error_embed, truncate
 
@@ -25,7 +26,11 @@ DEFAULT_DATE_ONLY_TIME = "9:00 AM"
 REMINDER_CHECK_SECONDS = 45
 MAX_REMINDER_MESSAGE_LENGTH = 4_000
 MAX_REMINDERS_PER_MANAGE = 25
-ALLOWED_MENTIONS = discord.AllowedMentions(users=True, roles=False, everyone=False)
+SUBSCRIPTION_BATCH_SIZE = 25
+SUBSCRIPTION_MAX_ATTEMPTS = 3
+SUBSCRIPTION_RECOVERY_MINUTES = 10
+TIMESTAMP_STYLES = ("F", "f", "D", "d", "T", "t", "R", "s", "S")
+ALLOWED_MENTIONS = discord.AllowedMentions(users=True, roles=True, everyone=False)
 CHANNEL_TYPES = [
     discord.ChannelType.text,
     discord.ChannelType.news,
@@ -45,9 +50,36 @@ DATE_ONLY_FORMATS = (
     "%m/%d/%Y",
 )
 HELPFUL_DATE_ERROR = (
-    "I could not understand that date/time. Try `2026-07-01`, "
-    "`2026-07-01 7:30 PM`, or `07/01/2026 7:30 PM`."
+    "I could not understand that date/time. Try `in 2 hours`, "
+    "`tomorrow 9am`, `Friday 7:30pm`, or `2026-07-01 7:30 PM`."
 )
+WEEKDAY_NUMBERS = {
+    "monday": 0,
+    "tuesday": 1,
+    "wednesday": 2,
+    "thursday": 3,
+    "friday": 4,
+    "saturday": 5,
+    "sunday": 6,
+}
+RELATIVE_UNITS = {
+    "w": "weeks",
+    "week": "weeks",
+    "weeks": "weeks",
+    "d": "days",
+    "day": "days",
+    "days": "days",
+    "h": "hours",
+    "hr": "hours",
+    "hrs": "hours",
+    "hour": "hours",
+    "hours": "hours",
+    "m": "minutes",
+    "min": "minutes",
+    "mins": "minutes",
+    "minute": "minutes",
+    "minutes": "minutes",
+}
 
 
 def utc_now() -> datetime:
@@ -83,12 +115,75 @@ def reminder_timezone() -> ZoneInfo:
     name = configured_timezone_name()
     try:
         return ZoneInfo(name)
-    except ZoneInfoNotFoundError:
+    except (ValueError, ZoneInfoNotFoundError):
         logger.warning("Invalid reminder timezone %s; using %s", name, DEFAULT_TIMEZONE)
         return ZoneInfo(DEFAULT_TIMEZONE)
 
 
-def parse_local_datetime(value: str, tz: ZoneInfo) -> datetime:
+def _reference_time(now: Optional[datetime], tz: ZoneInfo) -> datetime:
+    reference = now or datetime.now(timezone.utc)
+    if reference.tzinfo is None:
+        reference = reference.replace(tzinfo=tz)
+    return reference.astimezone(tz)
+
+
+def _parse_clock(value: str) -> tuple[int, int]:
+    text = " ".join(str(value or "").strip().casefold().split())
+    if text == "noon":
+        return 12, 0
+    if text == "midnight":
+        return 0, 0
+    text = re.sub(r"(?i)(\d)(am|pm)\b", r"\1 \2", text)
+    match = re.fullmatch(r"(\d{1,2})(?::(\d{2}))?\s*(am|pm)?", text)
+    if match is None:
+        raise ValueError(HELPFUL_DATE_ERROR)
+    hour = int(match.group(1))
+    minute = int(match.group(2) or 0)
+    meridiem = match.group(3)
+    if minute > 59:
+        raise ValueError(HELPFUL_DATE_ERROR)
+    if meridiem:
+        if hour < 1 or hour > 12:
+            raise ValueError(HELPFUL_DATE_ERROR)
+        hour %= 12
+        if meridiem == "pm":
+            hour += 12
+    elif hour > 23:
+        raise ValueError(HELPFUL_DATE_ERROR)
+    return hour, minute
+
+
+def _parse_relative_duration(value: str) -> Optional[timedelta]:
+    match = re.fullmatch(r"(?:in\s+(.+)|(.+?)\s+from\s+now)", value, re.IGNORECASE)
+    if match is None:
+        return None
+    body = (match.group(1) or match.group(2) or "").strip().casefold()
+    token_re = re.compile(
+        r"(\d+(?:\.\d+)?)\s*"
+        r"(weeks?|w|days?|d|hours?|hrs?|hr|h|minutes?|mins?|min|m)\b",
+        re.IGNORECASE,
+    )
+    tokens = list(token_re.finditer(body))
+    leftover = token_re.sub(" ", body)
+    leftover = re.sub(r"(?:\s|,|\band\b)+", "", leftover, flags=re.IGNORECASE)
+    if not tokens or leftover:
+        raise ValueError(HELPFUL_DATE_ERROR)
+    totals = {"weeks": 0.0, "days": 0.0, "hours": 0.0, "minutes": 0.0}
+    for token in tokens:
+        amount = float(token.group(1))
+        totals[RELATIVE_UNITS[token.group(2).casefold()]] += amount
+    duration = timedelta(**totals)
+    if duration <= timedelta(0):
+        raise ValueError("Reminder time must be greater than zero.")
+    return duration
+
+
+def parse_local_datetime(
+    value: str,
+    tz: ZoneInfo,
+    *,
+    now: Optional[datetime] = None,
+) -> datetime:
     text = " ".join(str(value or "").strip().split())
     if not text:
         raise ValueError(HELPFUL_DATE_ERROR)
@@ -100,6 +195,49 @@ def parse_local_datetime(value: str, tz: ZoneInfo) -> datetime:
         .replace("\u2014", "-")
     )
     text = re.sub(r"(?i)(\d)(am|pm)\b", r"\1 \2", text)
+
+    reference = _reference_time(now, tz)
+    relative = _parse_relative_duration(text)
+    if relative is not None:
+        return (reference + relative).astimezone(timezone.utc)
+
+    conversational = re.fullmatch(
+        r"(today|tomorrow)(?:\s+(?:at\s+)?(.+))?",
+        text,
+        re.IGNORECASE,
+    )
+    if conversational is not None:
+        day_offset = 1 if conversational.group(1).casefold() == "tomorrow" else 0
+        hour, minute = _parse_clock(conversational.group(2) or DEFAULT_DATE_ONLY_TIME)
+        target_date = reference.date() + timedelta(days=day_offset)
+        local_value = datetime.combine(
+            target_date,
+            datetime.min.time().replace(hour=hour, minute=minute),
+            tzinfo=tz,
+        )
+        return local_value.astimezone(timezone.utc)
+
+    weekday = re.fullmatch(
+        r"(?:(next)\s+)?"
+        r"(monday|tuesday|wednesday|thursday|friday|saturday|sunday)"
+        r"(?:\s+(?:at\s+)?(.+))?",
+        text,
+        re.IGNORECASE,
+    )
+    if weekday is not None:
+        desired_weekday = WEEKDAY_NUMBERS[weekday.group(2).casefold()]
+        hour, minute = _parse_clock(weekday.group(3) or DEFAULT_DATE_ONLY_TIME)
+        days_ahead = (desired_weekday - reference.weekday()) % 7
+        candidate_date = reference.date() + timedelta(days=days_ahead)
+        local_value = datetime.combine(
+            candidate_date,
+            datetime.min.time().replace(hour=hour, minute=minute),
+            tzinfo=tz,
+        )
+        if weekday.group(1) or local_value <= reference:
+            local_value += timedelta(days=7)
+        return local_value.astimezone(timezone.utc)
+
     for date_format in DATETIME_FORMATS:
         try:
             parsed = datetime.strptime(text, date_format)
@@ -133,6 +271,23 @@ def discord_timestamp(value: Any, style: str = "f") -> str:
     return f"<t:{int(parsed.timestamp())}:{style}>"
 
 
+def timestamp_codes_embed(value: datetime, timezone_name: str) -> discord.Embed:
+    unix_timestamp = int(value.astimezone(timezone.utc).timestamp())
+    lines = []
+    for style in TIMESTAMP_STYLES:
+        code = f"<t:{unix_timestamp}:{style}>"
+        lines.append(f"`{code}`  {code}")
+    return branded_embed(
+        "TIME CODES",
+        description=(
+            f"Time was parsed using `{timezone_name}`.\n\n"
+            "Copy and paste a code below to show the time in each viewer's "
+            "local timezone.\n\n"
+            + "\n".join(lines)
+        ),
+    )
+
+
 def local_datetime_text(value: Any, tz: ZoneInfo) -> str:
     try:
         parsed = parse_utc_text(value).astimezone(tz)
@@ -151,6 +306,31 @@ def local_datetime_input(value: Any, tz: ZoneInfo) -> str:
 
 def user_mention(user_id: Any) -> str:
     return f"<@{user_id}>"
+
+
+def reminder_target_text(target_user_id: Any) -> str:
+    value = str(target_user_id or "").strip()
+    return user_mention(value) if value.isdigit() and int(value) > 0 else "Nobody"
+
+
+def reminder_ping_content(row: dict[str, Any]) -> Optional[str]:
+    """Return only explicit pings; the formatted message remains in the embed."""
+    mentions: list[str] = []
+    seen: set[tuple[str, str]] = set()
+    target_id = str(row.get("target_user_id") or "").strip()
+    if target_id.isdigit() and int(target_id) > 0:
+        seen.add(("user", target_id))
+        mentions.append(user_mention(target_id))
+    message = str(row.get("message") or "")
+    for match in re.finditer(r"<@(!?)(\d+)>|<@&(\d+)>", message):
+        user_id = match.group(2)
+        role_id = match.group(3)
+        kind, snowflake = ("role", role_id) if role_id else ("user", user_id)
+        if not snowflake or (kind, snowflake) in seen:
+            continue
+        seen.add((kind, snowflake))
+        mentions.append(f"<@&{snowflake}>" if kind == "role" else user_mention(snowflake))
+    return " ".join(mentions) or None
 
 
 def channel_mention(channel_id: Any) -> str:
@@ -204,12 +384,112 @@ def send_permission_error(bot: commands.Bot, channel: Any) -> Optional[str]:
     return None
 
 
+class ReminderCreateModal(discord.ui.Modal):
+    def __init__(
+        self,
+        cog: "ReminderCog",
+        channel: Any,
+        target: Optional[discord.Member],
+    ) -> None:
+        super().__init__(title="Create reminder", timeout=300)
+        self.cog = cog
+        self.channel = channel
+        self.target = target
+        self.message = discord.ui.TextInput(
+            label="Message",
+            placeholder="# Reminder heading\n- First item\n- Second item",
+            style=discord.TextStyle.paragraph,
+            max_length=MAX_REMINDER_MESSAGE_LENGTH,
+        )
+        self.date_time = discord.ui.TextInput(
+            label="When",
+            placeholder="in 2 hours or tomorrow at 9am",
+            max_length=100,
+        )
+        self.add_item(self.message)
+        self.add_item(self.date_time)
+
+    async def on_submit(self, interaction: discord.Interaction) -> None:
+        await self.cog.create_from_modal(
+            interaction,
+            channel=self.channel,
+            target=self.target,
+            message=str(self.message.value),
+            date_time=str(self.date_time.value),
+        )
+
+    async def on_error(
+        self,
+        interaction: discord.Interaction,
+        error: Exception,
+    ) -> None:
+        await self.cog.handle_component_error(interaction, "reminder create modal", error)
+
+
+class RemindSubscribeModal(discord.ui.Modal):
+    def __init__(self, cog: "ReminderCog", channel: Any) -> None:
+        super().__init__(title="Create subscribable reminder", timeout=300)
+        self.cog = cog
+        self.channel = channel
+        self.message = discord.ui.TextInput(
+            label="Message",
+            placeholder="# Event reminder\n- First detail\n- Second detail",
+            style=discord.TextStyle.paragraph,
+            max_length=MAX_REMINDER_MESSAGE_LENGTH,
+        )
+        self.date_time = discord.ui.TextInput(
+            label="When",
+            placeholder="today at 11am or in 1 hour",
+            max_length=100,
+        )
+        self.destination = discord.ui.ChannelSelect(
+            channel_types=[
+                discord.ChannelType.text,
+                discord.ChannelType.news,
+                discord.ChannelType.voice,
+                discord.ChannelType.stage_voice,
+            ],
+            placeholder="Choose a text, voice, or Stage channel",
+            min_values=1,
+            max_values=1,
+            required=True,
+        )
+        self.add_item(self.message)
+        self.add_item(self.date_time)
+        self.add_item(discord.ui.Label(
+            text="WHERE:",
+            description="Members will be taken here from the reminder DM.",
+            component=self.destination,
+        ))
+
+    async def on_submit(self, interaction: discord.Interaction) -> None:
+        await self.cog.create_subscription_post(
+            interaction,
+            channel=self.channel,
+            destination=self.destination.values[0],
+            message=str(self.message.value),
+            date_time=str(self.date_time.value),
+        )
+
+    async def on_error(
+        self,
+        interaction: discord.Interaction,
+        error: Exception,
+    ) -> None:
+        await self.cog.handle_component_error(
+            interaction,
+            "subscribable reminder create modal",
+            error,
+        )
+
+
 class ReminderEditModal(discord.ui.Modal):
     def __init__(
         self,
         cog: "ReminderCog",
         reminder_id: int,
         row: dict[str, Any],
+        user_timezone: ZoneInfo,
     ) -> None:
         super().__init__(title=f"Edit reminder #{reminder_id}", timeout=300)
         self.cog = cog
@@ -222,9 +502,9 @@ class ReminderEditModal(discord.ui.Modal):
         )
         self.date_time = discord.ui.TextInput(
             label="Date/time",
-            default=local_datetime_input(row["scheduled_at_utc"], reminder_timezone()),
-            placeholder="2026-07-01 or 2026-07-01 7:30 PM",
-            max_length=80,
+            default=local_datetime_input(row["scheduled_at_utc"], user_timezone),
+            placeholder="in 2 hours or tomorrow at 9am",
+            max_length=100,
         )
         self.add_item(self.message)
         self.add_item(self.date_time)
@@ -249,9 +529,14 @@ class ReminderSelect(discord.ui.Select):
     def __init__(self, cog: "ReminderCog", rows: list[dict[str, Any]]) -> None:
         options = []
         for row in rows[:MAX_REMINDERS_PER_MANAGE]:
+            target_label = (
+                f"member {row['target_user_id']}"
+                if str(row.get("target_user_id") or "").isdigit()
+                else "no automatic ping"
+            )
             options.append(
                 discord.SelectOption(
-                    label=f"#{row['id']} for {row['target_user_id']}",
+                    label=f"#{row['id']} • {target_label}",
                     value=str(row["id"]),
                     description=truncate(
                         f"{discord_timestamp(row['scheduled_at_utc'])} • "
@@ -390,7 +675,13 @@ class ReminderManageView(discord.ui.View):
                 ephemeral=True,
             )
             return
-        await interaction.response.send_modal(ReminderEditModal(self.cog, reminder_id, row))
+        user_timezone = await self.cog.user_timezone(
+            interaction.guild_id,
+            interaction.user.id,
+        )
+        await interaction.response.send_modal(
+            ReminderEditModal(self.cog, reminder_id, row, user_timezone)
+        )
 
     @discord.ui.button(label="Edit Channel", style=discord.ButtonStyle.secondary)
     async def edit_channel(
@@ -471,10 +762,15 @@ class ReminderCog(commands.Cog):
         name="reminder",
         description="Schedule and manage internal staff reminders",
     )
+    remind = app_commands.Group(
+        name="remind",
+        description="Create reminders members can subscribe to",
+    )
 
     def __init__(self, bot: commands.Bot) -> None:
         self.bot = bot
         self._send_lock: Optional[asyncio.Lock] = None
+        self._subscription_lock: Optional[asyncio.Lock] = None
 
     async def cog_load(self) -> None:
         await self.create_schema()
@@ -511,8 +807,70 @@ class ReminderCog(commands.Cog):
                 ON reminders (creator_user_id);
             CREATE INDEX IF NOT EXISTS idx_reminders_target
                 ON reminders (target_user_id);
+            CREATE TABLE IF NOT EXISTS reminder_subscription_posts (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                guild_id TEXT NOT NULL,
+                channel_id TEXT NOT NULL,
+                message_id TEXT,
+                destination_channel_id TEXT,
+                destination_channel_name TEXT,
+                creator_user_id TEXT NOT NULL,
+                message TEXT NOT NULL,
+                scheduled_at_utc TEXT NOT NULL,
+                status TEXT NOT NULL DEFAULT 'open'
+                    CHECK (status IN ('open', 'completed', 'failed')),
+                failure_reason TEXT,
+                created_at_utc TEXT NOT NULL,
+                completed_at_utc TEXT
+            );
+            CREATE UNIQUE INDEX IF NOT EXISTS idx_reminder_subscription_message
+                ON reminder_subscription_posts (message_id)
+                WHERE message_id IS NOT NULL;
+            CREATE INDEX IF NOT EXISTS idx_reminder_subscription_due
+                ON reminder_subscription_posts (status, scheduled_at_utc);
+            CREATE TABLE IF NOT EXISTS reminder_subscribers (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                post_id INTEGER NOT NULL,
+                user_id TEXT NOT NULL,
+                status TEXT NOT NULL DEFAULT 'subscribed'
+                    CHECK (status IN (
+                        'subscribed', 'processing', 'sent', 'cancelled', 'failed'
+                    )),
+                subscribed_at_utc TEXT NOT NULL,
+                cancelled_at_utc TEXT,
+                processing_at_utc TEXT,
+                sent_at_utc TEXT,
+                dm_confirmation_message_id TEXT,
+                dm_reminder_message_id TEXT,
+                attempt_count INTEGER NOT NULL DEFAULT 0,
+                failure_reason TEXT,
+                FOREIGN KEY (post_id) REFERENCES reminder_subscription_posts(id),
+                UNIQUE (post_id, user_id)
+            );
+            CREATE INDEX IF NOT EXISTS idx_reminder_subscribers_status
+                ON reminder_subscribers (status, post_id);
+            CREATE TABLE IF NOT EXISTS user_timezones (
+                guild_id TEXT NOT NULL,
+                user_id TEXT NOT NULL,
+                timezone_name TEXT NOT NULL,
+                updated_at_utc TEXT NOT NULL,
+                PRIMARY KEY (guild_id, user_id)
+            );
             """
         )
+        cursor = await self.bot.db.execute("PRAGMA table_info(reminder_subscription_posts)")
+        subscription_columns = {str(row[1]) for row in await cursor.fetchall()}
+        await cursor.close()
+        if "destination_channel_id" not in subscription_columns:
+            await self.bot.db.execute(
+                "ALTER TABLE reminder_subscription_posts "
+                "ADD COLUMN destination_channel_id TEXT"
+            )
+        if "destination_channel_name" not in subscription_columns:
+            await self.bot.db.execute(
+                "ALTER TABLE reminder_subscription_posts "
+                "ADD COLUMN destination_channel_name TEXT"
+            )
         await self.bot.db.commit()
 
     async def fetch_one(
@@ -552,6 +910,72 @@ class ReminderCog(commands.Cog):
         allowed_ids.update(parse_id_set(get_setting("admin_role_ids", "")))
         return any(role.id in allowed_ids for role in interaction.user.roles)
 
+    def member_has_staff_access(self, guild: Any, member: Any) -> bool:
+        if guild is None or not isinstance(member, discord.Member):
+            return False
+        if member.id in get_csv_ids_setting("BOT_OWNER_USER_IDS"):
+            return True
+        if member.guild_permissions.administrator:
+            return True
+        allowed_ids = set(get_csv_ids_setting("REMINDER_ALLOWED_ROLE_IDS"))
+        allowed_ids.update(parse_id_set(os.getenv("REMINDER_ALLOWED_ROLE_IDS", "")))
+        allowed_ids.update(get_csv_ids_setting("STAFF_NOTES_ALLOWED_ROLE_IDS"))
+        allowed_ids.update(get_csv_ids_setting("STAFF_AI_ALLOWED_ROLE_IDS"))
+        allowed_ids.update(parse_id_set(get_setting("staff_role_ids", "")))
+        allowed_ids.update(parse_id_set(get_setting("admin_role_ids", "")))
+        return any(role.id in allowed_ids for role in member.roles)
+
+    async def user_timezone_name(self, guild_id: Any, user_id: Any) -> str:
+        if guild_id is not None and user_id is not None:
+            row = await self.fetch_one(
+                """
+                SELECT timezone_name
+                FROM user_timezones
+                WHERE guild_id = ? AND user_id = ?
+                """,
+                (str(guild_id), str(user_id)),
+            )
+            if row is not None:
+                name = str(row["timezone_name"] or "").strip()
+                try:
+                    ZoneInfo(name)
+                except (ValueError, ZoneInfoNotFoundError):
+                    logger.warning(
+                        "Stored user timezone is invalid guild_id=%s user_id=%s timezone=%r",
+                        guild_id,
+                        user_id,
+                        name,
+                    )
+                else:
+                    return name
+        return configured_timezone_name()
+
+    async def user_timezone(self, guild_id: Any, user_id: Any) -> ZoneInfo:
+        name = await self.user_timezone_name(guild_id, user_id)
+        try:
+            return ZoneInfo(name)
+        except (ValueError, ZoneInfoNotFoundError):
+            return reminder_timezone()
+
+    async def save_user_timezone(
+        self,
+        guild_id: int,
+        user_id: int,
+        timezone_name: str,
+    ) -> None:
+        await self.bot.db.execute(
+            """
+            INSERT INTO user_timezones (
+                guild_id, user_id, timezone_name, updated_at_utc
+            ) VALUES (?, ?, ?, ?)
+            ON CONFLICT (guild_id, user_id) DO UPDATE SET
+                timezone_name = excluded.timezone_name,
+                updated_at_utc = excluded.updated_at_utc
+            """,
+            (str(guild_id), str(user_id), timezone_name, utc_now_text()),
+        )
+        await self.bot.db.commit()
+
     async def ensure_staff_access(self, interaction: discord.Interaction) -> bool:
         if self.has_staff_access(interaction):
             return True
@@ -587,24 +1011,10 @@ class ReminderCog(commands.Cog):
         return self.has_staff_access(interaction)
 
     def reminder_embed(self, row: dict[str, Any]) -> discord.Embed:
-        embed = branded_embed(
-            "Reminder",
+        return discord.Embed(
             description=truncate(row["message"], 4096),
-            footer="Bro Eden Reminder",
+            color=discord.Color(COLOR),
         )
-        embed.add_field(name="For", value=user_mention(row["target_user_id"]), inline=True)
-        embed.add_field(
-            name="Created by",
-            value=user_mention(row["creator_user_id"]),
-            inline=True,
-        )
-        embed.add_field(
-            name="Scheduled for",
-            value=local_datetime_text(row["scheduled_at_utc"], reminder_timezone()),
-            inline=False,
-        )
-        embed.add_field(name="Reminder ID", value=f"#{row['id']}", inline=True)
-        return embed
 
     def confirmation_embed(
         self,
@@ -617,21 +1027,21 @@ class ReminderCog(commands.Cog):
             color=SUCCESS_COLOR,
             footer="Private confirmation",
         )
-        embed.add_field(name="For", value=user_mention(row["target_user_id"]), inline=True)
         embed.add_field(
-            name="Channel",
+            name="Ping:",
+            value=reminder_target_text(row["target_user_id"]),
+            inline=True,
+        )
+        embed.add_field(
+            name="Channel:",
             value=channel_reference(channel, row["channel_id"]),
             inline=True,
         )
         embed.add_field(
-            name="Scheduled for",
-            value=(
-                f"{local_datetime_text(row['scheduled_at_utc'], reminder_timezone())}\n"
-                f"{discord_timestamp(row['scheduled_at_utc'])}"
-            ),
+            name="Scheduled For:",
+            value=discord_timestamp(row["scheduled_at_utc"]),
             inline=False,
         )
-        embed.add_field(name="Reminder ID", value=f"#{row['id']}", inline=True)
         return embed
 
     def detail_embed(self, row: dict[str, Any]) -> discord.Embed:
@@ -640,7 +1050,11 @@ class ReminderCog(commands.Cog):
             description=truncate(row["message"], 4096),
             footer="Private reminder management",
         )
-        embed.add_field(name="For", value=user_mention(row["target_user_id"]), inline=True)
+        embed.add_field(
+            name="Automatic ping",
+            value=reminder_target_text(row["target_user_id"]),
+            inline=True,
+        )
         embed.add_field(name="Channel", value=channel_mention(row["channel_id"]), inline=True)
         embed.add_field(
             name="Scheduled for",
@@ -661,7 +1075,7 @@ class ReminderCog(commands.Cog):
         lines = []
         for row in rows[:MAX_REMINDERS_PER_MANAGE]:
             lines.append(
-                f"**#{row['id']}** • {user_mention(row['target_user_id'])} • "
+                f"**#{row['id']}** • {reminder_target_text(row['target_user_id'])} • "
                 f"{channel_mention(row['channel_id'])} • "
                 f"{discord_timestamp(row['scheduled_at_utc'])}\n"
                 f"{truncate(row['message'], 140)}"
@@ -672,12 +1086,109 @@ class ReminderCog(commands.Cog):
             footer="Select one to edit or delete",
         )
 
+    @staticmethod
+    def subscription_view(post_id: int, *, disabled: bool = False) -> discord.ui.View:
+        view = discord.ui.View(timeout=None)
+        view.add_item(discord.ui.Button(
+            emoji="🔔",
+            style=discord.ButtonStyle.secondary,
+            custom_id=f"remindsubscribe|join|{post_id}",
+            disabled=disabled,
+        ))
+        return view
+
+    @staticmethod
+    def subscription_cancel_view(
+        subscriber_id: int,
+        *,
+        disabled: bool = False,
+    ) -> discord.ui.View:
+        view = discord.ui.View(timeout=None)
+        view.add_item(discord.ui.Button(
+            label="Cancel Reminder",
+            emoji="🔕",
+            style=discord.ButtonStyle.secondary,
+            custom_id=f"remindsubscribe|cancel|{subscriber_id}",
+            disabled=disabled,
+        ))
+        return view
+
+    @staticmethod
+    def subscription_jump_url(row: dict[str, Any]) -> str:
+        return (
+            "https://discord.com/channels/"
+            f"{row['guild_id']}/{row['channel_id']}/{row['message_id']}"
+        )
+
+    @staticmethod
+    def subscription_destination_url(row: dict[str, Any]) -> Optional[str]:
+        destination_id = str(row.get("destination_channel_id") or "").strip()
+        if not destination_id.isdigit():
+            return None
+        return f"https://discord.com/channels/{row['guild_id']}/{destination_id}"
+
+    def subscription_destination_link(self, row: dict[str, Any]) -> str:
+        destination_url = self.subscription_destination_url(row)
+        if destination_url is None:
+            return f"[Back to server reminder]({self.subscription_jump_url(row)})"
+        destination_name = discord.utils.escape_markdown(
+            str(row.get("destination_channel_name") or "destination channel")
+        )
+        return f"[Open #{destination_name}]({destination_url})"
+
+    def subscription_post_embed(self, row: dict[str, Any]) -> discord.Embed:
+        embed = discord.Embed(
+            description=truncate(row["message"], 4096),
+            color=discord.Color(COLOR),
+        )
+        embed.add_field(
+            name="WHEN:",
+            value=(
+                f"{discord_timestamp(row['scheduled_at_utc'], 'F')} "
+                f"• {discord_timestamp(row['scheduled_at_utc'], 'R')}"
+            ),
+            inline=False,
+        )
+        destination_id = str(row.get("destination_channel_id") or "").strip()
+        if destination_id.isdigit():
+            embed.add_field(
+                name="WHERE:",
+                value=channel_mention(destination_id),
+                inline=False,
+            )
+        embed.set_footer(text="🔔 Subscribe to DM Reminder")
+        return embed
+
+    def subscription_confirmation_embed(self, row: dict[str, Any]) -> discord.Embed:
+        description = (
+            f"You will be reminded {discord_timestamp(row['scheduled_at_utc'], 'F')} "
+            f"({discord_timestamp(row['scheduled_at_utc'], 'R')}) about:\n\n"
+            f"{truncate(row['message'], 3400)}\n\n"
+            f"**WHERE:** {self.subscription_destination_link(row)}"
+        )
+        return discord.Embed(
+            title="🔔 Reminder Confirmation",
+            description=description,
+            color=discord.Color(COLOR),
+        )
+
+    def subscription_delivery_embed(self, row: dict[str, Any]) -> discord.Embed:
+        description = (
+            f"{truncate(row['message'], 3700)}\n\n"
+            f"**WHERE:** {self.subscription_destination_link(row)}"
+        )
+        return discord.Embed(
+            title="🔔 Reminder",
+            description=description,
+            color=discord.Color(COLOR),
+        )
+
     async def insert_reminder(
         self,
         *,
         guild_id: int,
         creator_user_id: int,
-        target_user_id: int,
+        target_user_id: Optional[int],
         channel_id: int,
         message: str,
         scheduled_at_utc: datetime,
@@ -693,7 +1204,7 @@ class ReminderCog(commands.Cog):
             (
                 str(guild_id),
                 str(creator_user_id),
-                str(target_user_id),
+                str(target_user_id) if target_user_id is not None else "",
                 str(channel_id),
                 message.strip(),
                 scheduled_at_utc.astimezone(timezone.utc).isoformat(),
@@ -872,7 +1383,8 @@ class ReminderCog(commands.Cog):
         if not await self.ensure_staff_access(interaction):
             return
         try:
-            scheduled_at = parse_local_datetime(date_time, reminder_timezone())
+            user_tz = await self.user_timezone(interaction.guild_id, interaction.user.id)
+            scheduled_at = parse_local_datetime(date_time, user_tz)
         except ValueError as exc:
             await self.send_private(interaction, str(exc))
             return
@@ -904,72 +1416,25 @@ class ReminderCog(commands.Cog):
             return
         await self.send_private(interaction, embed=self.detail_embed(row))
 
-    async def handle_component_error(
+    async def create_from_modal(
         self,
         interaction: discord.Interaction,
-        context: str,
-        error: Exception,
-    ) -> None:
-        logger.error(
-            "Reminder component failure: context=%s error_type=%s",
-            context,
-            type(error).__name__,
-            exc_info=(type(error), error, error.__traceback__),
-        )
-        message = "That reminder control could not be completed. Try reopening `/reminder manage`."
-        try:
-            if interaction.response.is_done():
-                await interaction.followup.send(message, ephemeral=True)
-            else:
-                await interaction.response.send_message(message, ephemeral=True)
-        except discord.HTTPException:
-            logger.exception("Could not deliver reminder component error")
-
-    @reminder.command(name="add", description="Schedule a reminder")
-    @app_commands.describe(
-        who="Member to remind. Defaults to you.",
-        message="Reminder message",
-        date_time="Local date/time, like 2026-07-01 or 2026-07-01 7:30 PM",
-        channel="Channel where the reminder should be posted",
-    )
-    @app_commands.guild_only()
-    async def add(
-        self,
-        interaction: discord.Interaction,
-        message: app_commands.Range[str, 1, MAX_REMINDER_MESSAGE_LENGTH],
+        *,
+        channel: Any,
+        target: Optional[discord.Member],
+        message: str,
         date_time: str,
-        channel: discord.TextChannel,
-        who: Optional[discord.Member] = None,
     ) -> None:
         await self.defer_private(interaction, thinking=True)
-        target = who or interaction.user
         if not await self.ensure_staff_access(interaction):
             return
-        cleaned_message = str(message).strip()
+        cleaned_message = message.strip()
         if not cleaned_message:
-            await self.send_private(
-                interaction,
-                "Reminder message cannot be blank.",
-            )
-            return
-        if not self.can_target_user(interaction, target):
-            await self.send_private(
-                interaction,
-                "Reminders are limited to internal staff.",
-            )
-            return
-        if getattr(channel, "guild", None) and channel.guild.id != interaction.guild_id:
-            await self.send_private(
-                interaction,
-                "Choose a channel in this server.",
-            )
-            return
-        permission_error = send_permission_error(self.bot, channel)
-        if permission_error:
-            await self.send_private(interaction, permission_error)
+            await self.send_private(interaction, "Reminder message cannot be blank.")
             return
         try:
-            scheduled_at = parse_local_datetime(date_time, reminder_timezone())
+            user_tz = await self.user_timezone(interaction.guild_id, interaction.user.id)
+            scheduled_at = parse_local_datetime(date_time, user_tz)
         except ValueError as exc:
             await self.send_private(interaction, str(exc))
             return
@@ -983,7 +1448,7 @@ class ReminderCog(commands.Cog):
             row = await self.insert_reminder(
                 guild_id=int(interaction.guild_id or 0),
                 creator_user_id=interaction.user.id,
-                target_user_id=target.id,
+                target_user_id=target.id if target is not None else None,
                 channel_id=channel.id,
                 message=cleaned_message,
                 scheduled_at_utc=scheduled_at,
@@ -1007,7 +1472,7 @@ class ReminderCog(commands.Cog):
             row["id"],
             interaction.guild_id,
             interaction.user.id,
-            target.id,
+            target.id if target is not None else "none",
             channel.id,
             row["scheduled_at_utc"],
         )
@@ -1015,6 +1480,313 @@ class ReminderCog(commands.Cog):
             interaction,
             embed=self.confirmation_embed(row, channel),
         )
+
+    async def create_subscription_post(
+        self,
+        interaction: discord.Interaction,
+        *,
+        channel: Any,
+        destination: Any,
+        message: str,
+        date_time: str,
+    ) -> None:
+        await self.defer_private(interaction, thinking=True)
+        if not await self.ensure_staff_access(interaction):
+            return
+        cleaned_message = message.strip()
+        if not cleaned_message:
+            await self.send_private(interaction, "Reminder message cannot be blank.")
+            return
+        try:
+            user_tz = await self.user_timezone(interaction.guild_id, interaction.user.id)
+            scheduled_at = parse_local_datetime(date_time, user_tz)
+        except ValueError as exc:
+            await self.send_private(interaction, str(exc))
+            return
+        if scheduled_at <= utc_now():
+            await self.send_private(
+                interaction,
+                "Reminder date/time must be in the future.",
+            )
+            return
+        destination_id = getattr(destination, "id", None)
+        destination_guild_id = getattr(destination, "guild_id", None)
+        if destination_guild_id is None:
+            destination_guild_id = getattr(getattr(destination, "guild", None), "id", None)
+        if (
+            destination_id is None
+            or destination_guild_id is None
+            or str(destination_guild_id) != str(interaction.guild_id)
+        ):
+            await self.send_private(
+                interaction,
+                "Choose a destination channel, voice channel, or Stage in this server.",
+            )
+            return
+        permission_error = send_permission_error(self.bot, channel)
+        if permission_error:
+            await self.send_private(interaction, permission_error)
+            return
+        now = utc_now_text()
+        cursor = await self.bot.db.execute(
+            """
+            INSERT INTO reminder_subscription_posts (
+                guild_id, channel_id, destination_channel_id,
+                destination_channel_name, creator_user_id, message,
+                scheduled_at_utc, status, created_at_utc
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, 'open', ?)
+            """,
+            (
+                str(interaction.guild_id),
+                str(channel.id),
+                str(destination_id),
+                str(getattr(destination, "name", "destination channel")),
+                str(interaction.user.id),
+                cleaned_message,
+                scheduled_at.isoformat(),
+                now,
+            ),
+        )
+        post_id = int(cursor.lastrowid)
+        await cursor.close()
+        await self.bot.db.commit()
+        row = await self.fetch_one(
+            "SELECT * FROM reminder_subscription_posts WHERE id = ?",
+            (post_id,),
+        )
+        try:
+            public_message = await channel.send(
+                embed=self.subscription_post_embed(row),
+                view=self.subscription_view(post_id),
+            )
+        except discord.HTTPException as exc:
+            await self.bot.db.execute(
+                """
+                UPDATE reminder_subscription_posts
+                SET status = 'failed', failure_reason = ?
+                WHERE id = ?
+                """,
+                (f"Publish failed: {type(exc).__name__}", post_id),
+            )
+            await self.bot.db.commit()
+            logger.warning(
+                "Subscribable reminder publish failed post_id=%s error=%s",
+                post_id,
+                type(exc).__name__,
+            )
+            await self.send_private(
+                interaction,
+                "The subscribable reminder could not be posted. Please try again.",
+            )
+            return
+        await self.bot.db.execute(
+            "UPDATE reminder_subscription_posts SET message_id = ? WHERE id = ?",
+            (str(public_message.id), post_id),
+        )
+        await self.bot.db.commit()
+        logger.info(
+            "Subscribable reminder created post_id=%s guild_id=%s channel_id=%s creator=%s",
+            post_id,
+            interaction.guild_id,
+            channel.id,
+            interaction.user.id,
+        )
+        await self.send_private(
+            interaction,
+            f"🔔 Subscribable reminder posted for "
+            f"{discord_timestamp(scheduled_at.isoformat(), 'F')}.",
+        )
+
+    async def handle_component_error(
+        self,
+        interaction: discord.Interaction,
+        context: str,
+        error: Exception,
+    ) -> None:
+        logger.error(
+            "Reminder component failure: context=%s error_type=%s",
+            context,
+            type(error).__name__,
+            exc_info=(type(error), error, error.__traceback__),
+        )
+        message = "That reminder control could not be completed. Try reopening `/reminder manage`."
+        try:
+            if interaction.response.is_done():
+                await interaction.followup.send(message, ephemeral=True)
+            else:
+                await interaction.response.send_message(message, ephemeral=True)
+        except discord.HTTPException:
+            logger.exception("Could not deliver reminder component error")
+
+    @reminder.command(name="add", description="Schedule a reminder")
+    @app_commands.describe(
+        channel="Channel where the reminder should be posted",
+        who="Optional member to ping automatically. Defaults to nobody.",
+    )
+    @app_commands.guild_only()
+    async def add(
+        self,
+        interaction: discord.Interaction,
+        channel: discord.TextChannel,
+        who: Optional[discord.Member] = None,
+    ) -> None:
+        if not await self.ensure_staff_access(interaction):
+            return
+        if who is not None and not self.can_target_user(interaction, who):
+            await self.send_private(
+                interaction,
+                "Reminders are limited to internal staff.",
+            )
+            return
+        if getattr(channel, "guild", None) and channel.guild.id != interaction.guild_id:
+            await self.send_private(
+                interaction,
+                "Choose a channel in this server.",
+            )
+            return
+        permission_error = send_permission_error(self.bot, channel)
+        if permission_error:
+            await self.send_private(interaction, permission_error)
+            return
+        await interaction.response.send_modal(ReminderCreateModal(self, channel, who))
+
+    @remind.command(
+        name="subscribe",
+        description="Post a reminder that members can subscribe to by DM",
+    )
+    @app_commands.guild_only()
+    async def subscribe(self, interaction: discord.Interaction) -> None:
+        if not await self.ensure_staff_access(interaction):
+            return
+        channel = interaction.channel
+        if channel is None or not is_sendable_channel(channel):
+            await self.send_private(
+                interaction,
+                "Use this command in a server channel where the bot can post.",
+            )
+            return
+        permission_error = send_permission_error(self.bot, channel)
+        if permission_error:
+            await self.send_private(interaction, permission_error)
+            return
+        await interaction.response.send_modal(RemindSubscribeModal(self, channel))
+
+    @app_commands.command(
+        name="timezone",
+        description="View or set your personal timezone for staff time tools",
+    )
+    @app_commands.describe(
+        timezone="Optional IANA timezone, such as America/New_York or Europe/London",
+    )
+    @app_commands.guild_only()
+    async def timezone_command(
+        self,
+        interaction: discord.Interaction,
+        timezone: Optional[str] = None,
+    ) -> None:
+        if not await self.ensure_staff_access(interaction):
+            return
+        if timezone is None:
+            saved = await self.fetch_one(
+                "SELECT timezone_name FROM user_timezones WHERE guild_id = ? AND user_id = ?",
+                (str(interaction.guild_id), str(interaction.user.id)),
+            )
+            user_tz = await self.user_timezone(
+                interaction.guild_id,
+                interaction.user.id,
+            )
+            timezone_name = user_tz.key
+            source = "your saved preference" if saved is not None else "the server fallback"
+            await self.send_private(
+                interaction,
+                f"Your time phrases currently use `{timezone_name}` from {source}. "
+                "Run `/timezone` again with the timezone field to change it.",
+            )
+            return
+        timezone_name = timezone.strip()
+        try:
+            ZoneInfo(timezone_name)
+        except (ValueError, ZoneInfoNotFoundError):
+            await self.send_private(
+                interaction,
+                "I could not find that timezone. Start typing a city and select a "
+                "suggestion, such as `America/New_York` or `Europe/London`.",
+            )
+            return
+        await self.save_user_timezone(
+            int(interaction.guild_id or 0),
+            interaction.user.id,
+            timezone_name,
+        )
+        await self.send_private(
+            interaction,
+            f"✅ Your timezone is now `{timezone_name}`. Future `/time`, `!time`, "
+            "and reminder phrases will use it.",
+        )
+
+    @timezone_command.autocomplete("timezone")
+    async def timezone_autocomplete(
+        self,
+        _interaction: discord.Interaction,
+        current: str,
+    ) -> list[app_commands.Choice[str]]:
+        query = current.strip().replace(" ", "_").casefold()
+        matches = [
+            name
+            for name in sorted(available_timezones())
+            if not query or query in name.casefold()
+        ]
+        return [app_commands.Choice(name=name, value=name) for name in matches[:25]]
+
+    @app_commands.command(
+        name="time",
+        description="Create copyable Discord time codes from a natural-language time",
+    )
+    @app_commands.describe(when="Time such as tomorrow at 9am or Friday at 7:30pm")
+    @app_commands.guild_only()
+    async def time_command(
+        self,
+        interaction: discord.Interaction,
+        when: str,
+    ) -> None:
+        if not await self.ensure_staff_access(interaction):
+            return
+        user_tz = await self.user_timezone(
+            interaction.guild_id,
+            interaction.user.id,
+        )
+        timezone_name = user_tz.key
+        try:
+            parsed = parse_local_datetime(when, user_tz)
+        except ValueError as exc:
+            await self.send_private(interaction, str(exc))
+            return
+        await self.send_private(
+            interaction,
+            embed=timestamp_codes_embed(parsed, timezone_name),
+        )
+
+    @commands.command(name="time", description="Create public Discord time codes")
+    async def time_prefix(
+        self,
+        ctx: commands.Context,
+        *,
+        when: str = "",
+    ) -> None:
+        if not self.member_has_staff_access(ctx.guild, ctx.author):
+            await ctx.send("Time tools are limited to configured staff.")
+            return
+        if not when.strip():
+            await ctx.send("Try `!time tomorrow at 9am`.")
+            return
+        user_tz = await self.user_timezone(ctx.guild.id, ctx.author.id)
+        timezone_name = user_tz.key
+        try:
+            parsed = parse_local_datetime(when, user_tz)
+        except ValueError as exc:
+            await ctx.send(str(exc))
+            return
+        await ctx.send(embed=timestamp_codes_embed(parsed, timezone_name))
 
     @reminder.command(name="manage", description="Privately manage your pending reminders")
     @app_commands.guild_only()
@@ -1051,9 +1823,177 @@ class ReminderCog(commands.Cog):
             view=ReminderManageView(self, interaction.user.id, rows),
         )
 
+    async def handle_subscription_join(
+        self,
+        interaction: discord.Interaction,
+        post_id: int,
+    ) -> None:
+        await interaction.response.defer(ephemeral=True, thinking=True)
+        row = await self.fetch_one(
+            "SELECT * FROM reminder_subscription_posts WHERE id = ?",
+            (post_id,),
+        )
+        if (
+            row is None
+            or row["status"] != "open"
+            or parse_utc_text(row["scheduled_at_utc"]) <= utc_now()
+        ):
+            await interaction.followup.send(
+                "This reminder is no longer accepting subscriptions.",
+                ephemeral=True,
+            )
+            return
+        if interaction.guild_id is None or str(interaction.guild_id) != str(row["guild_id"]):
+            await interaction.followup.send(
+                "This reminder does not belong to this server.",
+                ephemeral=True,
+            )
+            return
+        existing = await self.fetch_one(
+            """
+            SELECT * FROM reminder_subscribers
+            WHERE post_id = ? AND user_id = ?
+            """,
+            (post_id, str(interaction.user.id)),
+        )
+        if existing is not None and existing["status"] == "subscribed":
+            await interaction.followup.send(
+                "🔔 You are already subscribed to this reminder.",
+                ephemeral=True,
+            )
+            return
+        now = utc_now_text()
+        await self.bot.db.execute(
+            """
+            INSERT INTO reminder_subscribers (
+                post_id, user_id, status, subscribed_at_utc,
+                cancelled_at_utc, processing_at_utc, sent_at_utc,
+                dm_confirmation_message_id, dm_reminder_message_id,
+                attempt_count, failure_reason
+            ) VALUES (?, ?, 'subscribed', ?, NULL, NULL, NULL, NULL, NULL, 0, NULL)
+            ON CONFLICT (post_id, user_id) DO UPDATE SET
+                status = 'subscribed',
+                subscribed_at_utc = excluded.subscribed_at_utc,
+                cancelled_at_utc = NULL,
+                processing_at_utc = NULL,
+                sent_at_utc = NULL,
+                dm_confirmation_message_id = NULL,
+                dm_reminder_message_id = NULL,
+                attempt_count = 0,
+                failure_reason = NULL
+            """,
+            (post_id, str(interaction.user.id), now),
+        )
+        await self.bot.db.commit()
+        subscriber = await self.fetch_one(
+            """
+            SELECT * FROM reminder_subscribers
+            WHERE post_id = ? AND user_id = ?
+            """,
+            (post_id, str(interaction.user.id)),
+        )
+        try:
+            dm_message = await interaction.user.send(
+                embed=self.subscription_confirmation_embed(row),
+                view=self.subscription_cancel_view(int(subscriber["id"])),
+            )
+        except (discord.Forbidden, discord.HTTPException) as exc:
+            await self.bot.db.execute(
+                """
+                UPDATE reminder_subscribers
+                SET status = 'failed', failure_reason = ?
+                WHERE id = ?
+                """,
+                (f"Confirmation DM failed: {type(exc).__name__}", subscriber["id"]),
+            )
+            await self.bot.db.commit()
+            await interaction.followup.send(
+                "I could not DM you. Enable direct messages for this server and try again.",
+                ephemeral=True,
+            )
+            return
+        await self.bot.db.execute(
+            """
+            UPDATE reminder_subscribers
+            SET dm_confirmation_message_id = ?
+            WHERE id = ?
+            """,
+            (str(dm_message.id), subscriber["id"]),
+        )
+        await self.bot.db.commit()
+        await interaction.followup.send(
+            "✅ Check your DMs for the reminder confirmation.",
+            ephemeral=True,
+        )
+
+    async def handle_subscription_cancel(
+        self,
+        interaction: discord.Interaction,
+        subscriber_id: int,
+    ) -> None:
+        row = await self.fetch_one(
+            """
+            SELECT s.*, p.message, p.scheduled_at_utc
+            FROM reminder_subscribers AS s
+            JOIN reminder_subscription_posts AS p ON p.id = s.post_id
+            WHERE s.id = ?
+            """,
+            (subscriber_id,),
+        )
+        if row is None or str(row["user_id"]) != str(interaction.user.id):
+            await interaction.response.send_message(
+                "This reminder subscription is not yours.",
+                ephemeral=True,
+            )
+            return
+        cursor = await self.bot.db.execute(
+            """
+            UPDATE reminder_subscribers
+            SET status = 'cancelled', cancelled_at_utc = ?, processing_at_utc = NULL
+            WHERE id = ? AND status = 'subscribed'
+            """,
+            (utc_now_text(), subscriber_id),
+        )
+        changed = cursor.rowcount > 0
+        await cursor.close()
+        await self.bot.db.commit()
+        if not changed:
+            await interaction.response.send_message(
+                "This reminder was already cancelled or delivered.",
+                ephemeral=True,
+            )
+            return
+        embed = discord.Embed(
+            title="🔕 Reminder Cancelled",
+            description=(
+                "You will not receive this reminder:\n\n"
+                f"{truncate(row['message'], 3800)}"
+            ),
+            color=discord.Color(COLOR),
+        )
+        await interaction.response.edit_message(
+            embed=embed,
+            view=self.subscription_cancel_view(subscriber_id, disabled=True),
+        )
+
+    @commands.Cog.listener()
+    async def on_interaction(self, interaction: discord.Interaction) -> None:
+        if interaction.type != discord.InteractionType.component:
+            return
+        data = interaction.data if isinstance(interaction.data, dict) else {}
+        custom_id = str(data.get("custom_id", ""))
+        parts = custom_id.split("|")
+        if len(parts) != 3 or parts[0] != "remindsubscribe" or not parts[2].isdigit():
+            return
+        if parts[1] == "join":
+            await self.handle_subscription_join(interaction, int(parts[2]))
+        elif parts[1] == "cancel":
+            await self.handle_subscription_cancel(interaction, int(parts[2]))
+
     @tasks.loop(seconds=REMINDER_CHECK_SECONDS)
     async def reminder_scheduler(self) -> None:
         await self.send_due_reminders()
+        await self.send_due_subscription_reminders()
 
     @reminder_scheduler.before_loop
     async def before_reminder_scheduler(self) -> None:
@@ -1107,6 +2047,156 @@ class ReminderCog(commands.Cog):
             for row in await self.due_reminders():
                 await self.send_one_reminder(row)
 
+    async def send_due_subscription_reminders(self) -> None:
+        if self._subscription_lock is None:
+            self._subscription_lock = asyncio.Lock()
+        if self._subscription_lock.locked():
+            return
+        async with self._subscription_lock:
+            now = utc_now()
+            recovery_cutoff = now - timedelta(minutes=SUBSCRIPTION_RECOVERY_MINUTES)
+            await self.bot.db.execute(
+                """
+                UPDATE reminder_subscribers
+                SET status = 'subscribed', processing_at_utc = NULL
+                WHERE status = 'processing'
+                  AND processing_at_utc <= ?
+                """,
+                (recovery_cutoff.isoformat(),),
+            )
+            await self.bot.db.execute(
+                """
+                UPDATE reminder_subscription_posts
+                SET status = 'completed', completed_at_utc = ?
+                WHERE status = 'open' AND scheduled_at_utc <= ?
+                """,
+                (now.isoformat(), now.isoformat()),
+            )
+            await self.bot.db.commit()
+            rows = await self.fetch_all(
+                """
+                SELECT
+                    s.id AS subscriber_id,
+                    s.user_id,
+                    s.attempt_count,
+                    p.id AS post_id,
+                    p.guild_id,
+                    p.channel_id,
+                    p.message_id,
+                    p.destination_channel_id,
+                    p.destination_channel_name,
+                    p.message,
+                    p.scheduled_at_utc
+                FROM reminder_subscribers AS s
+                JOIN reminder_subscription_posts AS p ON p.id = s.post_id
+                WHERE s.status = 'subscribed'
+                  AND p.scheduled_at_utc <= ?
+                ORDER BY p.scheduled_at_utc ASC, s.id ASC
+                LIMIT ?
+                """,
+                (now.isoformat(), SUBSCRIPTION_BATCH_SIZE),
+            )
+            for row in rows:
+                await self.send_one_subscription_reminder(row)
+
+    async def send_one_subscription_reminder(self, row: dict[str, Any]) -> None:
+        subscriber_id = int(row["subscriber_id"])
+        cursor = await self.bot.db.execute(
+            """
+            UPDATE reminder_subscribers
+            SET status = 'processing', processing_at_utc = ?, attempt_count = attempt_count + 1
+            WHERE id = ? AND status = 'subscribed'
+            """,
+            (utc_now_text(), subscriber_id),
+        )
+        claimed = cursor.rowcount > 0
+        await cursor.close()
+        await self.bot.db.commit()
+        if not claimed:
+            return
+        user = self.bot.get_user(int(row["user_id"]))
+        if user is None:
+            try:
+                user = await self.bot.fetch_user(int(row["user_id"]))
+            except (discord.NotFound, discord.Forbidden) as exc:
+                await self.bot.db.execute(
+                    """
+                    UPDATE reminder_subscribers
+                    SET status = 'failed', processing_at_utc = NULL, failure_reason = ?
+                    WHERE id = ?
+                    """,
+                    (f"User unavailable: {type(exc).__name__}", subscriber_id),
+                )
+                await self.bot.db.commit()
+                return
+            except discord.HTTPException as exc:
+                await self._retry_or_fail_subscription(
+                    subscriber_id,
+                    int(row["attempt_count"]) + 1,
+                    f"User fetch failed: {type(exc).__name__}",
+                )
+                return
+        try:
+            dm_message = await user.send(embed=self.subscription_delivery_embed(row))
+        except discord.Forbidden as exc:
+            await self.bot.db.execute(
+                """
+                UPDATE reminder_subscribers
+                SET status = 'failed', processing_at_utc = NULL, failure_reason = ?
+                WHERE id = ?
+                """,
+                (f"Reminder DM blocked: {type(exc).__name__}", subscriber_id),
+            )
+            await self.bot.db.commit()
+            return
+        except discord.HTTPException as exc:
+            await self._retry_or_fail_subscription(
+                subscriber_id,
+                int(row["attempt_count"]) + 1,
+                f"Reminder DM failed: {type(exc).__name__}",
+            )
+            return
+        await self.bot.db.execute(
+            """
+            UPDATE reminder_subscribers
+            SET status = 'sent', sent_at_utc = ?, processing_at_utc = NULL,
+                dm_reminder_message_id = ?, failure_reason = NULL
+            WHERE id = ? AND status = 'processing'
+            """,
+            (utc_now_text(), str(dm_message.id), subscriber_id),
+        )
+        await self.bot.db.commit()
+        logger.info(
+            "Subscription reminder sent subscriber_id=%s post_id=%s user_id=%s",
+            subscriber_id,
+            row["post_id"],
+            row["user_id"],
+        )
+
+    async def _retry_or_fail_subscription(
+        self,
+        subscriber_id: int,
+        attempt_count: int,
+        reason: str,
+    ) -> None:
+        status = "failed" if attempt_count >= SUBSCRIPTION_MAX_ATTEMPTS else "subscribed"
+        await self.bot.db.execute(
+            """
+            UPDATE reminder_subscribers
+            SET status = ?, processing_at_utc = NULL, failure_reason = ?
+            WHERE id = ?
+            """,
+            (status, truncate(reason, 500), subscriber_id),
+        )
+        await self.bot.db.commit()
+        logger.warning(
+            "Subscription reminder delivery issue subscriber_id=%s attempt=%s status=%s reason=%s",
+            subscriber_id,
+            attempt_count,
+            status,
+            reason,
+        )
+
     async def send_one_reminder(self, row: dict[str, Any]) -> None:
         reminder_id = int(row["id"])
         channel = self.bot.get_channel(int(row["channel_id"]))
@@ -1130,7 +2220,7 @@ class ReminderCog(commands.Cog):
             return
         try:
             await channel.send(
-                content=user_mention(row["target_user_id"]),
+                content=reminder_ping_content(row),
                 embed=self.reminder_embed(row),
                 allowed_mentions=ALLOWED_MENTIONS,
             )

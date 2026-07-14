@@ -14,7 +14,7 @@ from typing import Any
 from utils.knowledge import reload_knowledge
 from utils.privacy import redact_sensitive_text
 from utils.settings import settings_database_path
-from utils.sqlite import configure_sync_connection
+from utils.sqlite import AutoClosingSQLiteConnection, configure_sync_connection
 
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
@@ -96,7 +96,11 @@ DOCUMENT_BY_KEY = {document.doc_key: document for document in DOCUMENTS}
 def _connect() -> sqlite3.Connection:
     path = settings_database_path()
     path.parent.mkdir(parents=True, exist_ok=True)
-    connection = sqlite3.connect(path, timeout=30)
+    connection = sqlite3.connect(
+        path,
+        timeout=30,
+        factory=AutoClosingSQLiteConnection,
+    )
     return configure_sync_connection(connection)
 
 

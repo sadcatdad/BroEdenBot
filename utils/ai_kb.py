@@ -12,7 +12,7 @@ from typing import Any, Iterable, Optional
 import aiosqlite
 
 from utils.settings import settings_database_path
-from utils.sqlite import configure_sync_connection
+from utils.sqlite import AutoClosingSQLiteConnection, configure_sync_connection
 
 
 SOURCE_TYPES = {
@@ -55,7 +55,13 @@ def normalize_kb_text(value: object) -> str:
 def _connect() -> sqlite3.Connection:
     path = settings_database_path()
     path.parent.mkdir(parents=True, exist_ok=True)
-    return configure_sync_connection(sqlite3.connect(path, timeout=30))
+    return configure_sync_connection(
+        sqlite3.connect(
+            path,
+            timeout=30,
+            factory=AutoClosingSQLiteConnection,
+        )
+    )
 
 
 def _now() -> str:

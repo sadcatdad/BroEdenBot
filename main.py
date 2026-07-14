@@ -1,7 +1,9 @@
 import datetime
 import logging
 import os
+import re
 from pathlib import Path
+from typing import Optional, Set
 
 import aiosqlite
 import discord
@@ -25,6 +27,47 @@ logging.basicConfig(
     format="%(asctime)s %(levelname)s %(name)s: %(message)s",
 )
 logger = logging.getLogger(__name__)
+
+
+COG_MODULE_REQUIREMENTS = {
+    "ai.py": {"ask", "mod_ai", "staff_ai"},
+    "ask.py": {"ask"},
+    "bank.py": {"bank"},
+    "checklist.py": {"checklists"},
+    "disboard_bumps.py": {"bumps"},
+    "knowledge_sources.py": {"knowledge"},
+    "leaderboards.py": {"stats"},
+    "message_context.py": {"message_context"},
+    "mod_ai.py": {"mod_ai"},
+    "poll.py": {"polls"},
+    "queue.py": {"karaoke"},
+    "reminder.py": {"reminders"},
+    "rulecard.py": {"rulecards"},
+    "staff_ai.py": {"staff_ai"},
+    "staff_notes.py": {"staff_notes"},
+    "stats.py": {"stats"},
+    "streaks.py": {"streaks"},
+    "vc_stats.py": {"vc_stats", "vc_xp"},
+}
+
+
+def configured_modules() -> Optional[Set[str]]:
+    """Return configured modules, or None to preserve legacy load-all behavior."""
+    raw_value = os.getenv("ENABLED_MODULES", "").strip()
+    if not raw_value:
+        return None
+    return {
+        item.strip().casefold()
+        for item in re.split(r"[\s,]+", raw_value)
+        if item.strip()
+    }
+
+
+def cog_is_enabled(filename: str, enabled_modules: Optional[Set[str]]) -> bool:
+    requirements = COG_MODULE_REQUIREMENTS.get(filename)
+    return requirements is None or enabled_modules is None or bool(
+        requirements & enabled_modules
+    )
 
 intents = discord.Intents.none()
 intents.guilds = True
@@ -108,8 +151,12 @@ class BotClient(commands.Bot):
 
     async def load_all_cogs(self):
         self.failed_extensions.clear()
+        enabled_modules = configured_modules()
         for filename in sorted(os.listdir("cogs")):
             if filename.endswith(".py") and not filename.startswith("_"):
+                if not cog_is_enabled(filename, enabled_modules):
+                    logger.info("Skipped disabled extension: cogs.%s", filename[:-3])
+                    continue
                 try:
                     extension = f"cogs.{filename[:-3]}"
                     await self.load_extension(extension)

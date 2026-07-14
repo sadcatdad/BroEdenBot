@@ -7,6 +7,16 @@ import sqlite3
 import aiosqlite
 
 
+class AutoClosingSQLiteConnection(sqlite3.Connection):
+    """Commit or roll back a context-managed connection, then close it."""
+
+    def __exit__(self, exc_type, exc_value, traceback):
+        try:
+            return super().__exit__(exc_type, exc_value, traceback)
+        finally:
+            self.close()
+
+
 async def configure_connection(
     connection: aiosqlite.Connection,
     *,

@@ -15,7 +15,7 @@ not belong in rendering components.
 - `components.py` contains the base canvas, header, section heading, metric
   card, trend indicator, chart container, legend, rank badge, avatar container,
   leaderboard row, empty/error states, footer, date-range label, page indicator,
-  and Bro Eden mark.
+  Bro Eden mark, and safe fitted uploaded banner/background layers.
 - `text.py` owns number/date/percentage formatting, pluralization, font
   fallback, glyph fallback, wrapping, measurement, and bounded truncation.
 - `avatars.py` owns the shared 500-item memory cache, per-render reuse, bounded
@@ -64,6 +64,8 @@ result = await render_ranked_graphic_result(
     sections=[RankedGraphicSection("Members", items)],
     updated_at=now,
     accent_color=COLOR,
+    banner_bytes=optional_uploaded_banner,
+    background_bytes=optional_branded_background,
 )
 
 files = [
@@ -77,6 +79,10 @@ Do not query SQLite, fetch Discord members, or calculate scores inside a
 renderer. Prepare exact and abbreviated display strings before rendering when
 the command has domain-specific formatting needs. Shared generic formatting
 lives in `text.py`.
+
+Uploaded images are decoded defensively, fitted with Pillow, and shaded for
+text contrast. Invalid image bytes fall back to the standard Bro Eden canvas;
+valid images still pass through the same per-page byte-limit enforcement.
 
 ## PNG file-size protection
 

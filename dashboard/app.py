@@ -61,6 +61,12 @@ from dashboard.operations import (
     service_status,
     system_status,
 )
+from dashboard.streaks_manager import (
+    adjust_streak_day,
+    initialize_streak_dashboard_schema,
+    queue_streak_restore,
+    streaks_overview,
+)
 from dashboard.users import (
     authenticate_password,
     initialize_dashboard_users,
@@ -121,6 +127,7 @@ from utils.settings import (
     set_setting,
     settings_for_dashboard,
 )
+from utils.display_names import normalize_display_name
 from utils.stats_manager import (
     archive_stat,
     export_stat_csv,
@@ -183,6 +190,7 @@ if dashboard_enabled():
     initialize_ai_kb_schema()
     initialize_live_knowledge_schema_sync()
     initialize_dashboard_users()
+    initialize_streak_dashboard_schema()
 
 app = FastAPI(
     title="BroEdenBot Local Dashboard",
@@ -204,6 +212,7 @@ app.add_middleware(
 )
 app.mount("/static", StaticFiles(directory=DASHBOARD_DIR / "static"), name="static")
 templates = Jinja2Templates(directory=DASHBOARD_DIR / "templates")
+templates.env.filters["display_name"] = normalize_display_name
 
 
 def template_context(request: Request, **values: Any) -> dict[str, Any]:
@@ -253,6 +262,13 @@ def render_settings_page(
 
 def settings_redirect_for_key(request: Request, key: str) -> str:
     definition = DEFINITIONS_BY_KEY.get(key)
+    if definition and definition.section in {
+        "bumps",
+        "reminders",
+        "streaks",
+        "stats_features",
+    }:
+        return str(request.url_for("settings_features"))
     if definition and definition.section == "dashboard_json":
         return str(request.url_for("settings_discord"))
     if definition and definition.section == "permissions":
@@ -521,6 +537,108 @@ async def clear_failed_vcxp_pulses(request: Request) -> RedirectResponse:
         url=request.url_for("home"),
         status_code=status.HTTP_303_SEE_OTHER,
     )
+
+
+def streaks_redirect(request: Request) -> RedirectResponse:
+    return RedirectResponse(
+        url=request.url_for("streaks_page"),
+        status_code=status.HTTP_303_SEE_OTHER,
+    )
+
+
+@app.get("/streaks", response_class=HTMLResponse, name="streaks_page")
+async def streaks_page(
+    request: Request,
+    q: str = "",
+    guild_id: str = "",
+) -> HTMLResponse:
+    if redirect := login_redirect(request):
+        return redirect
+    try:
+        overview = streaks_overview(query=q, guild_id=guild_id)
+    except (OSError, sqlite3.Error) as exc:
+        overview = {
+            "guild_id": guild_id or safe_setting("GUILD_ID"),
+            "today": datetime.now().date().isoformat(),
+            "members": [],
+            "summary": {
+                "members": 0,
+                "active": 0,
+                "tracked_days": 0,
+                "best_longest": 0,
+            },
+            "runtime": None,
+            "restores": [],
+            "adjustments": [],
+            "query": q,
+        }
+        request.session["streaks_error"] = (
+            f"Streak data could not be loaded: {type(exc).__name__}."
+        )
+    return templates.TemplateResponse(
+        request=request,
+        name="streaks.html",
+        context=template_context(
+            request,
+            page_title="Streaks",
+            streaks=overview,
+            message=request.session.pop("streaks_message", None),
+            error=request.session.pop("streaks_error", None),
+        ),
+    )
+
+
+@app.post("/streaks/restore", name="streaks_restore")
+async def streaks_restore(request: Request) -> RedirectResponse:
+    if redirect := login_redirect(request):
+        return redirect
+    await require_action_csrf(request)
+    form = await request.form()
+    try:
+        request_id, created = queue_streak_restore(
+            guild_id=form.get("guild_id", ""),
+            start_date=form.get("start_date", ""),
+            end_date=form.get("end_date", ""),
+            requested_by=dashboard_user_label(request),
+        )
+    except (OSError, sqlite3.Error, ValueError) as exc:
+        request.session["streaks_error"] = str(exc)
+    else:
+        if created:
+            request.session["streaks_message"] = (
+                f"Restore request #{request_id} queued. The bot will scan "
+                "Discord history when it is online."
+            )
+        else:
+            request.session["streaks_message"] = (
+                f"Restore request #{request_id} already covers that range."
+            )
+    return streaks_redirect(request)
+
+
+@app.post("/streaks/adjust", name="streaks_adjust")
+async def streaks_adjust(request: Request) -> RedirectResponse:
+    if redirect := login_redirect(request):
+        return redirect
+    await require_action_csrf(request)
+    form = await request.form()
+    try:
+        result = adjust_streak_day(
+            guild_id=form.get("guild_id", ""),
+            user_id=form.get("user_id", ""),
+            activity_date=form.get("activity_date", ""),
+            action=str(form.get("action", "")),
+            reason=str(form.get("reason", "")),
+            changed_by=dashboard_user_label(request),
+        )
+    except (OSError, sqlite3.Error, ValueError) as exc:
+        request.session["streaks_error"] = str(exc)
+    else:
+        request.session["streaks_message"] = (
+            f"Streak adjustment #{result['adjustment_id']} saved. "
+            f"Current: {result['current']} days; longest: {result['longest']} days."
+        )
+    return streaks_redirect(request)
 
 
 @app.get("/ai", response_class=HTMLResponse, name="ai_page")
@@ -867,6 +985,18 @@ async def settings_advanced(request: Request) -> HTMLResponse:
         request,
         page_title="Advanced Settings",
         visible_sections=("advanced",),
+    )
+
+
+@app.get("/settings/features", response_class=HTMLResponse, name="settings_features")
+async def settings_features(request: Request) -> HTMLResponse:
+    if redirect := login_redirect(request):
+        return redirect
+    return render_settings_page(
+        request,
+        page_title="Feature Settings",
+        visible_sections=("bumps", "reminders", "streaks", "stats_features"),
+        discord_metadata=picker_metadata(),
     )
 
 

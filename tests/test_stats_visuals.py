@@ -158,6 +158,26 @@ class StatsVisualPaginationTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertEqual(1, len(result.pages))
 
+    async def test_uploaded_banner_and_background_change_size_checked_output(self):
+        banner = io.BytesIO()
+        Image.new("RGB", (900, 220), (249, 115, 22)).save(banner, "PNG")
+        background = io.BytesIO()
+        Image.new("RGB", (1200, 1500), (20, 90, 150)).save(background, "PNG")
+        plain = await self.render_ranked(3)
+        branded = await render_ranked_graphic_result(
+            title="Branded leaderboard",
+            subtitle="Uploaded presentation assets",
+            sections=[RankedGraphicSection("Members", ranked_items(3))],
+            updated_at=NOW,
+            accent_color=0xF97316,
+            banner_bytes=banner.getvalue(),
+            background_bytes=background.getvalue(),
+            footer_text="BRO EDEN • CUSTOM LEADERBOARD",
+        )
+
+        self.assertNotEqual(plain.pages[0].png, branded.pages[0].png)
+        self.assertLessEqual(branded.pages[0].byte_size, image_target_bytes())
+
     @mock.patch(
         "utils.stats_visuals.renderers.fetch_avatars",
         new_callable=mock.AsyncMock,

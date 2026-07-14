@@ -6,7 +6,7 @@ from typing import Dict, Iterable, List, Tuple
 
 from utils.live_knowledge import excerpt_for_terms, score_entry
 from utils.settings import settings_database_path
-from utils.sqlite import configure_sync_connection
+from utils.sqlite import AutoClosingSQLiteConnection, configure_sync_connection
 
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
@@ -206,7 +206,11 @@ def search_server_knowledge(
 
 
 def _connect_live_knowledge() -> sqlite3.Connection:
-    connection = sqlite3.connect(settings_database_path(), timeout=30)
+    connection = sqlite3.connect(
+        settings_database_path(),
+        timeout=30,
+        factory=AutoClosingSQLiteConnection,
+    )
     connection.row_factory = sqlite3.Row
     return configure_sync_connection(connection)
 

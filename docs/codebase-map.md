@@ -5,8 +5,9 @@ maintenance.
 
 ## Runtime
 
-- `main.py` — Startup, shared SQLite connection, cog loading, command sync,
-  global interaction errors, mention policy, and graceful shutdown.
+- `main.py` — Startup, shared SQLite connection, optional `ENABLED_MODULES`
+  cog gating, command sync, global interaction errors, mention policy, and
+  graceful shutdown.
 - `config.py` — Environment loading and the shared brand color.
 - `data.db` — Stats, queues, polls, staff notes, moderation metadata, and VC
   tracking.
@@ -23,6 +24,9 @@ maintenance.
   manual AI, and live Discord sources, and aggregate server analytics. Discord
   role/channel pickers read a live-guild metadata snapshot written by the bot,
   not historical import tables.
+- `dashboard/streaks_manager.py` — Streak summaries, durable history-restore
+  requests, audited source-day adjustments, and current/longest recalculation
+  for the top-level Streaks dashboard page.
 - `dashboard/users.py` — Dashboard user schema, PBKDF2 password bootstrap,
   Discord identity linking, active/disabled status, and owner/admin/viewer
   roles.
@@ -36,7 +40,13 @@ maintenance.
 - `cogs/ask.py` — Private Gemini answers grounded only in public knowledge sources.
 - `cogs/poll.py` — Persistent button polls and visual result boards.
 - `cogs/queue.py` — Voice-channel queues and legacy prefix commands.
-- `cogs/leaderboards.py` — Staff-managed scores with public PNG leaderboards.
+- `cogs/leaderboards.py` — Custom banner/accent leaderboards, score controls,
+  confirmations, point summaries, and live milestone roles.
+- `cogs/disboard_bumps.py` — Verified DISBOARD bump points, reward-role
+  handoff, persistent reminder controls, and Bump Legends publishing.
+- `cogs/streaks.py` — Daily public-message streak qualification, deletion
+  reconciliation, milestones, current/longest graphical leaderboards,
+  heartbeat gap detection, and restart-safe Discord-history recovery.
 - `cogs/bank.py` — Contribution ledger and public bank summary.
 
 ## Staff and analytics tools
@@ -58,6 +68,8 @@ maintenance.
   staff-only search, summaries, user/channel reviews, and timelines.
 - `cogs/staff_notes.py` — Manual private staff records.
 - `cogs/stats.py` — Live/imported activity reports and roster graphics.
+- `cogs/reminder.py` — Staff reminder modals, natural-language/personal
+  timezone parsing, public subscribe cards, and persistent scheduled DMs.
 - `cogs/vc_stats.py` — Voice-session tracking, muted/deafened interval
   exclusion for VC XP, active eligible-time pulse cooldowns, XP-only role
   exclusions, and trigger-role adds for external MEE6 automation.
@@ -65,6 +77,13 @@ maintenance.
 ## Shared helpers
 
 - `utils/ui.py` — Brand colors, status embeds, progress bars, and truncation.
+- `utils/access.py` — Shared configured owner/staff identity and role checks.
+- `utils/audit_log.py` — Optional mention-safe publishing to the configured
+  Discord audit thread.
+- `utils/display_names.py` — Unicode normalization for readable, safe display
+  names without changing stored Discord identity data.
+- `utils/streaks.py` — Shared additive streak/recovery schema plus pure streak
+  and milestone calculations used by both the bot and dashboard.
 - `utils/knowledge.py` — Public and private-staff knowledge search over
   public/staff-filtered live Discord knowledge entries, with local file caches
   kept empty for legacy source compatibility.
@@ -80,7 +99,8 @@ maintenance.
 - `utils/member_filter.py` — Current-member filtering safeguards.
 - `utils/stats_visuals/` — Central dashboard-derived brand tokens, profiles,
   reusable Pillow components, avatar cache/fallbacks, deterministic pagination,
-  structured render results, diagnostics, and per-PNG byte-limit enforcement.
+  uploaded banner/background support, structured render results, diagnostics,
+  and per-PNG byte-limit enforcement.
 - `utils/compact_roster.py`, `utils/ranked_graphic.py`, and
   `utils/stats_reports.py` — Compatibility adapters into the centralized stats
   visual system.
@@ -153,6 +173,9 @@ maintenance.
   application-command errors get a private user-safe response.
 - Shutdown unloads cogs and cancels their background work before the shared
   SQLite connection is closed.
+- Streak recovery requests persist in SQLite. Automatic requests are queued
+  after heartbeat gaps, dashboard requests can be queued while the bot is
+  offline, and interrupted processing returns to pending on the next load.
 
 ## Validation
 
@@ -162,4 +185,5 @@ PYTHONPYCACHEPREFIX=/tmp/broeden-pycache \
 
 .venv/bin/python -m unittest discover -s tests -v
 .venv/bin/python -m pip check
+.venv/bin/python -m riffbot.setup safety-check
 ```

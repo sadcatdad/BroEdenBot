@@ -1,6 +1,7 @@
+import io
 from typing import Iterable, Optional, Sequence, Tuple
 
-from PIL import Image, ImageDraw
+from PIL import Image, ImageDraw, ImageOps
 
 from .avatars import prepare_avatar
 from .models import RenderState
@@ -19,6 +20,9 @@ class VisualCanvas:
         profile: LayoutProfile,
         state: RenderState,
         accent: Color,
+        *,
+        background_bytes: Optional[bytes] = None,
+        banner_bytes: Optional[bytes] = None,
     ) -> None:
         self.width = width
         self.height = height
@@ -26,8 +30,13 @@ class VisualCanvas:
         self.state = state
         self.scale = min(width / profile.width, height / profile.height)
         self.image = Image.new("RGB", (width, height), COLORS.canvas)
+        background = _fitted_image(background_bytes, (width, height))
+        if background is not None:
+            shade = Image.new("RGB", background.size, COLORS.canvas)
+            self.image.paste(Image.blend(background, shade, 0.56))
         self.draw = ImageDraw.Draw(self.image)
         self.accent = accent
+        self.banner_bytes = banner_bytes
         self.fonts = {
             role: load_font(role, self.scale)
             for role in (
@@ -60,8 +69,33 @@ def base_canvas(
     profile: LayoutProfile,
     state: RenderState,
     accent: Color,
+    *,
+    background_bytes: Optional[bytes] = None,
+    banner_bytes: Optional[bytes] = None,
 ) -> VisualCanvas:
-    return VisualCanvas(width, height, profile, state, accent)
+    return VisualCanvas(
+        width,
+        height,
+        profile,
+        state,
+        accent,
+        background_bytes=background_bytes,
+        banner_bytes=banner_bytes,
+    )
+
+
+def _fitted_image(data: Optional[bytes], size: Tuple[int, int]) -> Optional[Image.Image]:
+    if not data:
+        return None
+    try:
+        with Image.open(io.BytesIO(data)) as source:
+            return ImageOps.fit(
+                source.convert("RGB"),
+                size,
+                method=Image.Resampling.LANCZOS,
+            )
+    except (OSError, ValueError):
+        return None
 
 
 def draw_brand_mark(canvas: VisualCanvas, x: float, y: float) -> None:
@@ -134,10 +168,26 @@ def draw_header(
     left, top, right, bottom = canvas.box(
         (margin, margin, canvas.profile.width - margin, margin + height)
     )
+    banner = _fitted_image(canvas.banner_bytes, (right - left, bottom - top))
+    if banner is None:
+        canvas.draw.rounded_rectangle(
+            (left, top, right, bottom),
+            radius=canvas.s(SPACING.radius),
+            fill=COLORS.card,
+        )
+    else:
+        shade = Image.new("RGB", banner.size, COLORS.card)
+        banner = Image.blend(banner, shade, 0.42)
+        mask = Image.new("L", banner.size, 0)
+        ImageDraw.Draw(mask).rounded_rectangle(
+            (0, 0, banner.width - 1, banner.height - 1),
+            radius=canvas.s(SPACING.radius),
+            fill=255,
+        )
+        canvas.image.paste(banner, (left, top), mask)
     canvas.draw.rounded_rectangle(
         (left, top, right, bottom),
         radius=canvas.s(SPACING.radius),
-        fill=COLORS.card,
         outline=COLORS.border,
         width=max(1, canvas.s(SPACING.border)),
     )

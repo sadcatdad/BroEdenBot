@@ -56,8 +56,8 @@
       {% for member in stat.members %}
       <tr>
         <td>{{ member.discord_user_id }}</td>
-        <td>{{ member.username or "—" }}</td>
-        <td>{{ member.display_name or "—" }}</td>
+        <td>{{ (member.username or "—")|display_name }}</td>
+        <td>{{ (member.display_name or "—")|display_name }}</td>
         <td>{{ member.role_id or "—" }}</td>
         <td>{{ member.category or "—" }}</td>
         <td>{{ member.joined_at or "—" }}</td>

@@ -43,10 +43,14 @@
   "vcxp": "VC XP",
   "models": "Models / Read-only",
   "dashboard_json": "Discord Roles & Channels",
-  "advanced": "Advanced"
+  "advanced": "Advanced",
+  "bumps": "DISBOARD Bumps",
+  "reminders": "Reminders",
+  "streaks": "Streaks & Recovery",
+  "stats_features": "Stats & Leaderboards"
 } %}
 {% for section_name in visible_sections %}
-<section class="card settings-section">
+<section class="card settings-section" id="{{ section_name }}">
   <h2>{{ section_titles[section_name] }}</h2>
   <div class="editable-settings">
     {% for setting in sections[section_name] %}
