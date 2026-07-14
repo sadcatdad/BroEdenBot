@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import io
+import logging
 import math
 from datetime import datetime, timezone
 from typing import Optional
@@ -14,13 +15,14 @@ from config import COLOR
 from utils.ranked_graphic import (
     RankedGraphicItem,
     RankedGraphicSection,
-    render_ranked_graphic,
+    render_ranked_graphic_result,
 )
 from utils.ui import error_embed, success_embed, warning_embed
 
 
 PAGE_SIZE = 10
 MAX_LEADERBOARD_NAME = 50
+logger = logging.getLogger(__name__)
 
 
 def parse_points(value: str) -> Optional[float]:
@@ -176,7 +178,15 @@ class Leaderboards(commands.Cog):
                 ephemeral=True,
             )
             return
-        file, view = await self.get_leaderboard_banner(name, 0)
+        try:
+            file, view = await self.get_leaderboard_banner(name, 0)
+        except Exception:
+            logger.exception("Leaderboard render failed name=%r", name)
+            await interaction.followup.send(
+                "I could not generate that leaderboard graphic.",
+                ephemeral=True,
+            )
+            return
         await interaction.followup.send(file=file, view=view)
 
     @leaderboard.command(name="add", description="Add points to a member")
@@ -388,16 +398,21 @@ class Leaderboards(commands.Cog):
                         else f"Discord ID {user_id}"
                     ),
                     avatar_url=(
-                        str(user.display_avatar.replace(size=64).url)
+                        str(
+                            user.display_avatar.replace(
+                                size=128,
+                                static_format="png",
+                            ).url
+                        )
                         if user is not None
                         else None
                     ),
                     score=float(points),
                 )
             )
-        png = await render_ranked_graphic(
+        result = await render_ranked_graphic_result(
             title=leaderboard,
-            subtitle=f"Page {page + 1} of {total_pages}",
+            subtitle="Community points leaderboard",
             sections=[
                 RankedGraphicSection(
                     "Member leaderboard",
@@ -408,8 +423,13 @@ class Leaderboards(commands.Cog):
             updated_at=datetime.now(timezone.utc),
             accent_color=COLOR,
             total_entries=total_entries,
+            page_number=page + 1,
+            page_count=total_pages,
         )
-        file = discord.File(io.BytesIO(png), filename="leaderboard.png")
+        file = discord.File(
+            io.BytesIO(result.pages[0].png),
+            filename="leaderboard.png",
+        )
         token = self._token(leaderboard)
         view = discord.ui.View(timeout=None)
         view.add_item(
@@ -464,7 +484,19 @@ class Leaderboards(commands.Cog):
             return
         page = int(parts[2]) + (1 if parts[1] == "next" else -1)
         await interaction.response.defer()
-        file, view = await self.get_leaderboard_banner(name, page)
+        try:
+            file, view = await self.get_leaderboard_banner(name, page)
+        except Exception:
+            logger.exception(
+                "Leaderboard page render failed name=%r page=%s",
+                name,
+                page,
+            )
+            await interaction.followup.send(
+                "I could not generate that leaderboard page.",
+                ephemeral=True,
+            )
+            return
         await interaction.edit_original_response(attachments=[file], view=view)
 
 

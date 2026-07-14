@@ -19,7 +19,7 @@ from utils.exclusions import member_is_excluded
 from utils.ranked_graphic import (
     RankedGraphicItem,
     RankedGraphicSection,
-    render_ranked_graphic,
+    render_ranked_graphic_result,
 )
 from utils.settings import (
     get_bool_setting,
@@ -1692,32 +1692,49 @@ class VCStats(commands.Cog):
                         )
                     ),
                     avatar_url=(
-                        str(member.display_avatar.replace(size=64).url)
+                        str(
+                            member.display_avatar.replace(
+                                size=128,
+                                static_format="png",
+                            ).url
+                        )
                         if member
                         else None
                     ),
                     score=float(ranked_seconds or 0),
                 )
             )
-        png = await render_ranked_graphic(
-            title="VC Leaderboard",
-            subtitle=(
-                f"Last {days} days • {label} • {scope.lower()} • source: {source}"
-            ),
-            sections=[RankedGraphicSection("Member leaderboard", items)],
-            updated_at=utc_now(),
-            accent_color=COLOR,
-        )
+        try:
+            result = await render_ranked_graphic_result(
+                title="VC Leaderboard",
+                subtitle=(
+                    f"Last {days} days • {label} • {scope.lower()} • source: {source}"
+                ),
+                sections=[RankedGraphicSection("Member leaderboard", items)],
+                updated_at=utc_now(),
+                accent_color=COLOR,
+            )
+        except Exception:
+            logger.exception(
+                "VC leaderboard render failed guild=%s",
+                interaction.guild_id,
+            )
+            await interaction.followup.send(
+                "I could not generate the VC leaderboard graphic.",
+                ephemeral=True,
+            )
+            return
+        files = [
+            discord.File(io.BytesIO(data), filename=filename)
+            for filename, data in result.attachments("vc_leaderboard.png")
+        ]
         await interaction.followup.send(
             content=(
                 f"⚠️ {warning}"
                 if warning and not include_left_members
                 else None
             ),
-            file=discord.File(
-                io.BytesIO(png),
-                filename="vc_leaderboard.png",
-            ),
+            files=files,
             ephemeral=True,
         )
 
