@@ -150,4 +150,3 @@ size before merging a theme or layout change.
 its established asset-specific layout. Poll and startup images are static
 assets. They are not statistics graphics and were intentionally left outside
 this phase.
-

@@ -58,4 +58,3 @@ class RenderState:
     truncated_text_count: int = 0
     avatar_fallback_count: int = 0
     overflow_warnings: List[str] = field(default_factory=list)
-

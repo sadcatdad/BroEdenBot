@@ -59,4 +59,3 @@ __all__ = [
     "render_rolecompare_result",
     "truncate_text",
 ]
-
