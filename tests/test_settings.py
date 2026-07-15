@@ -240,6 +240,19 @@ class SettingsValidationTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "2,000"):
             normalize_setting_value("STREAK_MILESTONE_MESSAGE", "x" * 2001)
 
+    def test_feature_asset_settings_accept_saved_asset_ids(self):
+        asset_id = "42"
+        for key in (
+            "BUMP_SUCCESS_ASSET_ID",
+            "BUMP_REMINDER_ASSET_ID",
+            "STREAK_MILESTONE_ASSET_ID",
+        ):
+            with self.subTest(key=key):
+                self.assertEqual(normalize_setting_value(key, asset_id), asset_id)
+                self.assertEqual(normalize_setting_value(key, ""), "")
+                with self.assertRaisesRegex(ValueError, "Embed/Message Editor asset"):
+                    normalize_setting_value(key, "not-an-asset")
+
     def test_forbidden_and_unknown_keys_are_rejected(self):
         for key in (
             "DISCORD_TOKEN",

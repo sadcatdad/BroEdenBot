@@ -473,7 +473,7 @@ class StreakTests(unittest.IsolatedAsyncioTestCase):
         message.add_reaction.assert_not_awaited()
         self.cog._send_milestone_notification.assert_not_awaited()
 
-    async def test_milestone_notification_uses_configured_channel_and_template(self):
+    async def test_milestone_notification_uses_selected_message_asset(self):
         guild = SimpleNamespace(id=1)
         member = DummyMember()
         channel = SimpleNamespace(
@@ -483,13 +483,21 @@ class StreakTests(unittest.IsolatedAsyncioTestCase):
         )
         self.bot.channel = channel
 
-        def setting_value(key, default=""):
-            return {
-                "STREAK_MILESTONE_CHANNEL_ID": "999",
-                "STREAK_MILESTONE_MESSAGE": "Way to go {member}: {days} days!",
-            }.get(key, default)
-
-        with patch("cogs.streaks.get_setting", side_effect=setting_value):
+        with (
+            patch(
+                "cogs.streaks.get_setting",
+                side_effect=lambda key, default="": "999" if key == "STREAK_MILESTONE_CHANNEL_ID" else default,
+            ),
+            patch.object(
+                self.cog,
+                "_milestone_asset_payload",
+                new=AsyncMock(return_value={
+                    "content": "Way to go <@42>: 14 days!",
+                    "embed": {},
+                    "buttons": [],
+                }),
+            ),
+        ):
             await self.cog._send_milestone_notification(guild, member, 14)
 
         channel.send.assert_awaited_once()
@@ -499,15 +507,16 @@ class StreakTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertIn("allowed_mentions", channel.send.await_args.kwargs)
 
-    async def test_milestone_embed_uses_configured_template(self):
+    async def test_milestone_embed_uses_selected_message_asset_content(self):
         member = DummyMember()
-        with patch(
-            "cogs.streaks.get_setting",
-            side_effect=lambda key, default="": (
-                "Proud of {member} for reaching {days} days!"
-                if key == "STREAK_MILESTONE_MESSAGE"
-                else default
-            ),
+        with patch.object(
+            self.cog,
+            "_milestone_asset_payload",
+            new=AsyncMock(return_value={
+                "content": "Proud of <@42> for reaching 30 days!",
+                "embed": {},
+                "buttons": [],
+            }),
         ):
             embed = await self.cog._milestone_embed(1, member, 30)
         self.assertEqual(

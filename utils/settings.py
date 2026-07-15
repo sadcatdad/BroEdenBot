@@ -235,6 +235,16 @@ SETTING_DEFINITIONS = (
         picker="emoji_text",
         maximum=2000,
         placeholders=("{member}", "{days}"),
+        visible=False,
+    ),
+    SettingDefinition(
+        "STREAK_MILESTONE_ASSET_ID",
+        "streaks",
+        "asset_id",
+        "Saved Embed/Message Editor asset used for streak milestone announcements. Supports {user.feature}, {role.feature}, {member}, and {days} placeholders.",
+        picker="asset",
+        single=True,
+        title="Streak Milestone Message / Embed",
     ),
     SettingDefinition(
         "STREAK_LEADERBOARD_CHANNEL_ID",
@@ -305,6 +315,7 @@ SETTING_DEFINITIONS = (
         picker="emoji_text",
         maximum=2000,
         placeholders=("{member}", "{points}", "{reward_status}"),
+        visible=False,
     ),
     SettingDefinition(
         "BUMP_SUCCESS_EMBED_ID",
@@ -314,6 +325,16 @@ SETTING_DEFINITIONS = (
         picker="embed",
         single=True,
         title="Successful Bump Response Embed",
+        visible=False,
+    ),
+    SettingDefinition(
+        "BUMP_SUCCESS_ASSET_ID",
+        "bumps",
+        "asset_id",
+        "Saved Embed/Message Editor asset sent after a verified /bump. Supports {user.feature}, {role.feature}, {member}, {points}, and {reward_status} placeholders.",
+        picker="asset",
+        single=True,
+        title="Successful Bump Response",
     ),
     SettingDefinition(
         "BUMP_PING_ROLE_ID",
@@ -333,6 +354,7 @@ SETTING_DEFINITIONS = (
         picker="emoji_text",
         maximum=2000,
         placeholders=("{role}", "{member}"),
+        visible=False,
     ),
     SettingDefinition(
         "BUMP_REMINDER_EMBED_ID",
@@ -342,6 +364,16 @@ SETTING_DEFINITIONS = (
         picker="embed",
         single=True,
         title="Bump Reminder Embed",
+        visible=False,
+    ),
+    SettingDefinition(
+        "BUMP_REMINDER_ASSET_ID",
+        "bumps",
+        "asset_id",
+        "Saved Embed/Message Editor asset sent for the two-hour bump reminder. Supports {user.feature}, {role.feature}, {member}, and {role} placeholders.",
+        picker="asset",
+        single=True,
+        title="Bump Reminder Message / Embed",
     ),
     SettingDefinition(
         "BUMP_LEADERBOARD_CHANNEL_ID",
@@ -824,11 +856,11 @@ def normalize_setting_value(key: str, value: str) -> str:
         if definition.minimum is not None and parsed < definition.minimum:
             raise ValueError(f"Value must be at least {definition.minimum}.")
         return str(parsed)
-    if definition.value_type == "embed_id":
+    if definition.value_type in {"embed_id", "asset_id"}:
         if not text:
             return ""
         if not text.isdigit():
-            raise ValueError("Choose a saved embed.")
+            raise ValueError("Choose a saved Embed/Message Editor asset.")
         return text
     if definition.value_type == "datetime":
         if not text:
@@ -939,6 +971,10 @@ def settings_for_dashboard() -> dict[str, list[dict[str, object]]]:
         if not definition.visible:
             continue
         value = get_setting(definition.key, "") or ""
+        if not value and definition.key == "BUMP_SUCCESS_ASSET_ID":
+            value = get_setting("BUMP_SUCCESS_EMBED_ID", "") or ""
+        elif not value and definition.key == "BUMP_REMINDER_ASSET_ID":
+            value = get_setting("BUMP_REMINDER_EMBED_ID", "") or ""
         value_format = "json" if definition.value_type == "json_ids" else "csv"
         sections[definition.section].append(
             {

@@ -3,6 +3,7 @@
   if (!form) return;
 
   const byId = (id) => document.getElementById(id);
+  const assetType = form.dataset.assetType === "message" ? "message" : "embed";
   const initial = JSON.parse(byId("embed-initial-data").textContent || "{}");
   const embed = initial.embed || {};
   const unicodeEmojiChoices = [
@@ -137,7 +138,9 @@
   }
 
   function inlineDiscordMarkdown(value) {
-    let source = String(value || "");
+    let source = String(value || "")
+      .replace(/\{user\.feature\}/g, "<@111111111111111111>")
+      .replace(/\{role\.feature\}/g, "<@&222222222222222222>");
     const tokens = [];
     const token = (html) => {
       const index = tokens.push(html) - 1;
@@ -340,6 +343,17 @@
     closeEmojiPicker();
   }
 
+  function insertPlaceholder(value) {
+    if (!activeEmojiTarget || !value) return;
+    const start = Number.isInteger(activeEmojiTarget.selectionStart)
+      ? activeEmojiTarget.selectionStart : activeEmojiTarget.value.length;
+    const end = Number.isInteger(activeEmojiTarget.selectionEnd)
+      ? activeEmojiTarget.selectionEnd : start;
+    activeEmojiTarget.setRangeText(String(value), start, end, "end");
+    activeEmojiTarget.dispatchEvent(new Event("input", { bubbles: true }));
+    activeEmojiTarget.focus();
+  }
+
   function registerEmojiTarget(target, label) {
     if (!target || target.dataset.emojiRegistered === "true") return;
     target.dataset.emojiRegistered = "true";
@@ -515,6 +529,7 @@
       data.embed.author_name || data.embed.title || data.embed.description || data.embed.thumbnail_url ||
       data.embed.image_url || data.embed.footer_text || data.embed.fields.length
     );
+    card.hidden = assetType === "message";
     card.classList.toggle("preview-empty", !hasEmbed);
   }
 
@@ -540,6 +555,9 @@
     if (event.key !== "Enter") return;
     event.preventDefault();
     byId("insert-custom-emoji").click();
+  });
+  document.querySelectorAll("[data-editor-placeholder]").forEach((button) => {
+    button.addEventListener("click", () => insertPlaceholder(button.dataset.editorPlaceholder));
   });
   loadServerEmojis();
   document.addEventListener("keydown", (event) => {

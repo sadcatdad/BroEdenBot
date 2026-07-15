@@ -629,6 +629,16 @@ details summary { color: var(--muted); cursor: pointer; }
 .editor-section .section-heading { margin-bottom: 0; }
 .emoji-editor-toolbar { display: flex; align-items: center; gap: .75rem; flex-wrap: wrap; }
 .emoji-editor-toolbar .button { flex: 0 0 auto; }
+.placeholder-toolbar { display: flex; flex-wrap: wrap; align-items: center; gap: .4rem; }
+.placeholder-toolbar button { padding: .28rem .5rem; color: var(--accent); background: var(--accent-soft); border: 1px solid var(--accent); border-radius: .35rem; cursor: pointer; font: inherit; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: .74rem; }
+.placeholder-help { margin: -.25rem 0 .25rem; font-size: .78rem; }
+.create-asset-menu { position: relative; }
+.create-asset-menu summary { list-style: none; }
+.create-asset-menu summary::-webkit-details-marker { display: none; }
+.create-asset-options { position: absolute; z-index: 25; top: calc(100% + .45rem); right: 0; display: grid; width: min(22rem, calc(100vw - 2rem)); padding: .45rem; background: var(--panel); border: 1px solid var(--border); border-radius: .7rem; box-shadow: 0 16px 40px rgba(0, 0, 0, .45); }
+.create-asset-options a { display: grid; gap: .15rem; padding: .7rem; color: var(--text); border-radius: .45rem; text-decoration: none; }
+.create-asset-options a:hover { background: var(--panel-soft); }
+.create-asset-options span { color: var(--muted); font-size: .76rem; }
 .emoji-field-button {
   justify-self: end;
   margin-top: -.2rem;
@@ -644,6 +654,8 @@ details summary { color: var(--muted); cursor: pointer; }
 }
 .emoji-field-button:hover { color: var(--text); background: var(--panel-soft); }
 .embed-fields-card { position: relative; overflow: hidden; padding-left: 1.5rem; }
+.embed-fields-card[hidden],
+.discord-embed-preview[hidden] { display: none; }
 .embed-color-rail { position: absolute; inset: 0 auto 0 0; width: .32rem; background: #25b8b8; }
 .color-input-row, .emoji-input-row { display: grid; grid-template-columns: auto minmax(0, 1fr); gap: .5rem; }
 .color-input-row input[type="color"] { width: 3.25rem; min-height: 2.8rem; padding: .25rem; }

@@ -20,6 +20,7 @@ MAX_EMBED_TOTAL_CHARS = 6000
 SNOWFLAKE_RE = re.compile(r"^\d{17,20}$")
 BUTTON_STYLES = {"primary", "secondary", "success", "danger"}
 BUTTON_ACTIONS = {"add_role", "remove_role", "url"}
+ASSET_TYPES = {"embed", "message"}
 
 
 def _connect() -> sqlite3.Connection:
@@ -38,7 +39,8 @@ def initialize_embed_templates_schema() -> None:
                 payload_json TEXT NOT NULL,
                 created_at TEXT NOT NULL,
                 updated_at TEXT NOT NULL,
-                updated_by TEXT NOT NULL DEFAULT 'dashboard'
+                updated_by TEXT NOT NULL DEFAULT 'dashboard',
+                asset_type TEXT NOT NULL DEFAULT 'embed'
             )
             """
         )
@@ -46,6 +48,14 @@ def initialize_embed_templates_schema() -> None:
             "CREATE INDEX IF NOT EXISTS idx_embed_templates_updated "
             "ON embed_templates (updated_at DESC)"
         )
+        columns = {
+            str(row["name"])
+            for row in connection.execute("PRAGMA table_info(embed_templates)").fetchall()
+        }
+        if "asset_type" not in columns:
+            connection.execute(
+                "ALTER TABLE embed_templates ADD COLUMN asset_type TEXT NOT NULL DEFAULT 'embed'"
+            )
         connection.commit()
 
 
@@ -163,6 +173,29 @@ def validate_embed_payload(payload: Any) -> dict[str, Any]:
     return {"content": content, "embed": embed, "buttons": buttons}
 
 
+def validate_asset_payload(payload: Any, asset_type: str = "embed") -> dict[str, Any]:
+    clean_type = str(asset_type or "embed").strip().casefold()
+    if clean_type not in ASSET_TYPES:
+        raise ValueError("Choose either Embed or Message.")
+    clean = validate_embed_payload(payload)
+    if clean_type == "message":
+        embed = clean["embed"]
+        has_embed_content = bool(
+            embed["author_name"]
+            or embed["title"]
+            or embed["description"]
+            or embed["thumbnail_url"]
+            or embed["image_url"]
+            or embed["footer_text"]
+            or embed["fields"]
+        )
+        if has_embed_content:
+            raise ValueError("Message assets cannot contain embed fields.")
+        if not clean["content"]:
+            raise ValueError("A Message asset needs message content.")
+    return clean
+
+
 def default_embed_payload() -> dict[str, Any]:
     return {
         "content": "",
@@ -184,18 +217,76 @@ def default_embed_payload() -> dict[str, Any]:
     }
 
 
+def default_message_payload() -> dict[str, Any]:
+    return default_embed_payload()
+
+
+def render_feature_payload(
+    payload: dict[str, Any],
+    *,
+    user_mention: str = "",
+    role_mentions: Optional[list[str]] = None,
+    placeholders: Optional[dict[str, Any]] = None,
+) -> dict[str, Any]:
+    """Render reusable feature placeholders in message and embed text fields."""
+
+    clean = validate_embed_payload(payload)
+    replacements = {
+        "user.feature": str(user_mention or ""),
+        "role.feature": " ".join(str(item) for item in (role_mentions or []) if item),
+    }
+    for key, value in (placeholders or {}).items():
+        normalized = str(key or "").strip().strip("{}")
+        if normalized:
+            replacements[normalized] = str(value or "")
+
+    def render(value: str) -> str:
+        text = str(value or "")
+        for key, replacement in replacements.items():
+            text = text.replace("{" + key + "}", replacement)
+        return text
+
+    clean["content"] = render(clean["content"])
+    for key in ("author_name", "title", "description", "footer_text"):
+        clean["embed"][key] = render(clean["embed"][key])
+    for field in clean["embed"]["fields"]:
+        field["name"] = render(field["name"])
+        field["value"] = render(field["value"])
+    for button in clean["buttons"]:
+        button["label"] = render(button["label"])
+    return validate_embed_payload(clean)
+
+
 def _feature_names(template_id: int) -> list[str]:
     features = []
-    if str(get_setting("BUMP_SUCCESS_EMBED_ID", "") or "") == str(template_id):
+    success_id = str(
+        get_setting("BUMP_SUCCESS_ASSET_ID", "")
+        or get_setting("BUMP_SUCCESS_EMBED_ID", "")
+        or ""
+    )
+    reminder_id = str(
+        get_setting("BUMP_REMINDER_ASSET_ID", "")
+        or get_setting("BUMP_REMINDER_EMBED_ID", "")
+        or ""
+    )
+    streak_id = str(get_setting("STREAK_MILESTONE_ASSET_ID", "") or "")
+    if success_id == str(template_id):
         features.append("Successful bump response")
-    if str(get_setting("BUMP_REMINDER_EMBED_ID", "") or "") == str(template_id):
+    if reminder_id == str(template_id):
         features.append("Bump reminders")
+    if streak_id == str(template_id):
+        features.append("Streak milestones")
     return features
 
 
 def list_embed_templates(query: str = "", sort: str = "updated", order: str = "desc") -> list[dict[str, Any]]:
     initialize_embed_templates_schema()
-    sort_column = {"name": "name", "updated": "updated_at", "features": "name"}.get(sort, "updated_at")
+    sort_column = {
+        "name": "name",
+        "type": "asset_type",
+        "updated": "updated_at",
+        "features": "name",
+    }.get(sort, "updated_at")
     direction = "ASC" if order.casefold() == "asc" else "DESC"
     params: list[Any] = []
     where = ""
@@ -205,7 +296,7 @@ def list_embed_templates(query: str = "", sort: str = "updated", order: str = "d
         params.append(f"%{escaped}%")
     with closing(_connect()) as connection:
         rows = connection.execute(
-            f"SELECT id, name, created_at, updated_at, updated_by FROM embed_templates "
+            f"SELECT id, name, asset_type, created_at, updated_at, updated_by FROM embed_templates "
             f"{where} ORDER BY {sort_column} {direction}, id DESC",
             params,
         ).fetchall()
@@ -226,7 +317,7 @@ def get_embed_template(template_id: int) -> Optional[dict[str, Any]]:
     initialize_embed_templates_schema()
     with closing(_connect()) as connection:
         row = connection.execute(
-            "SELECT id, name, payload_json, created_at, updated_at, updated_by "
+            "SELECT id, name, asset_type, payload_json, created_at, updated_at, updated_by "
             "FROM embed_templates WHERE id = ?",
             (int(template_id),),
         ).fetchone()
@@ -234,9 +325,16 @@ def get_embed_template(template_id: int) -> Optional[dict[str, Any]]:
         return None
     item = dict(row)
     try:
-        item["payload"] = validate_embed_payload(json.loads(str(item.pop("payload_json"))))
+        item["payload"] = validate_asset_payload(
+            json.loads(str(item.pop("payload_json"))),
+            str(item.get("asset_type") or "embed"),
+        )
     except (json.JSONDecodeError, ValueError):
-        item["payload"] = default_embed_payload()
+        item["payload"] = (
+            default_message_payload()
+            if item.get("asset_type") == "message"
+            else default_embed_payload()
+        )
     item["features"] = _feature_names(int(item["id"]))
     return item
 
@@ -247,13 +345,15 @@ def save_embed_template(
     payload_json: str,
     updated_by: str,
     template_id: Optional[int] = None,
+    asset_type: str = "embed",
 ) -> int:
     initialize_embed_templates_schema()
     clean_name = _clean_text(name, 100, "Name")
     if not clean_name:
         raise ValueError("Name is required.")
     try:
-        payload = validate_embed_payload(json.loads(payload_json))
+        clean_type = str(asset_type or "embed").strip().casefold()
+        payload = validate_asset_payload(json.loads(payload_json), clean_type)
     except json.JSONDecodeError as exc:
         raise ValueError("Embed data could not be read. Refresh and try again.") from exc
     now = datetime.now(timezone.utc).isoformat()
@@ -262,23 +362,23 @@ def save_embed_template(
             connection.execute("BEGIN IMMEDIATE")
             if template_id is None:
                 cursor = connection.execute(
-                    "INSERT INTO embed_templates (name, payload_json, created_at, updated_at, updated_by) "
-                    "VALUES (?, ?, ?, ?, ?)",
-                    (clean_name, json.dumps(payload, ensure_ascii=False), now, now, updated_by),
+                    "INSERT INTO embed_templates (name, asset_type, payload_json, created_at, updated_at, updated_by) "
+                    "VALUES (?, ?, ?, ?, ?, ?)",
+                    (clean_name, clean_type, json.dumps(payload, ensure_ascii=False), now, now, updated_by),
                 )
                 saved_id = int(cursor.lastrowid)
             else:
                 cursor = connection.execute(
-                    "UPDATE embed_templates SET name = ?, payload_json = ?, updated_at = ?, updated_by = ? "
+                    "UPDATE embed_templates SET name = ?, asset_type = ?, payload_json = ?, updated_at = ?, updated_by = ? "
                     "WHERE id = ?",
-                    (clean_name, json.dumps(payload, ensure_ascii=False), now, updated_by, int(template_id)),
+                    (clean_name, clean_type, json.dumps(payload, ensure_ascii=False), now, updated_by, int(template_id)),
                 )
                 if cursor.rowcount < 1:
-                    raise ValueError("Embed was not found.")
+                    raise ValueError("Asset was not found.")
                 saved_id = int(template_id)
             connection.commit()
         except sqlite3.IntegrityError as exc:
-            raise ValueError("An embed with that name already exists.") from exc
+            raise ValueError("An asset with that name already exists.") from exc
     return saved_id
 
 
@@ -287,12 +387,12 @@ def delete_embed_template(template_id: int) -> str:
     features = _feature_names(int(template_id))
     if features:
         raise ValueError(
-            "This embed is used by " + ", ".join(features) + ". Choose a different embed in Feature Settings first."
+            "This asset is used by " + ", ".join(features) + ". Choose a different asset in Feature Settings first."
         )
     with closing(_connect()) as connection:
         row = connection.execute("SELECT name FROM embed_templates WHERE id = ?", (int(template_id),)).fetchone()
         if row is None:
-            raise ValueError("Embed was not found.")
+            raise ValueError("Asset was not found.")
         connection.execute("DELETE FROM embed_templates WHERE id = ?", (int(template_id),))
         connection.commit()
     return str(row["name"])
@@ -341,20 +441,8 @@ def _button_emoji(value: str):
 
 def discord_view_from_payload(
     payload: dict[str, Any],
-    *,
-    subscribe_role_id: int = 0,
 ) -> Optional[discord.ui.View]:
     buttons = list(validate_embed_payload(payload)["buttons"])
-    if subscribe_role_id:
-        buttons = buttons[:4]
-        buttons.append({
-            "label": "Subscribe to Bump Reminders",
-            "emoji": "🔔",
-            "style": "primary",
-            "action": "add_role",
-            "role_id": str(subscribe_role_id),
-            "url": "",
-        })
     if not buttons:
         return None
     styles = {

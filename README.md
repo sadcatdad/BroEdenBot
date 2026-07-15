@@ -99,24 +99,21 @@ Verified responses from the configured official DISBOARD bot award
 schedule a reminder automatically for two hours after the successful `/bump`.
 Detection accepts Discord's current interaction metadata and the legacy
 interaction shape, but only when the trusted DISBOARD response identifies the
-`bump` command and contains a known success message. The dashboard's
-`BUMP_SUCCESS_MESSAGE` field owns the response text and supports `{member}` for
-the member mention, `{points}` for the formatted award, and `{reward_status}`
-for the role-reward result. Its multiline editor includes an emoji picker.
-`BUMP_SUCCESS_EMBED_ID` selects the optional embed card and first four buttons;
-the template's regular message is ignored and the bot reserves the fifth slot
-for the one-use **Bump Leaderboard** button. `!bumpscores` displays the branded
-Bump Legends board in ten-row pages.
+`bump` command and contains a known success message. `BUMP_SUCCESS_ASSET_ID`
+selects the Embed/Message Editor asset sent for the confirmation. Its message,
+embed card, and first four configured buttons are used, and the bot reserves
+the fifth slot for the one-use **Bump Leaderboard** button. The asset supports
+`{user.feature}`, `{role.feature}`, `{member}`, `{points}`, and
+`{reward_status}`. `!bumpscores` displays the branded Bump Legends board in
+ten-row pages.
 
-The reminder message is configured with `BUMP_REMINDER_MESSAGE`; `{role}` and
-`{member}` expand to controlled Discord mentions. This feature setting always
-replaces the selected template's regular message. `BUMP_PING_ROLE_ID` is the
-subscriber role pinged by the reminder. `BUMP_REMINDER_EMBED_ID` selects only a
-saved embed card design: the template's regular message and all template
-buttons are ignored. Bump reminders provide only the built-in **Subscribe to
-Bump Reminders** button, which self-assigns the configured ping role. The
-built-in bump reminder embed is used when no saved embed is selected or the
-selected record is unavailable.
+`BUMP_REMINDER_ASSET_ID` selects the complete asset sent two hours later.
+`{user.feature}` identifies the member whose bump triggered the reminder and
+`{role.feature}` mentions the configured `BUMP_PING_ROLE_ID`; the compatibility
+aliases `{member}` and `{role}` are also supported. Template buttons are used
+as configured. The previous automatic **Subscribe to Bump Reminders** button
+is no longer added. The built-in reminder message/embed remains the fallback
+when no asset is selected or the selected record is unavailable.
 
 The weekly publisher posts the leaderboard to `BUMP_LEADERBOARD_CHANNEL_ID`.
 Detection requires Guild Messages and Message Content intents. Reward-role
@@ -139,8 +136,8 @@ messages are removed and affected streaks are recomputed.
 
 Milestones begin at 7, 14, 30, 45, 60, and 100 days and continue at the
 configured rolling thresholds. `STREAK_MILESTONE_CHANNEL_ID` can announce each
-new milestone with the dashboard-managed `STREAK_MILESTONE_MESSAGE` template,
-which supports `{member}` and `{days}`. Leave the channel blank to keep
+new milestone with the selected `STREAK_MILESTONE_ASSET_ID` Embed/Message
+Editor asset. It supports `{user.feature}`, `{member}`, and `{days}`. Leave the channel blank to keep
 milestone details private to the member's streak view.
 `STREAK_LEADERBOARD_CHANNEL_ID` receives the persistent weekly tracker;
 `STREAK_TIMEZONE` controls day boundaries.
@@ -1518,11 +1515,9 @@ updated from the authenticated local dashboard without rewriting `.env`.
 | `REMINDER_EVENT_AUTO_SUBSCRIBE_CREATOR` | Automatically subscribes an event creator to the event defaults. Defaults to `true`. |
 | `DISBOARD_BOT_USER_ID` | Official DISBOARD bot user ID trusted for verified success responses. |
 | `BUMP_REWARD_ROLE_ID` | Role granted after a verified bump for the external XP/reward handoff. |
-| `BUMP_SUCCESS_MESSAGE` | Authoritative successful-bump response text. Supports `{member}`, `{points}`, and `{reward_status}` placeholders. |
-| `BUMP_SUCCESS_EMBED_ID` | Optional saved embed card and first four buttons sent after a verified bump. Its regular message is ignored; blank sends the configured response text without an embed card. |
-| `BUMP_PING_ROLE_ID` | Subscriber role pinged by automatic two-hour bump reminders and assigned by the reminder embed's subscription button. |
-| `BUMP_REMINDER_MESSAGE` | Authoritative reminder message that replaces the selected template's regular message. Supports `{role}` and `{member}` placeholders; defaults to `{role}`. |
-| `BUMP_REMINDER_EMBED_ID` | Optional saved embed card design. Its regular message/buttons are ignored; blank uses the built-in embed. |
+| `BUMP_SUCCESS_ASSET_ID` | Optional Embed/Message Editor asset sent after a verified bump. Supports `{user.feature}`, `{role.feature}`, `{member}`, `{points}`, and `{reward_status}`. |
+| `BUMP_PING_ROLE_ID` | Role mentioned through `{role.feature}` in automatic two-hour bump reminders. |
+| `BUMP_REMINDER_ASSET_ID` | Optional complete Embed/Message Editor asset for the two-hour reminder. Its configured content, embed, and buttons are sent without an automatic subscription button. |
 | `BUMP_LEADERBOARD_CHANNEL_ID` | Channel receiving the seven-day Bump Legends post. |
 | `BUMP_POINTS_PER_SUCCESS` | Bump points awarded per verified success. Defaults to `1000`. |
 | `STREAK_TIMEZONE` | IANA timezone used for daily streak boundaries. Defaults to `America/Chicago`. |
@@ -1531,7 +1526,7 @@ updated from the authenticated local dashboard without rewriting `.env`.
 | `STREAK_EXCLUDED_CHANNEL_IDS` | Additional channels excluded from streak qualification. |
 | `STREAK_EXCLUDED_CATEGORY_IDS` | Categories whose channels are excluded from streak qualification. |
 | `STREAK_MILESTONE_CHANNEL_ID` | Optional channel for automatic milestone announcements. Leave blank for private-only milestone details. |
-| `STREAK_MILESTONE_MESSAGE` | Milestone announcement text. Supports `{member}` and `{days}`. |
+| `STREAK_MILESTONE_ASSET_ID` | Optional Embed/Message Editor asset for milestone announcements. Supports `{user.feature}`, `{member}`, and `{days}`. |
 | `STREAK_LEADERBOARD_CHANNEL_ID` | Channel receiving the persistent weekly streak tracker. |
 | `STREAK_RESTORE_ENABLED` | Enables automatic history recovery after a heartbeat gap. Defaults to `true`. |
 | `STREAK_RESTORE_GAP_MINUTES` | Missing-heartbeat duration that queues automatic recovery. Defaults to `10`. |
@@ -1654,11 +1649,11 @@ The local FastAPI dashboard provides shared-database status, bank overview,
 historical-import status, database-backed editing for an explicit allowlist of
 safe runtime settings, AI framework status/usage, a unified Knowledge manager,
 a VC XP role-pulse readiness summary, stats graphics management, a reusable
-Embed Editor, and aggregate analytics. It does not edit `.env`, modify bank
+Embed/Message Editor, and aggregate analytics. It does not edit `.env`, modify bank
 records, expose Discord or Gemini secrets, or provide public hosting.
 
 The top-level dashboard tabs are Overview, Operations, AI, Knowledge,
-Analytics, Streaks, Embed Editor, Bank, and Settings when
+Analytics, Streaks, Embed/Message Editor, Bank, and Settings when
 `AI_DASHBOARD_VISIBLE=true`; the AI tab is hidden when that flag is false. The
 AI tab shows framework health, usage,
 recent `/ask` feedback, and a connected-sources page that explains which
@@ -1668,12 +1663,14 @@ Dashboard Users live under Settings. The older `/stats`, `/settings/knowledge`,
 `/imports`, and `/users` links redirect to their new locations so existing
 bookmarks remain usable.
 
-### Embed Editor
+### Embed/Message Editor
 
-The top-level **Embed Editor** stores reusable Discord message designs in the
-shared `data.db`. Its table can search and sort by name, modification date, or
-the bot features currently using each embed. Selecting a row opens a live
-Discord-style editor for the regular message, author/header, title and URL,
+The top-level **Embed/Message Editor** stores reusable Discord assets in the
+shared `data.db`. **Create** offers an **Embed** or **Message** type, and the
+table can search and sort by name, type, modification date, or the bot features
+currently using each asset. Existing saved rows migrate to `Embed`. Message
+assets provide trigger-ready content and optional buttons without an embed
+card; Embed assets additionally provide author/header, title and URL,
 description, color, thumbnail, large image, footer, and up to 25 fields. The
 editor includes a visible searchable picker for Unicode emoji and custom emoji
 from the latest live-server metadata snapshot. Server results retain the real
@@ -1686,17 +1683,21 @@ renders headings, bold, italics, underline, strikethrough, spoilers, quotes,
 lists, inline/fenced code, safe links, custom emoji, and raw Discord mentions
 instead of showing the raw Markdown.
 
+All text surfaces support reusable feature placeholders. `{user.feature}`
+mentions the member who triggered the current feature, while `{role.feature}`
+expands to every role that feature designates. Features can provide additional
+values such as `{points}`, `{reward_status}`, and `{days}`. Unknown placeholders
+remain intact so new feature integrations can add their own values later.
+
 Each saved message can include up to five buttons. Role buttons may add or
 remove one selected Discord role and use Discord's blue, gray, green, or red
 button styles; URL buttons use Discord's fixed link style. At send time the bot
 still checks **Manage Roles**, role hierarchy, and managed-role restrictions,
-then confirms role changes privately. Bump reminders use only the saved embed
-card design, ignore its regular message and buttons, and supply their built-in
-**Subscribe to Bump Reminders** button. Successful bump responses also ignore
-the template's regular message, use the separately configured response text,
-use the embed card and first four buttons, then add the built-in **Bump
-Leaderboard** button. Embeds used by a feature cannot be deleted until a
-different embed (or the built-in fallback) is selected in **Settings → Feature
+then confirms role changes privately. Bump reminders send the selected asset
+as configured and no longer add an automatic subscription button. Successful
+bump responses send the selected asset's content/embed and first four buttons,
+then add the built-in **Bump Leaderboard** button. Assets used by a feature
+cannot be deleted until a different asset (or the built-in fallback) is selected in **Settings → Feature
 Settings**.
 
 Set these values in the project-root `.env` and replace the placeholder
@@ -1848,6 +1849,8 @@ The Refresh Discord Metadata button queues the fixed
 action from its existing dashboard action worker and snapshots current guild
 roles/channels/categories/emojis into SQLite. The FastAPI dashboard still does not
 start a second Discord client and does not expose arbitrary API calls.
+Knowledge reindex actions now also queue this fixed Discord metadata refresh,
+so the custom-emoji browser is repopulated after a reindex.
 
 Channel settings and category settings are stored separately. A channel is
 treated as selected when either its own channel ID is selected or its parent
@@ -2014,10 +2017,11 @@ marks the action completed or failed. The dashboard never starts a second
 Discord client.
 
 Knowledge loaders are cached inside the Discord bot process. File reindex
-buttons enqueue only the fixed `reindex_knowledge` action in the existing
-`dashboard_actions` table. The live bot action worker validates fixed payloads,
+buttons enqueue the fixed `reindex_knowledge` action plus the fixed
+`refresh_discord_metadata` action so custom server emoji metadata is refreshed
+at the same time. The live bot action worker validates fixed payloads,
 clears/reloads the relevant caches or syncs the requested Discord source, then
-records the action result.
+records each action result.
 
 The Knowledge manager requires the existing signed login session. Every edit,
 toggle, remove, sync, and reindex POST requires CSRF protection. It is not a

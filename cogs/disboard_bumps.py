@@ -26,6 +26,7 @@ from utils.embed_templates import (
     discord_embed_from_payload,
     discord_view_from_payload,
     get_embed_template,
+    render_feature_payload,
 )
 
 
@@ -262,9 +263,29 @@ class DisboardBumps(commands.Cog):
         points = max(1, get_int_setting("BUMP_POINTS_PER_SUCCESS", 1000))
         content = self._success_content(member, points, role_status)
         embed = None
+        reward_role = None
         template_payload = await self._configured_success_payload()
         if template_payload:
             try:
+                reward_role_id = _configured_id("BUMP_REWARD_ROLE_ID")
+                reward_role = member.guild.get_role(reward_role_id) if reward_role_id else None
+                reward_status_text = (
+                    "- Your configured bump reward role was awarded"
+                    if role_status == "awarded"
+                    else "- Your Bump Points were saved; staff can check the reward role setup"
+                )
+                template_payload = render_feature_payload(
+                    template_payload,
+                    user_mention=member.mention,
+                    role_mentions=[reward_role.mention] if reward_role is not None else [],
+                    placeholders={
+                        "member": member.mention,
+                        "role": reward_role.mention if reward_role is not None else "",
+                        "points": f"{points:,}",
+                        "reward_status": reward_status_text,
+                    },
+                )
+                content = template_payload["content"]
                 embed = discord_embed_from_payload(template_payload)
                 view = self._prompt_view(
                     response_id,
@@ -279,7 +300,9 @@ class DisboardBumps(commands.Cog):
             "mention_author": False,
             "view": view,
             "allowed_mentions": discord.AllowedMentions(
-                users=[member], roles=False, everyone=False,
+                users=[member],
+                roles=[reward_role] if template_payload and reward_role is not None else False,
+                everyone=False,
             ),
         }
         if embed is not None:
@@ -321,13 +344,8 @@ class DisboardBumps(commands.Cog):
             reward_status = (
                 "- Your Bump Points were saved; staff can check the reward role setup"
             )
-        configured = str(
-            get_setting("BUMP_SUCCESS_MESSAGE", BUMP_SUCCESS_MESSAGE_DEFAULT) or ""
-        ).strip()
-        if not configured:
-            configured = BUMP_SUCCESS_MESSAGE_DEFAULT
         return (
-            configured.replace("{member}", member.mention)
+            BUMP_SUCCESS_MESSAGE_DEFAULT.replace("{member}", member.mention)
             .replace("{points}", f"{points:,}")
             .replace("{reward_status}", reward_status)
             .strip()
@@ -638,6 +656,24 @@ class DisboardBumps(commands.Cog):
         if row is None or interaction.message is None:
             return
         template_payload = await self._configured_success_payload()
+        if template_payload and interaction.guild is not None:
+            reward_role_id = _configured_id("BUMP_REWARD_ROLE_ID")
+            reward_role = interaction.guild.get_role(reward_role_id) if reward_role_id else None
+            user_mention = str(
+                getattr(interaction.user, "mention", f"<@{interaction.user.id}>")
+            )
+            try:
+                template_payload = render_feature_payload(
+                    template_payload,
+                    user_mention=user_mention,
+                    role_mentions=[reward_role.mention] if reward_role is not None else [],
+                    placeholders={
+                        "member": user_mention,
+                        "role": reward_role.mention if reward_role is not None else "",
+                    },
+                )
+            except ValueError:
+                template_payload = None
         try:
             view = self._prompt_view(
                 response_id,
@@ -875,46 +911,73 @@ class DisboardBumps(commands.Cog):
             allowed_mentions=discord.AllowedMentions.none(),
         )
 
-    async def _configured_embed_payload(self, setting_key: str, feature_label: str):
+    async def _configured_asset_payload(
+        self,
+        setting_key: str,
+        feature_label: str,
+        *,
+        legacy_setting_key: str = "",
+        legacy_message_key: str = "",
+        legacy_message_default: str = "",
+        ignore_legacy_buttons: bool = False,
+    ):
         template_id = _configured_id(setting_key)
+        using_legacy = False
+        if not template_id and legacy_setting_key:
+            template_id = _configured_id(legacy_setting_key)
+            using_legacy = bool(template_id)
         if not template_id:
             return None
         try:
             template = await asyncio.to_thread(get_embed_template, template_id)
         except (OSError, sqlite3.Error):
             logger.exception(
-                "Could not load configured %s embed id=%s",
+                "Could not load configured %s asset id=%s",
                 feature_label,
                 template_id,
             )
             return None
         if template is None:
             logger.warning(
-                "Configured %s embed was not found id=%s",
+                "Configured %s asset was not found id=%s",
                 feature_label,
                 template_id,
             )
             return None
-        return template["payload"]
+        payload = template["payload"]
+        if using_legacy and legacy_message_key:
+            payload = {
+                **payload,
+                "content": str(
+                    get_setting(legacy_message_key, legacy_message_default)
+                    or legacy_message_default
+                ).strip(),
+                "buttons": [] if ignore_legacy_buttons else list(payload.get("buttons") or []),
+            }
+        return payload
 
     async def _configured_reminder_payload(self):
-        return await self._configured_embed_payload(
-            "BUMP_REMINDER_EMBED_ID",
+        return await self._configured_asset_payload(
+            "BUMP_REMINDER_ASSET_ID",
             "bump reminder",
+            legacy_setting_key="BUMP_REMINDER_EMBED_ID",
+            legacy_message_key="BUMP_REMINDER_MESSAGE",
+            legacy_message_default="{role}",
+            ignore_legacy_buttons=True,
         )
 
     async def _configured_success_payload(self):
-        return await self._configured_embed_payload(
-            "BUMP_SUCCESS_EMBED_ID",
+        return await self._configured_asset_payload(
+            "BUMP_SUCCESS_ASSET_ID",
             "successful bump response",
+            legacy_setting_key="BUMP_SUCCESS_EMBED_ID",
+            legacy_message_key="BUMP_SUCCESS_MESSAGE",
+            legacy_message_default=BUMP_SUCCESS_MESSAGE_DEFAULT,
         )
 
     @staticmethod
     def _reminder_content(member: discord.Member, role) -> str:
-        configured = str(get_setting("BUMP_REMINDER_MESSAGE", "{role}") or "").strip()
-        if not configured:
-            configured = "{role}"
-        return configured.replace("{member}", member.mention).replace(
+        return "{role}".replace("{member}", member.mention).replace(
             "{role}", role.mention if role is not None else "",
         ).strip()
 
@@ -1037,25 +1100,26 @@ class DisboardBumps(commands.Cog):
             payload = await self._configured_reminder_payload()
             content = self._reminder_content(member, role)
             embed = None
+            view = None
             if payload:
                 try:
+                    payload = render_feature_payload(
+                        payload,
+                        user_mention=member.mention,
+                        role_mentions=[role.mention] if role is not None else [],
+                        placeholders={
+                            "member": member.mention,
+                            "role": role.mention if role is not None else "",
+                        },
+                    )
+                    content = payload["content"]
                     embed = discord_embed_from_payload(payload)
+                    view = discord_view_from_payload(payload)
                 except ValueError:
-                    logger.warning("Configured bump reminder embed payload is invalid")
-            fallback_payload = {"content": "", "embed": {
-                "description": "# 🔔 BUMP TIME 🔔\n# ➡️ If you see this, use `/bump`",
-                "color": "#25b8b8",
-            }, "buttons": []}
-            view_payload = {
-                "content": "",
-                "embed": payload.get("embed", {}) if embed is not None else fallback_payload["embed"],
-                "buttons": [],
-            }
-            view = discord_view_from_payload(
-                view_payload,
-                subscribe_role_id=role_id if role is not None else 0,
-            )
-            if embed is None:
+                    logger.warning("Configured bump reminder asset payload is invalid")
+                    payload = None
+            if not payload:
+                content = self._reminder_content(member, role)
                 embed = self._reminder_embed()
             try:
                 reminder_message = await channel.send(

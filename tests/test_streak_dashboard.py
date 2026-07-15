@@ -190,21 +190,21 @@ class StreakDashboardTests(unittest.TestCase):
             self.assertIn(label, response.text)
         for key in (
             "BUMP_REWARD_ROLE_ID",
-            "BUMP_SUCCESS_MESSAGE",
-            "BUMP_SUCCESS_EMBED_ID",
-            "BUMP_REMINDER_EMBED_ID",
+            "BUMP_SUCCESS_ASSET_ID",
+            "BUMP_REMINDER_ASSET_ID",
             "REMINDER_TIMEZONE",
             "STREAK_RESTORE_ENABLED",
             "STREAK_RESTORE_MAX_DAYS",
             "STREAK_EXCLUDED_CATEGORY_IDS",
             "STREAK_MILESTONE_CHANNEL_ID",
-            "STREAK_MILESTONE_MESSAGE",
+            "STREAK_MILESTONE_ASSET_ID",
             "STATS_ALLOWED_ROLE_IDS",
         ):
             self.assertIn(key, response.text)
         self.assertIn('setting-key="STREAK_EXCLUDED_CATEGORY_IDS"', response.text)
         self.assertIn('setting-key="STREAK_MILESTONE_CHANNEL_ID"', response.text)
-        self.assertIn('aria-label="STREAK_MILESTONE_MESSAGE"', response.text)
+        self.assertIn('aria-label="STREAK_MILESTONE_ASSET_ID"', response.text)
+        self.assertNotIn('aria-label="STREAK_MILESTONE_MESSAGE"', response.text)
         token = re.search(r'name="csrf" value="([^"]+)"', response.text).group(1)
         saved = self.client.post(
             "/settings/update",

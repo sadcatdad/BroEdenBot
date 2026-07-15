@@ -2,8 +2,8 @@
 {% block content %}
 <div class="page-heading embed-editor-heading">
   <div>
-    <a class="muted back-link" href="{{ url_for('embed_templates') }}">← Embed Editor</a>
-    <h1>{{ embed_template.name if embed_template and embed_template.id else "New Embed" }}</h1>
+    <a class="muted back-link" href="{{ url_for('embed_templates') }}">← Embed/Message Editor</a>
+    <h1>{{ embed_template.name if embed_template and embed_template.id else "New " ~ (asset_type|title) }}</h1>
   </div>
   <div class="action-buttons">
     <a class="button secondary" href="{{ url_for('embed_templates') }}">Discard</a>
@@ -12,28 +12,34 @@
 </div>
 {% if message %}<div class="alert success">{{ message }}</div>{% endif %}
 {% if error %}<div class="alert error">{{ error }}</div>{% endif %}
-{% if embed_template and 'Successful bump response' in embed_template.features %}<div class="alert warning"><strong>Successful bump response:</strong> this feature uses the embed card and first four template buttons below. Feature Settings replaces this template's regular message; the bot reserves the fifth button for Bump Leaderboard.</div>{% endif %}
-{% if embed_template and 'Bump reminders' in embed_template.features %}<div class="alert warning"><strong>Bump reminder override:</strong> this feature uses only the embed card design below. Feature Settings replaces this template's regular message and ignores all template buttons; the bot adds its Subscribe to Bump Reminders button automatically.</div>{% endif %}
+{% if embed_template and embed_template.features %}<div class="alert warning"><strong>Feature asset:</strong> the configured feature sends this asset's message, embed card (when applicable), and buttons after resolving supported placeholders.</div>{% endif %}
 {% if embed_template and embed_template.features %}<div class="muted embed-feature-usage">Used by: {{ embed_template.features|join(', ') }}.</div>{% endif %}
 
-<form id="embed-editor-form" method="post" action="{{ url_for('embed_save') }}" class="embed-editor-layout">
+<form id="embed-editor-form" method="post" action="{{ url_for('embed_save') }}" class="embed-editor-layout" data-asset-type="{{ asset_type }}">
   <input type="hidden" name="csrf" value="{{ csrf_token }}">
   <input type="hidden" name="template_id" value="{{ embed_template.id if embed_template and embed_template.id else '' }}">
+  <input type="hidden" name="asset_type" value="{{ asset_type }}">
   <input type="hidden" id="embed-payload-json" name="payload_json">
   <section class="embed-editor-controls">
     <div class="card editor-section">
       <div class="section-heading">
-        <div><p class="eyebrow">Saved asset</p><h2>Embed details</h2></div>
+        <div><p class="eyebrow">Saved asset · {{ asset_type|title }}</p><h2>{{ asset_type|title }} details</h2></div>
       </div>
       <div class="emoji-editor-toolbar">
         <button class="button secondary" id="open-emoji-picker" type="button">☺ Emoji Picker</button>
         <span class="muted">Insert emoji into the last focused message, title, description, footer, field, or button input.</span>
       </div>
       <label>Name<input id="embed-name" name="name" maxlength="100" required value="{{ embed_template.name if embed_template else '' }}" placeholder="Bump reminder"></label>
-      <label>Regular message <span class="muted">Optional content for features that use a template's message. Both bump response types replace this in Feature Settings.</span><textarea id="message-content" maxlength="2000" rows="3" placeholder="Write your message here!"></textarea></label>
+      <div class="placeholder-toolbar" aria-label="Feature placeholders">
+        <span class="muted">Feature placeholders:</span>
+        <button type="button" data-editor-placeholder="{user.feature}">{user.feature}</button>
+        <button type="button" data-editor-placeholder="{role.feature}">{role.feature}</button>
+      </div>
+      <p class="muted placeholder-help"><code>{user.feature}</code> mentions the user who triggered the feature. <code>{role.feature}</code> mentions every role designated by that feature. Feature-specific placeholders such as <code>{points}</code> and <code>{days}</code> are also supported where documented.</p>
+      <label>Message content <span class="muted">{{ "Required for Message assets." if asset_type == "message" else "Optional text sent above the embed card." }}</span><textarea id="message-content" maxlength="2000" rows="{{ 8 if asset_type == 'message' else 3 }}" placeholder="Write your message here!"></textarea></label>
     </div>
 
-    <div class="card editor-section embed-fields-card">
+    <div class="card editor-section embed-fields-card" {% if asset_type == "message" %}hidden{% endif %}>
       <div class="embed-color-rail" id="embed-color-rail"></div>
       <div class="form-grid two">
         <label>Author / header<input id="author-name" maxlength="256" placeholder="Header"></label>
@@ -61,7 +67,7 @@
         <div><p class="eyebrow">Components</p><h2>Buttons</h2></div>
         <span class="muted">Up to 5</span>
       </div>
-      <p class="muted">Role buttons let members add or remove a configured role. URL buttons use Discord's fixed link style. Successful bump responses use the first four and reserve the fifth slot for Bump Leaderboard. Bump reminders ignore them and provide their built-in subscription button instead.</p>
+      <p class="muted">Role buttons let members add or remove a configured role. URL buttons use Discord's fixed link style. Successful bump responses use the first four and reserve the fifth slot for Bump Leaderboard.</p>
       <div id="button-editors" class="dynamic-editor-list"></div>
       <button class="button secondary" id="add-embed-button" type="button">+ Add button</button>
     </div>
@@ -133,5 +139,5 @@
 </div>
 
 <script id="embed-initial-data" type="application/json">{{ embed_payload|tojson }}</script>
-<script src="{{ url_for('static', path='embed_editor.js') }}?v=embed-editor3" defer></script>
+<script src="{{ url_for('static', path='embed_editor.js') }}?v=embed-editor4" defer></script>
 {% endblock %}

@@ -946,16 +946,25 @@ def render_embed_editor(
     request: Request,
     *,
     template: Optional[dict[str, Any]],
+    asset_type: str = "embed",
     error: Optional[str] = None,
 ) -> HTMLResponse:
+    clean_type = str((template or {}).get("asset_type") or asset_type).casefold()
+    if clean_type not in {"embed", "message"}:
+        clean_type = "embed"
     return templates.TemplateResponse(
         request=request,
         name="embed_edit.html",
         context=template_context(
             request,
-            page_title=(f"Edit {template['name']}" if template and template.get("id") else "Create Embed"),
+            page_title=(
+                f"Edit {template['name']}"
+                if template and template.get("id")
+                else f"Create {clean_type.title()}"
+            ),
             embed_template=template,
             embed_payload=(template or {}).get("payload", default_embed_payload()),
+            asset_type=clean_type,
             discord_metadata=picker_metadata(),
             error=error or request.session.pop("embed_error", None),
             message=request.session.pop("embed_message", None),
@@ -972,14 +981,14 @@ async def embed_templates_page(
 ) -> HTMLResponse:
     if redirect := login_redirect(request):
         return redirect
-    clean_sort = sort if sort in {"name", "updated", "features"} else "updated"
+    clean_sort = sort if sort in {"name", "type", "updated", "features"} else "updated"
     clean_order = "asc" if order.casefold() == "asc" else "desc"
     return templates.TemplateResponse(
         request=request,
         name="embeds.html",
         context=template_context(
             request,
-            page_title="Embed Editor",
+            page_title="Embed/Message Editor",
             embeds=list_embed_templates(q, clean_sort, clean_order),
             query=q,
             sort=clean_sort,
@@ -991,10 +1000,13 @@ async def embed_templates_page(
 
 
 @app.get("/embeds/new", response_class=HTMLResponse, name="embed_new")
-async def embed_new(request: Request) -> HTMLResponse:
+async def embed_new(request: Request, asset_type: str = "embed") -> HTMLResponse:
     if redirect := login_redirect(request):
         return redirect
-    return render_embed_editor(request, template=None)
+    clean_type = asset_type.casefold()
+    if clean_type not in {"embed", "message"}:
+        raise HTTPException(status_code=400, detail="Choose Embed or Message.")
+    return render_embed_editor(request, template=None, asset_type=clean_type)
 
 
 @app.get("/embeds/{template_id}/edit", response_class=HTMLResponse, name="embed_edit")
@@ -1003,7 +1015,7 @@ async def embed_edit(request: Request, template_id: int) -> HTMLResponse:
         return redirect
     template = get_embed_template(template_id)
     if template is None:
-        raise HTTPException(status_code=404, detail="Embed was not found.")
+        raise HTTPException(status_code=404, detail="Asset was not found.")
     return render_embed_editor(request, template=template)
 
 
@@ -1016,6 +1028,7 @@ async def embed_save(request: Request) -> Response:
     raw_id = str(form.get("template_id", "")).strip()
     template_id = int(raw_id) if raw_id.isdigit() else None
     name = str(form.get("name", ""))
+    asset_type = str(form.get("asset_type", "embed")).strip().casefold()
     payload_json = str(form.get("payload_json", ""))
     try:
         saved_id = save_embed_template(
@@ -1023,6 +1036,7 @@ async def embed_save(request: Request) -> Response:
             payload_json=payload_json,
             updated_by=dashboard_user_label(request),
             template_id=template_id,
+            asset_type=asset_type,
         )
     except (OSError, sqlite3.Error, ValueError) as exc:
         try:
@@ -1032,11 +1046,17 @@ async def embed_save(request: Request) -> Response:
         draft = {
             "id": template_id,
             "name": name,
+            "asset_type": asset_type,
             "payload": draft_payload,
             "features": [],
         }
-        return render_embed_editor(request, template=draft, error=str(exc))
-    request.session["embed_message"] = "Embed saved."
+        return render_embed_editor(
+            request,
+            template=draft,
+            asset_type=asset_type,
+            error=str(exc),
+        )
+    request.session["embed_message"] = f"{asset_type.title()} saved."
     return RedirectResponse(
         url=request.url_for("embed_edit", template_id=saved_id),
         status_code=status.HTTP_303_SEE_OTHER,
@@ -1132,7 +1152,7 @@ async def settings_features(request: Request) -> HTMLResponse:
         page_title="Feature Settings",
         visible_sections=("bumps", "reminders", "streaks", "stats_features"),
         discord_metadata=picker_metadata(),
-        embed_options=list_embed_templates(sort="name", order="asc"),
+        asset_options=list_embed_templates(sort="name", order="asc"),
     )
 
 
@@ -1820,17 +1840,20 @@ async def knowledge_reindex(request: Request, doc_key: str) -> RedirectResponse:
         return redirect
     await require_action_csrf(request)
     document = knowledge_document_or_error(doc_key)
+    requested_by = str(request.session.get("dashboard_user", "dashboard"))
     try:
         action_id = queue_knowledge_reindex(
             doc_key,
-            str(request.session.get("dashboard_user", "dashboard")),
+            requested_by,
         )
+        metadata_action_id = queue_metadata_refresh(requested_by)
     except ValueError as exc:
         request.session["knowledge_error"] = str(exc)
     else:
         request.session["knowledge_message"] = (
             f"Reindex queued as dashboard action #{action_id} for "
-            f"{document['display_name']}."
+            f"{document['display_name']}. Discord emoji metadata refresh "
+            f"queued as action #{metadata_action_id}."
         )
     return knowledge_redirect(request, doc_key)
 
@@ -1840,12 +1863,15 @@ async def knowledge_reindex_all(request: Request) -> RedirectResponse:
     if redirect := login_redirect(request):
         return redirect
     await require_action_csrf(request)
+    requested_by = str(request.session.get("dashboard_user", "dashboard"))
     action_id = queue_knowledge_reindex(
         None,
-        str(request.session.get("dashboard_user", "dashboard")),
+        requested_by,
     )
+    metadata_action_id = queue_metadata_refresh(requested_by)
     request.session["knowledge_message"] = (
-        f"Full knowledge reindex queued as dashboard action #{action_id}."
+        f"Full knowledge reindex queued as dashboard action #{action_id}. "
+        f"Discord emoji metadata refresh queued as action #{metadata_action_id}."
     )
     return knowledge_redirect(request)
 

@@ -198,16 +198,11 @@ class DisboardBumpTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(await cursor.fetchone(), ("scheduled", "700"))
         await cursor.close()
 
-    async def test_success_response_uses_setting_message_and_four_template_buttons(self):
+    async def test_success_response_uses_selected_asset_and_four_template_buttons(self):
         message = self.message(message_id=107)
 
-        def success_settings(key, default=""):
-            if key == "BUMP_SUCCESS_MESSAGE":
-                return "Great bump, {member}! You earned {points} points.\n{reward_status}"
-            return self.settings(key, default)
-
         payload = {
-            "content": "Ignored template response",
+            "content": "Great bump, {user.feature}! You earned {points} points.\n{reward_status}\nRole: {role.feature}",
             "embed": {
                 "title": "Bump successful",
                 "description": "Your reward has been recorded.",
@@ -225,7 +220,7 @@ class DisboardBumpTests(unittest.IsolatedAsyncioTestCase):
             ],
         }
         with (
-            patch("cogs.disboard_bumps.get_setting", side_effect=success_settings),
+            patch("cogs.disboard_bumps.get_setting", side_effect=self.settings),
             patch("cogs.disboard_bumps.get_int_setting", return_value=1000),
             patch.object(
                 self.cog,
@@ -239,9 +234,8 @@ class DisboardBumpTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(
             prompt_args.args[0],
             "Great bump, <@42>! You earned 1,000 points.\n"
-            "- Your configured bump reward role was awarded",
+            "- Your configured bump reward role was awarded\nRole: <@&500>",
         )
-        self.assertNotIn("Ignored template response", prompt_args.args[0])
         self.assertEqual(prompt_args.kwargs["embed"].title, "Bump successful")
         self.assertEqual(
             [item.label for item in prompt_args.kwargs["view"].children],
@@ -445,26 +439,18 @@ class DisboardBumpTests(unittest.IsolatedAsyncioTestCase):
         send_args = self.channel.send.await_args
         self.assertEqual(send_args.args[0], "<@&600>")
         self.assertIn("BUMP TIME", send_args.kwargs["embed"].description)
-        self.assertEqual(
-            [item.label for item in send_args.kwargs["view"].children],
-            ["Subscribe to Bump Reminders"],
-        )
+        self.assertIsNone(send_args.kwargs["view"])
         cursor = await self.database.execute(
             "SELECT status, reminder_message_id FROM disboard_bump_reminders WHERE response_message_id = '100'"
         )
         self.assertEqual(await cursor.fetchone(), ("sent", "800"))
         await cursor.close()
 
-    async def test_due_reminder_uses_saved_embed_and_configured_message(self):
+    async def test_due_reminder_uses_selected_asset_content_embed_and_buttons(self):
         message = self.message(message_id=106)
 
-        def reminder_settings(key, default=""):
-            if key == "BUMP_REMINDER_MESSAGE":
-                return "Reminder for {member}: {role}"
-            return self.settings(key, default)
-
         payload = {
-            "content": "Ignored template content",
+            "content": "Reminder for {user.feature}: {role.feature}",
             "embed": {
                 "title": "Custom bump reminder",
                 "description": "Use `/bump` now.",
@@ -481,7 +467,7 @@ class DisboardBumpTests(unittest.IsolatedAsyncioTestCase):
             ],
         }
         with (
-            patch("cogs.disboard_bumps.get_setting", side_effect=reminder_settings),
+            patch("cogs.disboard_bumps.get_setting", side_effect=self.settings),
             patch("cogs.disboard_bumps.get_int_setting", return_value=1000),
             patch.object(
                 self.cog,
@@ -502,9 +488,9 @@ class DisboardBumpTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(send_args.kwargs["embed"].title, "Custom bump reminder")
         self.assertEqual(
             [button.label for button in send_args.kwargs["view"].children],
-            ["Subscribe to Bump Reminders"],
+            ["Template link"],
         )
-        self.assertEqual(send_args.kwargs["view"].children[0].custom_id, "embedrole|add|600")
+        self.assertEqual(send_args.kwargs["view"].children[0].url, "https://example.com/")
 
     async def test_bump_message_never_falls_back_to_template_content(self):
         with patch("cogs.disboard_bumps.get_setting", return_value=""):

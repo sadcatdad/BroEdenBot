@@ -102,6 +102,13 @@
             <p class="muted">Custom Discord emoji markup can also be pasted directly into the message.</p>
           </div>
         </div>
+        {% elif setting.picker == "asset" %}
+        <select name="value" aria-label="{{ setting.key }}">
+          <option value="">Use the built-in fallback</option>
+          {% for asset in asset_options or [] %}
+          <option value="{{ asset.id }}" {{ "selected" if setting.value == asset.id|string else "" }}>[{{ asset.asset_type|title }}] {{ asset.name }}</option>
+          {% endfor %}
+        </select>
         {% elif setting.picker == "embed" %}
         <select name="value" aria-label="{{ setting.key }}">
           <option value="">{{ "Use the built-in successful bump response" if setting.key == "BUMP_SUCCESS_EMBED_ID" else "Use the built-in bump reminder embed" }}</option>

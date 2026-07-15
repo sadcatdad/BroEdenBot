@@ -122,7 +122,7 @@ class DashboardNavigationMetadataTests(unittest.TestCase):
             "Knowledge",
             "Analytics",
             "Streaks",
-            "Embed Editor",
+            "Embed/Message Editor",
             "Bank",
             "Settings",
         ):
@@ -157,9 +157,9 @@ class DashboardNavigationMetadataTests(unittest.TestCase):
         self.assertIn("Search emoji", editor.text)
         self.assertIn("Loading custom server emojis", editor.text)
         self.assertIn("&lt;a:name:id&gt;", editor.text)
-        self.assertIn("embed-editor3", editor.text)
-        self.assertIn("Both bump response types replace this in Feature Settings", editor.text)
-        self.assertNotIn("Supports {role}", editor.text)
+        self.assertIn("embed-editor4", editor.text)
+        self.assertIn("{user.feature}", editor.text)
+        self.assertIn("{role.feature}", editor.text)
         self.assertIn("+ Add button", editor.text)
         self.assertIn("role-single-select", editor.text)
         token = re.search(r'name="csrf" value="([^"]+)"', editor.text).group(1)
@@ -178,6 +178,7 @@ class DashboardNavigationMetadataTests(unittest.TestCase):
             data={
                 "csrf": token,
                 "template_id": "",
+                "asset_type": "embed",
                 "name": "Bump Reminder",
                 "payload_json": json.dumps(payload),
             },
@@ -189,6 +190,8 @@ class DashboardNavigationMetadataTests(unittest.TestCase):
         listing = self.client.get("/embeds?q=Bump&sort=name&order=asc")
         self.assertEqual(listing.status_code, 200)
         self.assertIn("Bump Reminder", listing.text)
+        self.assertIn("Type", listing.text)
+        self.assertIn("Embed", listing.text)
         self.assertIn("Date Modified", listing.text)
         self.assertIn("Feature(s)", listing.text)
 
@@ -196,16 +199,46 @@ class DashboardNavigationMetadataTests(unittest.TestCase):
         settings = self.client.get("/settings/features")
         self.assertIn(f'<option value="{template_id}"', settings.text)
         self.assertIn("Bump Reminder", settings.text)
-        self.assertIn("Successful Bump Response Embed", settings.text)
-        self.assertIn("Successful Bump Response Message", settings.text)
-        self.assertIn("Bump Reminder Embed", settings.text)
-        self.assertIn("Use the built-in successful bump response", settings.text)
-        self.assertIn("Use the built-in bump reminder embed", settings.text)
-        self.assertIn('aria-label="BUMP_SUCCESS_MESSAGE"', settings.text)
-        self.assertIn('data-setting-placeholder="{member}"', settings.text)
-        self.assertIn('data-setting-placeholder="{points}"', settings.text)
-        self.assertIn("data-setting-emoji-toggle", settings.text)
-        self.assertIn("settings_message_editor.js", settings.text)
+        self.assertIn("Successful Bump Response", settings.text)
+        self.assertIn("Bump Reminder Message / Embed", settings.text)
+        self.assertIn("Streak Milestone Message / Embed", settings.text)
+        self.assertIn('aria-label="BUMP_SUCCESS_ASSET_ID"', settings.text)
+        self.assertIn('aria-label="BUMP_REMINDER_ASSET_ID"', settings.text)
+        self.assertIn('aria-label="STREAK_MILESTONE_ASSET_ID"', settings.text)
+        self.assertNotIn('aria-label="BUMP_SUCCESS_MESSAGE"', settings.text)
+
+        message_editor = self.client.get("/embeds/new?asset_type=message")
+        self.assertEqual(message_editor.status_code, 200)
+        self.assertIn("New Message", message_editor.text)
+        self.assertIn('data-asset-type="message"', message_editor.text)
+        self.assertIn("Required for Message assets", message_editor.text)
+
+    def test_message_asset_can_be_created_and_listed_by_type(self):
+        self.login()
+        editor = self.client.get("/embeds/new?asset_type=message")
+        token = re.search(r'name="csrf" value="([^"]+)"', editor.text).group(1)
+        payload = {
+            "content": "Hello {user.feature}! Your streak is {days} days.",
+            "embed": {},
+            "buttons": [],
+        }
+        saved = self.client.post(
+            "/embeds/save",
+            data={
+                "csrf": token,
+                "template_id": "",
+                "asset_type": "message",
+                "name": "Streak Message",
+                "payload_json": json.dumps(payload),
+            },
+            follow_redirects=False,
+        )
+        self.assertEqual(saved.status_code, 303)
+        listing = self.client.get("/embeds?sort=type&order=asc")
+        self.assertIn("Embed/Message Editor", listing.text)
+        self.assertIn("+ Create", listing.text)
+        self.assertIn("Streak Message", listing.text)
+        self.assertIn("Message", listing.text)
 
     def test_moved_pages_have_old_url_redirects(self):
         self.login()
@@ -341,7 +374,8 @@ class DashboardNavigationMetadataTests(unittest.TestCase):
         self.assertIn(".settings-menu-item", styles)
         self.assertIn("text-decoration: none", styles)
         base_template = (root / "dashboard/templates/base.html").read_text()
-        self.assertIn("styles.css') }}?v=embed-editor3", base_template)
+        self.assertIn("styles.css') }}?v=embed-editor5", base_template)
+        self.assertIn(".embed-fields-card[hidden]", styles)
         self.assertIn("discord_pickers.js') }}?v=picker-single-values2", base_template)
 
         editor_script = (root / "dashboard/static/embed_editor.js").read_text()
@@ -353,6 +387,8 @@ class DashboardNavigationMetadataTests(unittest.TestCase):
         self.assertIn('fetch("/api/discord/emojis"', editor_script)
         self.assertIn('emoji.animated ? "a" : ""', editor_script)
         self.assertIn("serverEmojiById", editor_script)
+        self.assertIn("insertPlaceholder", editor_script)
+        self.assertIn('form.dataset.assetType === "message"', editor_script)
         self.assertNotIn('inserted = `<:emoji:${inserted}>`', editor_script)
 
         settings_message_script = (

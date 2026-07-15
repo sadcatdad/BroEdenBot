@@ -8,6 +8,7 @@ import io
 import logging
 import math
 import re
+import sqlite3
 from datetime import date, datetime, timedelta, timezone
 from functools import lru_cache
 from pathlib import Path
@@ -30,6 +31,12 @@ from utils.settings import (
     get_csv_ids_setting,
     get_int_setting,
     get_setting,
+)
+from utils.embed_templates import (
+    discord_embed_from_payload,
+    discord_view_from_payload,
+    get_embed_template,
+    render_feature_payload,
 )
 from utils.streaks import STREAK_SCHEMA, compute_streaks, is_streak_milestone
 
@@ -537,20 +544,40 @@ class Streaks(commands.Cog):
 
     @staticmethod
     def _milestone_message(member: discord.Member, days: int) -> str:
-        configured = str(
-            get_setting(
-                "STREAK_MILESTONE_MESSAGE",
-                STREAK_MILESTONE_MESSAGE_DEFAULT,
-            )
-            or ""
-        ).strip()
-        if not configured:
-            configured = STREAK_MILESTONE_MESSAGE_DEFAULT
         return (
-            configured.replace("{member}", member.mention)
+            STREAK_MILESTONE_MESSAGE_DEFAULT.replace("{member}", member.mention)
             .replace("{days}", str(days))
             .strip()
         )
+
+    async def _milestone_asset_payload(
+        self,
+        member: discord.Member,
+        days: int,
+    ) -> Optional[dict]:
+        template_id = str(
+            get_setting("STREAK_MILESTONE_ASSET_ID", "") or ""
+        ).strip()
+        if not template_id.isdigit():
+            return None
+        try:
+            template = await asyncio.to_thread(get_embed_template, int(template_id))
+        except (OSError, sqlite3.Error):
+            logger.exception("Could not load configured streak milestone asset id=%s", template_id)
+            return None
+        if template is None:
+            logger.warning("Configured streak milestone asset was not found id=%s", template_id)
+            return None
+        try:
+            return render_feature_payload(
+                template["payload"],
+                user_mention=member.mention,
+                role_mentions=[],
+                placeholders={"member": member.mention, "days": str(days)},
+            )
+        except ValueError:
+            logger.warning("Configured streak milestone asset payload is invalid id=%s", template_id)
+            return None
 
     async def _send_milestone_notification(
         self,
@@ -590,9 +617,19 @@ class Streaks(commands.Cog):
                 channel_id,
             )
             return
+        payload = await self._milestone_asset_payload(member, milestone_days)
+        content = self._milestone_message(member, milestone_days)
+        embed = None
+        view = None
+        if payload:
+            content = payload["content"]
+            embed = discord_embed_from_payload(payload)
+            view = discord_view_from_payload(payload)
         try:
             await send(
-                self._milestone_message(member, milestone_days),
+                content or None,
+                embed=embed,
+                view=view,
                 allowed_mentions=discord.AllowedMentions(
                     users=[member],
                     roles=False,
@@ -614,14 +651,20 @@ class Streaks(commands.Cog):
         milestone_days: int,
     ) -> discord.Embed:
         current, longest = await self._recompute(guild_id, member.id)
-        embed = discord.Embed(
-            title="🔥 STREAK MILESTONE!",
-            description=self._milestone_message(member, milestone_days),
-            color=COLOR,
-        )
-        embed.add_field(name="Current streak", value=f"**{current} days**")
-        embed.add_field(name="Longest streak", value=f"**{longest} days**")
-        embed.set_footer(text=STREAK_FOOTER)
+        payload = await self._milestone_asset_payload(member, milestone_days)
+        embed = discord_embed_from_payload(payload) if payload else None
+        if embed is None:
+            description = payload["content"] if payload else self._milestone_message(member, milestone_days)
+            embed = discord.Embed(
+                title="🔥 STREAK MILESTONE!",
+                description=description,
+                color=COLOR,
+            )
+        if len(embed.fields) <= 23:
+            embed.add_field(name="Current streak", value=f"**{current} days**")
+            embed.add_field(name="Longest streak", value=f"**{longest} days**")
+        if not embed.footer.text:
+            embed.set_footer(text=STREAK_FOOTER)
         return embed
 
     @commands.command(name="streak", description="Show your activity streak")

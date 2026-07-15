@@ -295,9 +295,18 @@ class KnowledgeManagerRouteTests(KnowledgeManagerTestCase):
             WHERE action_type = 'reindex_knowledge'
             """
         ).fetchone()
+        metadata_row = connection.execute(
+            """
+            SELECT action_type, payload_json
+            FROM dashboard_actions
+            WHERE action_type = 'refresh_discord_metadata'
+            """
+        ).fetchone()
         connection.close()
         self.assertEqual(row[0], "reindex_knowledge")
         self.assertEqual(json.loads(row[1]), {"scope": "all"})
+        self.assertEqual(metadata_row[0], "refresh_discord_metadata")
+        self.assertEqual(json.loads(metadata_row[1]), {})
 
     def test_existing_dashboard_pages_and_ai_cogs_still_import(self):
         self.login()
