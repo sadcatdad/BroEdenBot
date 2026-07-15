@@ -74,8 +74,16 @@ maintenance.
   staff-only search, summaries, user/channel reviews, and timelines.
 - `cogs/staff_notes.py` — Manual private staff records.
 - `cogs/stats.py` — Live/imported activity reports and roster graphics.
-- `cogs/reminder.py` — Staff reminder modals, natural-language/personal
-  timezone parsing, public subscribe cards, and persistent scheduled DMs.
+- `cogs/reminder.py` — Unified `/remind` Discord flows, natural-language time
+  previews, persistent event/subscription controls, and delivery worker.
+- `utils/reminder_service.py` — Canonical reminder schema, legacy migration,
+  recurrence, subscription, occurrence, delivery lease/retry, and audit service.
+- `dashboard/reminders_manager.py` — Guild-scoped reminder read models and
+  queued dashboard actions used by Operations → Reminders.
+- `scripts/migrate_reminders.py` — Explicit idempotent migration and validation
+  command; startup runs the same migration service.
+- `docs/reminders.md` — Reminder UX, operations, manual test, deployment,
+  rollback, and troubleshooting runbook.
 - `cogs/vc_stats.py` — Voice-session tracking, muted/deafened interval
   exclusion for VC XP, active eligible-time pulse cooldowns, XP-only role
   exclusions, and trigger-role adds for external MEE6 automation.

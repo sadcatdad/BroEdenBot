@@ -1,0 +1,54 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="page-heading">
+  <div><p class="eyebrow">Operations</p><h1>Reminders</h1></div>
+  <a class="button secondary" href="{{ url_for('operations_page') }}">Back to operations</a>
+</div>
+{% if message %}<div class="alert success">{{ message }}</div>{% endif %}
+{% if error %}<div class="alert error">{{ error }}</div>{% endif %}
+
+<section class="card-grid">
+  <article class="card"><p class="label">Upcoming</p><p class="metric">{{ overview.upcoming }}</p></article>
+  <article class="card"><p class="label">Active subscriptions</p><p class="metric">{{ overview.active_subscriptions }}</p></article>
+  <article class="card"><p class="label">Completed</p><p class="metric">{{ overview.completed }}</p></article>
+  <article class="card"><p class="label">Cancelled</p><p class="metric">{{ overview.cancelled }}</p></article>
+  <article class="card"><p class="label">Failed reminders</p><p class="metric warning-text">{{ overview.failed }}</p></article>
+  <article class="card"><p class="label">Failed deliveries</p><p class="metric warning-text">{{ overview.failed_deliveries }}</p></article>
+</section>
+
+<section class="card">
+  <p class="eyebrow">Guild-scoped filters</p><h2>Find reminders</h2>
+  <form method="get" class="form-grid">
+    <label>Guild ID<input name="guild_id" value="{{ filters.guild_id }}" inputmode="numeric"></label>
+    <label>Type<select name="reminder_type"><option value="">All</option><option value="personal" {{ 'selected' if filters.reminder_type == 'personal' else '' }}>Personal</option><option value="event" {{ 'selected' if filters.reminder_type == 'event' else '' }}>Event</option></select></label>
+    <label>Status<select name="status"><option value="">All</option>{% for value in ['upcoming','completed','cancelled','failed','deleted'] %}<option value="{{ value }}" {{ 'selected' if filters.status == value else '' }}>{{ value|title }}</option>{% endfor %}</select></label>
+    <label>Creator ID<input name="creator" value="{{ filters.creator }}" inputmode="numeric"></label>
+    <label>Channel ID<input name="channel" value="{{ filters.channel }}" inputmode="numeric"></label>
+    <label>Recurrence<select name="recurrence"><option value="">All</option><option value="once" {{ 'selected' if filters.recurrence == 'once' else '' }}>One-time</option><option value="recurring" {{ 'selected' if filters.recurrence == 'recurring' else '' }}>Recurring</option></select></label>
+    <label>From<input type="datetime-local" name="date_from" value="{{ filters.date_from }}"></label>
+    <label>To<input type="datetime-local" name="date_to" value="{{ filters.date_to }}"></label>
+    <div class="action-buttons"><button class="button" type="submit">Apply filters</button><a class="button secondary" href="{{ url_for('reminders_page') }}">Clear</a></div>
+  </form>
+</section>
+
+<section class="card">
+  <p class="eyebrow">Canonical reminder records</p><h2>Reminder list</h2>
+  <div class="table-wrap"><table>
+    <thead><tr><th>Title</th><th>Type</th><th>Creator</th><th>Scheduled UTC</th><th>Destination</th><th>Subscribers</th><th>Delivery</th><th>Status</th></tr></thead>
+    <tbody>
+    {% for item in reminders %}
+      <tr>
+        <td><a href="{{ url_for('reminders_detail', reminder_id=item.id) }}">{{ item.title }}</a></td>
+        <td>{{ item.reminder_type|title }}{% if item.recurrence_type != 'none' %} · {{ item.recurrence_type }}{% endif %}</td>
+        <td><code>{{ item.creator_user_id }}</code></td>
+        <td>{{ item.scheduled_at_utc }}</td>
+        <td><code>{{ item.destination_channel_id or 'DM' }}</code></td>
+        <td>{{ item.subscriber_count }}</td>
+        <td>{{ item.sent_deliveries }} sent · {{ item.failed_deliveries }} failed</td>
+        <td>{{ item.status|title }}</td>
+      </tr>
+    {% else %}<tr><td colspan="8" class="muted">No reminders match these filters.</td></tr>{% endfor %}
+    </tbody>
+  </table></div>
+</section>
+{% endblock %}

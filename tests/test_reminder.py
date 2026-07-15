@@ -1,3 +1,4 @@
+import asyncio
 import os
 import unittest
 from datetime import datetime, timedelta, timezone
@@ -14,8 +15,18 @@ from cogs.reminder import (
     ReminderCog,
     parse_id_set,
     parse_local_datetime,
+    parse_recurrence,
     timestamp_codes_embed,
 )
+from utils.reminder_service import (
+    ReminderService,
+    parse_offsets,
+    recurrence_dates,
+    timing_summary,
+)
+
+
+FUTURE = datetime(2035, 7, 14, 20, 0, tzinfo=timezone.utc)
 
 
 class DummyBot:
@@ -24,6 +35,7 @@ class DummyBot:
         self.user = SimpleNamespace(id=999)
         self.channels = {}
         self.users = {}
+        self.views = []
 
     def get_channel(self, channel_id):
         return self.channels.get(channel_id)
@@ -37,6 +49,9 @@ class DummyBot:
     async def fetch_user(self, user_id):
         return self.users.get(user_id)
 
+    def add_view(self, view, *, message_id=None):
+        self.views.append((view, message_id))
+
 
 class FakeRole:
     def __init__(self, role_id):
@@ -44,22 +59,61 @@ class FakeRole:
 
 
 class FakeMember:
-    def __init__(self, user_id, *, roles=(), administrator=False):
+    def __init__(self, user_id, *, roles=(), administrator=False, dm_error=None):
         self.id = user_id
         self.roles = list(roles)
         self.guild_permissions = SimpleNamespace(administrator=administrator)
         self.dm_messages = []
+        self.dm_error = dm_error
 
     async def send(self, **kwargs):
+        if self.dm_error:
+            raise self.dm_error
         self.dm_messages.append(kwargs)
         return SimpleNamespace(id=900 + len(self.dm_messages))
 
 
-class FakeInteraction:
-    def __init__(self, user):
-        self.guild = object()
+class FakePermissions:
+    view_channel = True
+    send_messages = True
+    send_messages_in_threads = True
+    embed_links = True
+
+
+class FakeChannel:
+    def __init__(self, channel_id=456, *, name="main-stage"):
+        self.id = channel_id
+        self.name = name
+        self.guild = SimpleNamespace(id=123, me=object())
         self.guild_id = 123
-        self.user = user
+        self.type = reminder.discord.ChannelType.text
+        self.sent_messages = []
+        self.messages = {}
+
+    @property
+    def mention(self):
+        return f"<#{self.id}>"
+
+    def permissions_for(self, _member):
+        return FakePermissions()
+
+    async def send(self, **kwargs):
+        self.sent_messages.append(kwargs)
+        message = FakeMessage(700 + len(self.sent_messages))
+        self.messages[message.id] = message
+        return message
+
+    async def fetch_message(self, message_id):
+        return self.messages.get(message_id)
+
+
+class FakeMessage:
+    def __init__(self, message_id):
+        self.id = message_id
+        self.edits = []
+
+    async def edit(self, **kwargs):
+        self.edits.append(kwargs)
 
 
 class FakeResponse:
@@ -74,8 +128,6 @@ class FakeResponse:
 
     async def defer(self, *, ephemeral=False, thinking=False):
         self.deferred = True
-        self.defer_ephemeral = ephemeral
-        self.defer_thinking = thinking
 
     async def send_message(self, *args, **kwargs):
         self.sent_messages.append((args, kwargs))
@@ -95,173 +147,403 @@ class FakeFollowup:
         self.sent_messages.append((args, kwargs))
 
 
-class FakeCommandInteraction(FakeInteraction):
-    def __init__(self, user):
-        super().__init__(user)
+class FakeInteraction:
+    def __init__(self, user, channel=None):
         self.guild = SimpleNamespace(id=123)
+        self.guild_id = 123
+        self.user = user
+        self.channel = channel or FakeChannel()
         self.response = FakeResponse()
         self.followup = FakeFollowup()
-        self.channel = None
-
-
-class FakeContext:
-    def __init__(self, author):
-        self.guild = SimpleNamespace(id=123)
-        self.author = author
-        self.sent_messages = []
-
-    async def send(self, *args, **kwargs):
-        self.sent_messages.append((args, kwargs))
-
-
-class FakeChannel:
-    id = 456
-    name = "main-stage"
-    type = reminder.discord.ChannelType.text
-
-    def __init__(self):
-        self.sent_messages = []
-        self.guild = SimpleNamespace(
-            id=123,
-            me=object(),
-            get_member=lambda _user_id: object(),
-        )
-
-    def permissions_for(self, _member):
-        return SimpleNamespace(
-            view_channel=True,
-            send_messages=True,
-            send_messages_in_threads=True,
-            embed_links=True,
-        )
-
-    async def send(self, **kwargs):
-        self.sent_messages.append(kwargs)
-        return SimpleNamespace(id=700 + len(self.sent_messages))
+        self.type = reminder.discord.InteractionType.application_command
+        self.data = {}
 
 
 class ReminderParsingTests(unittest.TestCase):
-    def test_parse_local_datetime_accepts_required_formats(self):
-        timezone_value = ZoneInfo("America/Chicago")
+    def test_parse_supported_phrases_and_formats(self):
+        tz = ZoneInfo("America/Chicago")
+        now = datetime(2035, 7, 14, 10, 0, tzinfo=tz)
+        self.assertEqual(parse_local_datetime("in 2 hours", tz, now=now), datetime(2035, 7, 14, 17, 0, tzinfo=timezone.utc))
+        self.assertEqual(parse_local_datetime("tomorrow 9am", tz, now=now), datetime(2035, 7, 15, 14, 0, tzinfo=timezone.utc))
+        self.assertEqual(parse_local_datetime("next Friday at 8pm", tz, now=now), datetime(2035, 7, 28, 1, 0, tzinfo=timezone.utc))
+        self.assertEqual(parse_local_datetime("2035-07-20 7:30 PM", tz), datetime(2035, 7, 21, 0, 30, tzinfo=timezone.utc))
 
-        iso_style = parse_local_datetime("2026-07-01 7:30 PM", timezone_value)
-        slash_style = parse_local_datetime("07/01/2026 7:30 PM", timezone_value)
-        compact_meridiem = parse_local_datetime("2026-07-01 7:30PM", timezone_value)
-        lowercase_meridiem = parse_local_datetime("2026-07-01 7:30 pm", timezone_value)
-
-        self.assertEqual(iso_style, slash_style)
-        self.assertEqual(iso_style, compact_meridiem)
-        self.assertEqual(iso_style, lowercase_meridiem)
+    def test_date_only_uses_nine_am(self):
         self.assertEqual(
-            iso_style.astimezone(timezone.utc).isoformat(),
-            "2026-07-02T00:30:00+00:00",
+            parse_local_datetime("2035-07-20", ZoneInfo("America/Chicago")),
+            datetime(2035, 7, 20, 14, 0, tzinfo=timezone.utc),
         )
 
-    def test_parse_local_datetime_accepts_date_only_at_default_time(self):
-        timezone_value = ZoneInfo("America/Chicago")
+    def test_invalid_date_has_useful_error(self):
+        with self.assertRaisesRegex(ValueError, "could not understand"):
+            parse_local_datetime("the thirteenth of never", ZoneInfo("UTC"))
 
-        parsed = parse_local_datetime("2026-07-01", timezone_value)
+    def test_offsets_are_deduplicated_limited_and_labeled(self):
+        self.assertEqual(parse_offsets("1d, 15m, start, 15m"), (1440, 15, 0))
+        self.assertIn("When the event begins", timing_summary((15, 0)))
+        with self.assertRaisesRegex(ValueError, "30 days"):
+            parse_offsets("31d")
 
-        self.assertEqual(
-            parsed.astimezone(timezone.utc).isoformat(),
-            "2026-07-01T14:00:00+00:00",
+    def test_recurrence_preserves_local_wall_clock_across_dst(self):
+        first = datetime(2035, 3, 4, 9, 0, tzinfo=ZoneInfo("America/Chicago"))
+        values = recurrence_dates(first, "weekly", count=3)
+        local = [value.astimezone(ZoneInfo("America/Chicago")) for value in values]
+        self.assertEqual([value.hour for value in local], [9, 9, 9])
+
+    def test_monthly_recurrence_clamps_short_months(self):
+        values = recurrence_dates(datetime(2035, 1, 31, 9, tzinfo=timezone.utc), "monthly", count=3)
+        self.assertEqual([value.day for value in values], [31, 28, 31])
+
+    def test_recurrence_end_count_and_date_syntax(self):
+        kind, interval, count, end_at = parse_recurrence(
+            "weekly for 10",
+            None,
+            ZoneInfo("UTC"),
         )
-
-    def test_parse_local_datetime_accepts_relative_and_conversational_phrases(self):
-        timezone_value = ZoneInfo("America/Los_Angeles")
-        now = datetime(2026, 7, 13, 15, 0, tzinfo=timezone.utc)  # 8:00 AM PDT
-
-        in_two_hours = parse_local_datetime(
-            "in 2 hours",
-            timezone_value,
-            now=now,
+        self.assertEqual((kind, interval, count, end_at), ("weekly", 1, 10, None))
+        kind, interval, count, end_at = parse_recurrence(
+            "every 3 days until 2035-08-01",
+            None,
+            ZoneInfo("UTC"),
         )
-        tomorrow_morning = parse_local_datetime(
-            "tomorrow at 9am",
-            timezone_value,
-            now=now,
-        )
-        combined = parse_local_datetime(
-            "in 1 day and 30 minutes",
-            timezone_value,
-            now=now,
-        )
+        self.assertEqual((kind, interval, count), ("interval", 3, 60))
+        self.assertEqual(end_at, datetime(2035, 8, 1, 9, tzinfo=timezone.utc))
 
-        self.assertEqual(in_two_hours.isoformat(), "2026-07-13T17:00:00+00:00")
-        self.assertEqual(tomorrow_morning.isoformat(), "2026-07-14T16:00:00+00:00")
-        self.assertEqual(combined.isoformat(), "2026-07-14T15:30:00+00:00")
-
-    def test_parse_local_datetime_does_not_require_at_before_clock_time(self):
-        timezone_value = ZoneInfo("America/Los_Angeles")
-        now = datetime(2026, 7, 13, 15, 0, tzinfo=timezone.utc)  # Monday, 8 AM
-
-        today = parse_local_datetime("today 9am", timezone_value, now=now)
-        tomorrow = parse_local_datetime("tomorrow 6:30pm", timezone_value, now=now)
-        friday = parse_local_datetime("Friday 7pm", timezone_value, now=now)
-
-        self.assertEqual(today.isoformat(), "2026-07-13T16:00:00+00:00")
-        self.assertEqual(tomorrow.isoformat(), "2026-07-15T01:30:00+00:00")
-        self.assertEqual(friday.isoformat(), "2026-07-18T02:00:00+00:00")
-
-    def test_parse_local_datetime_accepts_weekday_phrase(self):
-        timezone_value = ZoneInfo("America/Los_Angeles")
-        now = datetime(2026, 7, 13, 15, 0, tzinfo=timezone.utc)  # Monday
-
-        parsed = parse_local_datetime(
-            "Friday at 7:30pm",
-            timezone_value,
-            now=now,
-        )
-
-        self.assertEqual(parsed.isoformat(), "2026-07-18T02:30:00+00:00")
-
-    def test_parse_id_set_accepts_csv_and_dashboard_json(self):
-        self.assertEqual(
-            parse_id_set('123, 456 ["789"] nope'),
-            {123, 456, 789},
-        )
-
-    def test_timestamp_codes_embed_identifies_parser_timezone(self):
-        value = datetime(2026, 7, 14, 16, 0, tzinfo=timezone.utc)
-
-        embed = timestamp_codes_embed(value, "America/New_York")
-
-        self.assertEqual(embed.title, "TIME CODES")
-        self.assertIn("`America/New_York`", embed.description)
-        self.assertIn("`<t:1784044800:F>`", embed.description)
-        self.assertIn("<t:1784044800:R>", embed.description)
+    def test_parse_ids_and_timestamp_embed(self):
+        self.assertEqual(parse_id_set('123, ["456"]'), {123, 456})
+        embed = timestamp_codes_embed(datetime(2035, 7, 14, 16, tzinfo=timezone.utc), "UTC")
+        self.assertIn("`UTC`", embed.description)
+        self.assertIn(":R>", embed.description)
 
 
-class ReminderPermissionTests(unittest.TestCase):
-    def test_regular_users_cannot_target_themselves(self):
-        cog = ReminderCog(DummyBot(None))
-        user = FakeMember(10)
-        interaction = FakeInteraction(user)
-
-        with patch.object(reminder.discord, "Member", FakeMember):
-            with patch("cogs.reminder.get_csv_ids_setting", return_value=[]):
-                with patch("cogs.reminder.get_setting", return_value=""):
-                    self.assertFalse(cog.can_target_user(interaction, user))
-
-    def test_staff_role_can_target_self_or_other_members(self):
-        cog = ReminderCog(DummyBot(None))
-        user = FakeMember(10, roles=[FakeRole(55)])
-        target = FakeMember(20)
-        interaction = FakeInteraction(user)
-
-        with patch.object(reminder.discord, "Member", FakeMember):
-            with patch(
-                "cogs.reminder.get_csv_ids_setting",
-                side_effect=lambda key: [55] if key == "REMINDER_ALLOWED_ROLE_IDS" else [],
-            ):
-                with patch("cogs.reminder.get_setting", return_value=""):
-                    self.assertTrue(cog.can_target_user(interaction, user))
-                    self.assertTrue(cog.can_target_user(interaction, target))
-
-
-class ReminderDatabaseTests(unittest.IsolatedAsyncioTestCase):
+class ReminderServiceTests(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self):
         self.database = await aiosqlite.connect(":memory:")
+        self.database.row_factory = aiosqlite.Row
+        self.service = ReminderService(self.database)
+        await self.service.initialize()
+
+    async def asyncTearDown(self):
+        await self.database.close()
+
+    async def create_event(self, **values):
+        defaults = dict(
+            reminder_type="event",
+            guild_id=123,
+            creator_user_id=10,
+            title="Movie Night",
+            description="Bring popcorn",
+            scheduled_at_utc=FUTURE,
+            interpretation_timezone="America/Chicago",
+            destination_channel_id=456,
+            destination_channel_name="main-stage",
+            public_channel_id=456,
+            default_offsets=(60, 15, 0),
+        )
+        defaults.update(values)
+        return await self.service.create_reminder(**defaults)
+
+    async def test_personal_creation_builds_occurrence_and_delivery(self):
+        row = await self.service.create_reminder(
+            reminder_type="personal",
+            guild_id=123,
+            creator_user_id=10,
+            target_user_id=10,
+            title="Submit plan",
+            description="Before review",
+            scheduled_at_utc=FUTURE,
+            interpretation_timezone="UTC",
+        )
+        occurrences = await self.service.fetch_all("SELECT * FROM reminder_occurrences WHERE reminder_id = ?", (row["id"],))
+        deliveries = await self.service.fetch_all("SELECT * FROM reminder_deliveries")
+        self.assertEqual(len(occurrences), 1)
+        self.assertEqual(deliveries[0]["delivery_mode"], "dm")
+        self.assertEqual(deliveries[0]["trigger_key"], "start")
+
+    async def test_daily_weekly_monthly_and_interval_occurrences(self):
+        for recurrence, interval in (("daily", 1), ("weekly", 1), ("monthly", 1), ("interval", 3)):
+            row = await self.create_event(
+                title=f"{recurrence} event",
+                recurrence_type=recurrence,
+                recurrence_interval=interval,
+                recurrence_end_count=4,
+            )
+            count = await self.service.fetch_one("SELECT COUNT(*) AS total FROM reminder_occurrences WHERE reminder_id = ?", (row["id"],))
+            self.assertEqual(count["total"], 4)
+
+    async def test_subscribe_is_idempotent_and_delivery_unique(self):
+        event = await self.create_event()
+        first, first_created = await self.service.subscribe(int(event["id"]), 42)
+        second, second_created = await self.service.subscribe(int(event["id"]), 42)
+        self.assertTrue(first_created)
+        self.assertFalse(second_created)
+        self.assertEqual(first["id"], second["id"])
+        count = await self.service.fetch_one("SELECT COUNT(*) AS total FROM reminder_deliveries WHERE subscription_id = ?", (first["id"],))
+        self.assertEqual(count["total"], 3)
+
+    async def test_concurrent_subscriptions_create_one_record(self):
+        event = await self.create_event()
+        await asyncio.gather(
+            self.service.subscribe(int(event["id"]), 42),
+            self.service.subscribe(int(event["id"]), 42),
+        )
+        count = await self.service.fetch_one("SELECT COUNT(*) AS total FROM reminder_subscriptions")
+        self.assertEqual(count["total"], 1)
+
+    async def test_customize_restore_defaults_and_unsubscribe(self):
+        event = await self.create_event()
+        subscription, _ = await self.service.subscribe(int(event["id"]), 42)
+        await self.service.update_subscription_offsets(int(subscription["id"]), 42, (1440, 0))
+        custom = await self.service.fetch_one("SELECT custom_offsets_json FROM reminder_subscriptions WHERE id = ?", (subscription["id"],))
+        self.assertEqual(parse_offsets(custom["custom_offsets_json"]), (1440, 0))
+        await self.service.update_subscription_offsets(int(subscription["id"]), 42, None)
+        restored = await self.service.fetch_one("SELECT custom_offsets_json FROM reminder_subscriptions WHERE id = ?", (subscription["id"],))
+        self.assertIsNone(restored["custom_offsets_json"])
+        self.assertTrue(await self.service.unsubscribe(int(subscription["id"]), 42))
+        pending = await self.service.fetch_one("SELECT COUNT(*) AS total FROM reminder_deliveries WHERE status = 'pending'")
+        self.assertEqual(pending["total"], 0)
+
+    async def test_cancelled_event_rejects_subscriptions_and_cancels_deliveries(self):
+        event = await self.create_event()
+        await self.service.subscribe(int(event["id"]), 42)
+        await self.service.cancel_reminder(int(event["id"]), 10)
+        with self.assertRaisesRegex(ValueError, "no longer accepting"):
+            await self.service.subscribe(int(event["id"]), 50)
+        statuses = {row["status"] for row in await self.service.fetch_all("SELECT status FROM reminder_deliveries")}
+        self.assertEqual(statuses, {"cancelled"})
+
+    async def test_customization_can_be_disabled(self):
+        event = await self.create_event(allow_custom_timing=False)
+        with self.assertRaisesRegex(ValueError, "organizer"):
+            await self.service.subscribe(int(event["id"]), 42, offsets=(15,))
+
+    async def test_claim_is_atomic_and_sent_delivery_is_not_reclaimed(self):
+        now = datetime(2035, 7, 14, 19, 45, tzinfo=timezone.utc)
+        event = await self.create_event(default_offsets=(15,))
+        await self.service.subscribe(int(event["id"]), 42)
+        claimed = await self.service.claim_due_deliveries(now=now)
+        self.assertEqual(len(claimed), 1)
+        self.assertEqual(await self.service.claim_due_deliveries(now=now), [])
+        await self.service.mark_delivery_sent(int(claimed[0]["id"]))
+        self.assertEqual(await self.service.claim_due_deliveries(now=now), [])
+
+    async def test_temporary_failure_retries_and_permanent_failure_disables_subscription(self):
+        event = await self.create_event(default_offsets=(15, 0))
+        subscription, _ = await self.service.subscribe(int(event["id"]), 42)
+        claimed = await self.service.claim_due_deliveries(now=datetime(2035, 7, 14, 19, 45, tzinfo=timezone.utc))
+        status = await self.service.mark_delivery_failed(int(claimed[0]["id"]), "discord_temporary", "HTTP 503", permanent=False)
+        self.assertEqual(status, "retry")
+        await self.database.execute("UPDATE reminder_deliveries SET status = 'claimed' WHERE id = ?", (claimed[0]["id"],))
+        await self.database.commit()
+        status = await self.service.mark_delivery_failed(int(claimed[0]["id"]), "dm_privacy", "Forbidden", permanent=True)
+        self.assertEqual(status, "permanent_failure")
+        stored = await self.service.fetch_one("SELECT status FROM reminder_subscriptions WHERE id = ?", (subscription["id"],))
+        self.assertEqual(stored["status"], "delivery_unavailable")
+
+    async def test_dashboard_retry_uses_service_and_rejects_permanent_failure(self):
+        event = await self.create_event(default_offsets=(15,))
+        subscription, _ = await self.service.subscribe(int(event["id"]), 42)
+        delivery = await self.service.fetch_one(
+            "SELECT * FROM reminder_deliveries WHERE subscription_id = ? LIMIT 1",
+            (subscription["id"],),
+        )
+        await self.database.execute(
+            "UPDATE reminder_deliveries SET status = 'failed', attempt_count = 4 WHERE id = ?",
+            (delivery["id"],),
+        )
+        await self.database.commit()
+        self.assertTrue(
+            await self.service.retry_failed_delivery(
+                int(event["id"]), int(delivery["id"]), 99
+            )
+        )
+        retried = await self.service.fetch_one(
+            "SELECT status, attempt_count FROM reminder_deliveries WHERE id = ?",
+            (delivery["id"],),
+        )
+        self.assertEqual((retried["status"], retried["attempt_count"]), ("pending", 0))
+        await self.database.execute(
+            "UPDATE reminder_deliveries SET status = 'permanent_failure' WHERE id = ?",
+            (delivery["id"],),
+        )
+        await self.database.commit()
+        self.assertFalse(
+            await self.service.retry_failed_delivery(
+                int(event["id"]), int(delivery["id"]), 99
+            )
+        )
+
+    async def test_stale_delivery_is_not_sent_after_grace(self):
+        event = await self.create_event(default_offsets=(0,))
+        await self.service.subscribe(int(event["id"]), 42)
+        with patch("utils.reminder_service.utc_now", return_value=FUTURE + timedelta(hours=5)):
+            await self.service.reconcile_deliveries()
+        delivery = await self.service.fetch_one("SELECT status FROM reminder_deliveries")
+        self.assertEqual(delivery["status"], "stale")
+
+    async def test_expired_claim_is_recovered_after_restart(self):
+        event = await self.create_event(default_offsets=(15,))
+        await self.service.subscribe(int(event["id"]), 42)
+        claimed = await self.service.claim_due_deliveries(now=datetime(2035, 7, 14, 19, 45, tzinfo=timezone.utc))
+        await self.database.execute("UPDATE reminder_deliveries SET lease_expires_at_utc = ? WHERE id = ?", ((FUTURE - timedelta(hours=1)).isoformat(), claimed[0]["id"]))
+        await self.database.commit()
+        with patch("utils.reminder_service.utc_now", return_value=FUTURE):
+            await self.service.reconcile_deliveries()
+        row = await self.service.fetch_one("SELECT status FROM reminder_deliveries WHERE id = ?", (claimed[0]["id"],))
+        self.assertEqual(row["status"], "retry")
+
+    async def test_edit_reschedules_without_duplicate_delivery(self):
+        event = await self.create_event(default_offsets=(15,))
+        subscription, _ = await self.service.subscribe(int(event["id"]), 42)
+        updated, changes = await self.service.update_reminder(
+            int(event["id"]), 10, title="New Movie Night", description="New text",
+            scheduled_at_utc=FUTURE + timedelta(hours=1), default_offsets=(60, 0),
+        )
+        self.assertIn("title", changes)
+        self.assertIn("scheduled_at_utc", changes)
+        rows = await self.service.fetch_all("SELECT * FROM reminder_deliveries WHERE subscription_id = ? AND status = 'pending'", (subscription["id"],))
+        self.assertEqual({row["trigger_key"] for row in rows}, {"before:60", "start"})
+        self.assertEqual(updated["title"], "New Movie Night")
+
+    async def test_trivial_description_edit_is_audited(self):
+        event = await self.create_event()
+        _updated, changes = await self.service.update_reminder(int(event["id"]), 10, description="Formatting only")
+        self.assertEqual(set(changes), {"description"})
+        audit = await self.service.fetch_one("SELECT action FROM reminder_audit WHERE reminder_id = ? ORDER BY id DESC", (event["id"],))
+        self.assertEqual(audit["action"], "edited")
+
+    async def test_advance_timing_before_subscription_is_not_scheduled(self):
+        event = await self.create_event(
+            scheduled_at_utc=datetime.now(timezone.utc) + timedelta(minutes=10),
+            default_offsets=(15, 0),
+        )
+        subscription, _ = await self.service.subscribe(int(event["id"]), 42)
+        rows = await self.service.fetch_all(
+            "SELECT trigger_key FROM reminder_deliveries WHERE subscription_id = ? AND status = 'pending'",
+            (subscription["id"],),
+        )
+        self.assertEqual([row["trigger_key"] for row in rows], ["start"])
+
+    async def test_reschedule_future_and_cancel_one_occurrence(self):
+        event = await self.create_event(
+            recurrence_type="daily",
+            recurrence_end_count=3,
+            default_offsets=(0,),
+        )
+        await self.service.subscribe(int(event["id"]), 42)
+        occurrences = await self.service.fetch_all(
+            "SELECT * FROM reminder_occurrences WHERE reminder_id = ? ORDER BY occurrence_index",
+            (event["id"],),
+        )
+        target = datetime.fromisoformat(occurrences[1]["scheduled_at_utc"]) + timedelta(hours=2)
+        await self.service.reschedule_occurrence(
+            int(occurrences[1]["id"]),
+            10,
+            target,
+            scope="future",
+        )
+        updated = await self.service.fetch_all(
+            "SELECT * FROM reminder_occurrences WHERE reminder_id = ? ORDER BY occurrence_index",
+            (event["id"],),
+        )
+        self.assertEqual(updated[0]["scheduled_at_utc"], occurrences[0]["scheduled_at_utc"])
+        self.assertEqual(
+            datetime.fromisoformat(updated[2]["scheduled_at_utc"]),
+            datetime.fromisoformat(occurrences[2]["scheduled_at_utc"]) + timedelta(hours=2),
+        )
+        self.assertTrue(await self.service.cancel_occurrence(int(updated[1]["id"]), 10))
+        cancelled = await self.service.fetch_one(
+            "SELECT status FROM reminder_occurrences WHERE id = ?",
+            (updated[1]["id"],),
+        )
+        self.assertEqual(cancelled["status"], "cancelled")
+
+    async def test_archive_requires_terminal_reminder_and_preserves_history(self):
+        event = await self.create_event()
+        with self.assertRaisesRegex(ValueError, "Cancel"):
+            await self.service.archive_reminder(int(event["id"]), 10)
+        await self.service.cancel_reminder(int(event["id"]), 10)
+        self.assertTrue(await self.service.archive_reminder(int(event["id"]), 10))
+        stored = await self.service.get_reminder(int(event["id"]))
+        audit = await self.service.fetch_all(
+            "SELECT action FROM reminder_audit WHERE reminder_id = ?",
+            (event["id"],),
+        )
+        self.assertEqual(stored["status"], "deleted")
+        self.assertIn("deleted", {row["action"] for row in audit})
+
+
+class ReminderMigrationTests(unittest.IsolatedAsyncioTestCase):
+    async def asyncSetUp(self):
+        self.database = await aiosqlite.connect(":memory:")
+        self.database.row_factory = aiosqlite.Row
+
+    async def asyncTearDown(self):
+        await self.database.close()
+
+    async def test_legacy_records_migrate_idempotently_and_completed_stays_completed(self):
+        await self.database.executescript(
+            """
+            CREATE TABLE reminders (id INTEGER PRIMARY KEY, guild_id TEXT, creator_user_id TEXT,
+                target_user_id TEXT, channel_id TEXT, message TEXT, scheduled_at_utc TEXT,
+                status TEXT, failure_reason TEXT, created_at_utc TEXT, updated_at_utc TEXT,
+                sent_at_utc TEXT);
+            CREATE TABLE reminder_subscription_posts (id INTEGER PRIMARY KEY, guild_id TEXT,
+                channel_id TEXT, message_id TEXT, destination_channel_id TEXT,
+                destination_channel_name TEXT, creator_user_id TEXT, message TEXT,
+                scheduled_at_utc TEXT, status TEXT, failure_reason TEXT, created_at_utc TEXT,
+                completed_at_utc TEXT);
+            CREATE TABLE reminder_subscribers (id INTEGER PRIMARY KEY, post_id INTEGER,
+                user_id TEXT, status TEXT, subscribed_at_utc TEXT, cancelled_at_utc TEXT,
+                processing_at_utc TEXT, sent_at_utc TEXT, dm_confirmation_message_id TEXT,
+                dm_reminder_message_id TEXT, attempt_count INTEGER, failure_reason TEXT);
+            """
+        )
+        await self.database.execute(
+            "INSERT INTO reminders VALUES (1,'123','10','10','456','Old personal',?,'sent',NULL,?,NULL,?)",
+            (FUTURE.isoformat(), FUTURE.isoformat(), FUTURE.isoformat()),
+        )
+        await self.database.execute(
+            "INSERT INTO reminder_subscription_posts VALUES (2,'123','456','700','456','stage','10','Old event',?,'open',NULL,?,NULL)",
+            (FUTURE.isoformat(), FUTURE.isoformat()),
+        )
+        await self.database.execute(
+            "INSERT INTO reminder_subscribers VALUES (3,2,'42','subscribed',?,NULL,NULL,NULL,NULL,NULL,0,NULL)",
+            (FUTURE.isoformat(),),
+        )
+        await self.database.commit()
+        service = ReminderService(self.database)
+        report = await service.initialize()
+        self.assertEqual(report.personal_migrated, 1)
+        self.assertEqual(report.events_migrated, 1)
+        self.assertEqual(report.subscriptions_migrated, 1)
+        completed = await service.fetch_one("SELECT status FROM reminder_items WHERE legacy_source = 'reminders'")
+        self.assertEqual(completed["status"], "completed")
+        await service.initialize()
+        count = await service.fetch_one("SELECT COUNT(*) AS total FROM reminder_items")
+        self.assertEqual(count["total"], 2)
+
+    async def test_malformed_legacy_record_is_reported_not_scheduled(self):
+        await self.database.execute(
+            """
+            CREATE TABLE reminders (id INTEGER PRIMARY KEY, guild_id TEXT, creator_user_id TEXT,
+                target_user_id TEXT, channel_id TEXT, message TEXT, scheduled_at_utc TEXT,
+                status TEXT, failure_reason TEXT, created_at_utc TEXT, updated_at_utc TEXT,
+                sent_at_utc TEXT)
+            """
+        )
+        await self.database.execute("INSERT INTO reminders VALUES (1,'123','10','10','456','Bad','not-a-date','pending',NULL,?,NULL,NULL)", (FUTURE.isoformat(),))
+        await self.database.commit()
+        report = await ReminderService(self.database).initialize()
+        self.assertEqual(report.malformed, 1)
+        cursor = await self.database.execute("SELECT COUNT(*) FROM reminder_items")
+        self.assertEqual((await cursor.fetchone())[0], 0)
+
+
+class ReminderCommandAndRenderingTests(unittest.IsolatedAsyncioTestCase):
+    async def asyncSetUp(self):
+        self.database = await aiosqlite.connect(":memory:")
+        self.database.row_factory = aiosqlite.Row
         self.bot = DummyBot(self.database)
         self.cog = ReminderCog(self.bot)
         await self.cog.create_schema()
@@ -269,423 +551,160 @@ class ReminderDatabaseTests(unittest.IsolatedAsyncioTestCase):
     async def asyncTearDown(self):
         await self.database.close()
 
-    async def test_insert_and_delete_pending_reminder(self):
-        scheduled_at = parse_local_datetime(
-            "2026-07-01 7:30 PM",
-            ZoneInfo("America/Chicago"),
-        )
+    async def test_personal_is_available_to_regular_member_but_other_target_is_not(self):
+        user = FakeMember(10)
+        other = FakeMember(20)
+        interaction = FakeInteraction(user)
+        with patch.object(reminder.discord, "Member", FakeMember):
+            with patch("cogs.reminder.get_csv_ids_setting", return_value=[]), patch("cogs.reminder.get_setting", return_value=""):
+                self.assertTrue(self.cog.can_target_user(interaction, user))
+                self.assertFalse(self.cog.can_target_user(interaction, other))
 
-        row = await self.cog.insert_reminder(
-            guild_id=123,
-            creator_user_id=10,
-            target_user_id=10,
-            channel_id=456,
-            message="Submit the event plan",
-            scheduled_at_utc=scheduled_at,
-        )
+    async def test_command_role_permissions_are_independent(self):
+        configured = {
+            "REMINDER_PERSONAL_ALLOWED_ROLE_IDS": [101],
+            "REMINDER_EVENT_ALLOWED_ROLE_IDS": [202],
+            "REMINDER_MANAGE_ALLOWED_ROLE_IDS": [303],
+            "REMINDER_MANAGE_ALL_ROLE_IDS": [505],
+            "REMINDER_SUBSCRIPTIONS_ALLOWED_ROLE_IDS": [404],
+        }
 
-        self.assertEqual(row["status"], "pending")
-        self.assertEqual(row["target_user_id"], "10")
-        self.assertEqual(row["scheduled_at_utc"], "2026-07-02T00:30:00+00:00")
+        def setting(key):
+            return configured.get(key, [])
 
-        deleted = await self.cog.soft_delete_reminder(123, 10, int(row["id"]))
-        self.assertTrue(deleted)
+        personal_member = FakeInteraction(FakeMember(10, roles=[FakeRole(101)]))
+        manager = FakeInteraction(FakeMember(11, roles=[FakeRole(505)]))
+        administrator = FakeInteraction(FakeMember(12, administrator=True))
+        with patch("cogs.reminder.get_csv_ids_setting", side_effect=setting), patch("cogs.reminder.get_setting", return_value=""):
+            self.assertTrue(self.cog.has_remind_command_access(personal_member, "personal"))
+            self.assertFalse(self.cog.has_remind_command_access(personal_member, "event"))
+            self.assertFalse(self.cog.has_remind_command_access(personal_member, "manage"))
+            self.assertFalse(self.cog.has_remind_command_access(personal_member, "subscriptions"))
+            self.assertTrue(self.cog.has_remind_command_access(manager, "manage"))
+            self.assertTrue(self.cog.has_manage_all_access(manager))
+            for command in ("personal", "event", "manage", "subscriptions"):
+                self.assertTrue(self.cog.has_remind_command_access(administrator, command))
 
-        stored = await self.cog.fetch_one(
-            "SELECT status FROM reminders WHERE id = ?",
-            (row["id"],),
-        )
-        self.assertEqual(stored["status"], "deleted")
+    async def test_blank_role_settings_preserve_member_and_staff_defaults(self):
+        def setting(key):
+            return [55] if key == "REMINDER_ALLOWED_ROLE_IDS" else []
 
-    async def test_personal_timezone_overrides_server_fallback(self):
-        with patch("cogs.reminder.get_setting", return_value="America/Los_Angeles"):
-            self.assertEqual(
-                await self.cog.user_timezone_name(123, 10),
-                "America/Los_Angeles",
+        member = FakeInteraction(FakeMember(10))
+        staff = FakeInteraction(FakeMember(11, roles=[FakeRole(55)]))
+        with patch("cogs.reminder.get_csv_ids_setting", side_effect=setting), patch("cogs.reminder.get_setting", return_value=""), patch.dict(os.environ, {"REMINDER_ALLOWED_ROLE_IDS": ""}):
+            self.assertTrue(self.cog.has_remind_command_access(member, "personal"))
+            self.assertTrue(self.cog.has_remind_command_access(member, "manage"))
+            self.assertTrue(self.cog.has_remind_command_access(member, "subscriptions"))
+            self.assertFalse(self.cog.has_remind_command_access(member, "event"))
+            self.assertTrue(self.cog.has_remind_command_access(staff, "event"))
+            self.assertTrue(self.cog.has_manage_all_access(staff))
+
+    async def test_restricted_personal_command_is_denied_before_modal(self):
+        interaction = FakeInteraction(FakeMember(10))
+
+        def setting(key):
+            return [101] if key == "REMINDER_PERSONAL_ALLOWED_ROLE_IDS" else []
+
+        with patch("cogs.reminder.get_csv_ids_setting", side_effect=setting):
+            await ReminderCog.remind.get_command("personal").callback(
+                self.cog, interaction, None, None
             )
+        self.assertIsNone(interaction.response.modal)
+        self.assertIn("configured roles", interaction.response.sent_messages[0][0][0])
 
-            await self.cog.save_user_timezone(123, 10, "Europe/London")
+    async def test_personal_command_opens_modal(self):
+        interaction = FakeInteraction(FakeMember(10))
+        await ReminderCog.remind.get_command("personal").callback(self.cog, interaction, None, None)
+        self.assertIsInstance(interaction.response.modal, reminder.PersonalReminderModal)
 
-            self.assertEqual(
-                await self.cog.user_timezone_name(123, 10),
-                "Europe/London",
-            )
-            self.assertEqual(
-                await self.cog.user_timezone(123, 10),
-                ZoneInfo("Europe/London"),
-            )
+    async def test_invalid_and_past_dates_are_rejected_before_preview(self):
+        interaction = FakeInteraction(FakeMember(10))
+        await self.cog.preview_personal(interaction, title="Test", details="", when="nonsense", recurrence="none", count="", destination=None, target=interaction.user)
+        self.assertIn("could not understand", interaction.followup.sent_messages[0][0][0])
+        interaction = FakeInteraction(FakeMember(10))
+        await self.cog.preview_personal(interaction, title="Test", details="", when="2020-01-01 9am", recurrence="none", count="", destination=None, target=interaction.user)
+        self.assertIn("future", interaction.followup.sent_messages[0][0][0])
 
-    async def test_time_slash_command_is_private_and_uses_personal_timezone(self):
-        staff = FakeMember(10, roles=[FakeRole(55)])
-        interaction = FakeCommandInteraction(staff)
-        await self.cog.save_user_timezone(123, 10, "Europe/London")
-
-        with patch.object(reminder.discord, "Member", FakeMember):
-            with patch(
-                "cogs.reminder.get_csv_ids_setting",
-                side_effect=lambda key: [55] if key == "REMINDER_ALLOWED_ROLE_IDS" else [],
-            ):
-                with patch("cogs.reminder.get_setting", return_value="America/Los_Angeles"):
-                    await ReminderCog.time_command.callback(
-                        self.cog,
-                        interaction,
-                        "tomorrow at 9am",
-                    )
-
-        _args, kwargs = interaction.response.sent_messages[0]
-        self.assertTrue(kwargs["ephemeral"])
-        self.assertIn("`Europe/London`", kwargs["embed"].description)
-
-    async def test_time_prefix_command_is_public_for_staff(self):
-        staff = FakeMember(10, roles=[FakeRole(55)])
-        context = FakeContext(staff)
-        await self.cog.save_user_timezone(123, 10, "Asia/Tokyo")
-
-        with patch.object(reminder.discord, "Member", FakeMember):
-            with patch(
-                "cogs.reminder.get_csv_ids_setting",
-                side_effect=lambda key: [55] if key == "REMINDER_ALLOWED_ROLE_IDS" else [],
-            ):
-                with patch("cogs.reminder.get_setting", return_value="America/Los_Angeles"):
-                    await ReminderCog.time_prefix.callback(
-                        self.cog,
-                        context,
-                        when="tomorrow at 9am",
-                    )
-
-        _args, kwargs = context.sent_messages[0]
-        self.assertIn("`Asia/Tokyo`", kwargs["embed"].description)
-        self.assertNotIn("ephemeral", kwargs)
-
-    async def test_subscription_schema_adds_destination_columns_to_existing_database(self):
-        database = await aiosqlite.connect(":memory:")
-        try:
-            await database.execute(
-                """
-                CREATE TABLE reminder_subscription_posts (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    guild_id TEXT NOT NULL,
-                    channel_id TEXT NOT NULL,
-                    message_id TEXT,
-                    creator_user_id TEXT NOT NULL,
-                    message TEXT NOT NULL,
-                    scheduled_at_utc TEXT NOT NULL,
-                    status TEXT NOT NULL,
-                    failure_reason TEXT,
-                    created_at_utc TEXT NOT NULL,
-                    completed_at_utc TEXT
-                )
-                """
-            )
-            await database.commit()
-            cog = ReminderCog(DummyBot(database))
-
-            await cog.create_schema()
-
-            cursor = await database.execute(
-                "PRAGMA table_info(reminder_subscription_posts)"
-            )
-            columns = {row[1] for row in await cursor.fetchall()}
-            await cursor.close()
-            self.assertIn("destination_channel_id", columns)
-            self.assertIn("destination_channel_name", columns)
-        finally:
-            await database.close()
-
-    async def test_add_command_opens_creation_modal(self):
-        staff = FakeMember(10, roles=[FakeRole(55)])
-        interaction = FakeCommandInteraction(staff)
-        channel = FakeChannel()
-
-        with patch.object(reminder.discord, "Member", FakeMember):
-            with patch(
-                "cogs.reminder.get_csv_ids_setting",
-                side_effect=lambda key: [55] if key == "REMINDER_ALLOWED_ROLE_IDS" else [],
-            ):
-                with patch("cogs.reminder.get_setting", return_value="America/Chicago"):
-                    await ReminderCog.reminder.get_command("add").callback(
-                        self.cog,
-                        interaction,
-                        channel,
-                    )
-
-        self.assertIsInstance(interaction.response.modal, reminder.ReminderCreateModal)
-        self.assertIsNone(interaction.response.modal.target)
-
-    async def test_modal_creation_defaults_to_no_automatic_ping(self):
-        staff = FakeMember(10, roles=[FakeRole(55)])
-        interaction = FakeCommandInteraction(staff)
-        channel = FakeChannel()
-
-        with patch.object(reminder.discord, "Member", FakeMember):
-            with patch(
-                "cogs.reminder.get_csv_ids_setting",
-                side_effect=lambda key: [55] if key == "REMINDER_ALLOWED_ROLE_IDS" else [],
-            ):
-                with patch("cogs.reminder.get_setting", return_value="America/Chicago"):
-                    await self.cog.create_from_modal(
-                        interaction,
-                        channel=channel,
-                        target=None,
-                        message="# Event reminder\n- Bring your notes",
-                        date_time="in 2 hours",
-                    )
-
-        self.assertTrue(interaction.response.deferred)
-        _args, kwargs = interaction.followup.sent_messages[0]
-        self.assertEqual(kwargs["embed"].title, "Reminder Scheduled")
-        automatic_ping = next(
-            field for field in kwargs["embed"].fields if field.name == "Ping:"
+    async def test_event_card_uses_event_title_labeled_button_and_count(self):
+        event = await self.cog.service.create_reminder(
+            reminder_type="event", guild_id=123, creator_user_id=10,
+            title="Movie Night", description="Bottoms", scheduled_at_utc=FUTURE,
+            interpretation_timezone="UTC", destination_channel_id=456,
+            default_offsets=(15, 0),
         )
-        self.assertEqual(automatic_ping.value, "Nobody")
-        self.assertEqual(
-            [field.name for field in kwargs["embed"].fields],
-            ["Ping:", "Channel:", "Scheduled For:"],
+        embed = self.cog.event_embed(event)
+        view = self.cog.event_view(event)
+        self.assertEqual(embed.title, "🔔 Movie Night")
+        self.assertEqual([field.name for field in embed.fields], ["When", "Where", "Hosted by", "Reminders", "Subscribers"])
+        self.assertEqual(view.children[0].label, "Remind Me")
+
+    async def test_duplicate_join_does_not_send_duplicate_confirmation(self):
+        event = await self.cog.service.create_reminder(
+            reminder_type="event", guild_id=123, creator_user_id=10,
+            title="Movie Night", description="", scheduled_at_utc=FUTURE,
+            interpretation_timezone="UTC", destination_channel_id=456,
+            default_offsets=(15, 0),
         )
-        self.assertRegex(kwargs["embed"].fields[2].value, r"^<t:\d+:f>$")
-        stored = await self.cog.fetch_one("SELECT target_user_id FROM reminders")
-        self.assertEqual(stored["target_user_id"], "")
-
-    async def test_remind_subscribe_command_opens_modal_in_current_channel(self):
-        staff = FakeMember(10, roles=[FakeRole(55)])
-        interaction = FakeCommandInteraction(staff)
-        interaction.channel = FakeChannel()
-
-        with patch.object(reminder.discord, "Member", FakeMember):
-            with patch(
-                "cogs.reminder.get_csv_ids_setting",
-                side_effect=lambda key: [55] if key == "REMINDER_ALLOWED_ROLE_IDS" else [],
-            ):
-                with patch("cogs.reminder.get_setting", return_value="America/Chicago"):
-                    await ReminderCog.remind.get_command("subscribe").callback(
-                        self.cog,
-                        interaction,
-                    )
-
-        self.assertIsInstance(interaction.response.modal, reminder.RemindSubscribeModal)
-        self.assertIs(interaction.response.modal.channel, interaction.channel)
-        destination_labels = [
-            item for item in interaction.response.modal.children
-            if isinstance(item, reminder.discord.ui.Label) and item.text == "WHERE:"
-        ]
-        self.assertEqual(len(destination_labels), 1)
-        self.assertIs(
-            destination_labels[0].component,
-            interaction.response.modal.destination,
-        )
-
-    async def test_subscription_modal_posts_public_bell_embed(self):
-        staff = FakeMember(10, roles=[FakeRole(55)])
-        interaction = FakeCommandInteraction(staff)
-        channel = FakeChannel()
-
-        with patch.object(reminder.discord, "Member", FakeMember):
-            with patch(
-                "cogs.reminder.get_csv_ids_setting",
-                side_effect=lambda key: [55] if key == "REMINDER_ALLOWED_ROLE_IDS" else [],
-            ):
-                with patch("cogs.reminder.get_setting", return_value="America/Chicago"):
-                    await self.cog.create_subscription_post(
-                        interaction,
-                        channel=channel,
-                        destination=channel,
-                        message="# Shuffle Storm\n- Join the stage",
-                        date_time="in 1 hour",
-                    )
-
-        sent = channel.sent_messages[0]
-        self.assertEqual(sent["embed"].footer.text, "🔔 Subscribe to DM Reminder")
-        self.assertEqual(sent["embed"].fields[0].name, "WHEN:")
-        self.assertEqual(sent["embed"].fields[1].name, "WHERE:")
-        self.assertEqual(sent["embed"].fields[1].value, "<#456>")
-        self.assertEqual(sent["view"].children[0].emoji.name, "🔔")
-        row = await self.cog.fetch_one("SELECT * FROM reminder_subscription_posts")
-        self.assertEqual(row["status"], "open")
-        self.assertEqual(row["message_id"], "701")
-        self.assertEqual(row["destination_channel_id"], "456")
-        self.assertEqual(row["destination_channel_name"], "main-stage")
-
-    async def test_member_can_subscribe_receive_confirmation_and_cancel(self):
-        scheduled_at = datetime.now(timezone.utc) + timedelta(hours=1)
-        cursor = await self.database.execute(
-            """
-            INSERT INTO reminder_subscription_posts (
-                guild_id, channel_id, message_id, destination_channel_id,
-                destination_channel_name, creator_user_id,
-                message, scheduled_at_utc, status, created_at_utc
-            ) VALUES ('123', '456', '700', '456', 'main-stage', '10', ?, ?, 'open', ?)
-            """,
-            ("Shuffle Storm starts soon", scheduled_at.isoformat(), datetime.now(timezone.utc).isoformat()),
-        )
-        post_id = cursor.lastrowid
-        await cursor.close()
-        await self.database.commit()
         member = FakeMember(42)
-        subscribe_interaction = FakeCommandInteraction(member)
+        await self.cog.handle_event_join(FakeInteraction(member), int(event["id"]))
+        await self.cog.handle_event_join(FakeInteraction(member), int(event["id"]))
+        self.assertEqual(len(member.dm_messages), 1)
 
-        await self.cog.handle_subscription_join(subscribe_interaction, int(post_id))
-
-        self.assertEqual(member.dm_messages[0]["embed"].title, "🔔 Reminder Confirmation")
-        self.assertIn(
-            "[Open #main-stage](https://discord.com/channels/123/456)",
-            member.dm_messages[0]["embed"].description,
+    async def test_subscription_role_is_checked_before_join(self):
+        event = await self.cog.service.create_reminder(
+            reminder_type="event", guild_id=123, creator_user_id=10,
+            title="Movie Night", description="", scheduled_at_utc=FUTURE,
+            interpretation_timezone="UTC", destination_channel_id=456,
+            default_offsets=(15,),
         )
-        cancel_button = member.dm_messages[0]["view"].children[0]
-        self.assertEqual(cancel_button.label, "Cancel Reminder")
-        subscriber = await self.cog.fetch_one("SELECT * FROM reminder_subscribers")
-        self.assertEqual(subscriber["status"], "subscribed")
-        self.assertEqual(subscriber["dm_confirmation_message_id"], "901")
+        interaction = FakeInteraction(FakeMember(42))
 
-        cancel_interaction = FakeCommandInteraction(member)
-        await self.cog.handle_subscription_cancel(
-            cancel_interaction,
-            int(subscriber["id"]),
+        def setting(key):
+            return [404] if key == "REMINDER_SUBSCRIPTIONS_ALLOWED_ROLE_IDS" else []
+
+        with patch("cogs.reminder.get_csv_ids_setting", side_effect=setting):
+            await self.cog.handle_event_join(interaction, int(event["id"]))
+        self.assertIn("configured roles", interaction.followup.sent_messages[0][0][0])
+        stored = await self.cog.service.fetch_one(
+            "SELECT COUNT(*) AS total FROM reminder_subscriptions"
         )
+        self.assertEqual(stored["total"], 0)
 
-        subscriber = await self.cog.fetch_one("SELECT * FROM reminder_subscribers")
-        self.assertEqual(subscriber["status"], "cancelled")
-        self.assertEqual(
-            cancel_interaction.response.edited_message["embed"].title,
-            "🔕 Reminder Cancelled",
+    async def test_dm_disabled_is_reported_and_subscription_marked_unavailable(self):
+        class FakeForbidden(Exception):
+            pass
+        event = await self.cog.service.create_reminder(
+            reminder_type="event", guild_id=123, creator_user_id=10,
+            title="Movie Night", description="", scheduled_at_utc=FUTURE,
+            interpretation_timezone="UTC", destination_channel_id=456,
+            default_offsets=(15,),
         )
-        self.assertTrue(
-            cancel_interaction.response.edited_message["view"].children[0].disabled
+        member = FakeMember(42, dm_error=FakeForbidden())
+        interaction = FakeInteraction(member)
+        with patch.object(reminder.discord, "Forbidden", FakeForbidden):
+            await self.cog.handle_event_join(interaction, int(event["id"]))
+        self.assertIn("could not DM", interaction.followup.sent_messages[0][0][0])
+        stored = await self.cog.service.fetch_one("SELECT status FROM reminder_subscriptions")
+        self.assertEqual(stored["status"], "delivery_unavailable")
+
+    async def test_legacy_commands_show_transition_notice(self):
+        staff = FakeMember(10, roles=[FakeRole(55)])
+        interaction = FakeInteraction(staff)
+        with patch.object(reminder.discord, "Member", FakeMember):
+            with patch("cogs.reminder.get_csv_ids_setting", side_effect=lambda key: [55] if key == "REMINDER_ALLOWED_ROLE_IDS" else []), patch("cogs.reminder.get_setting", return_value=""):
+                await ReminderCog.remind.get_command("subscribe").callback(self.cog, interaction)
+        self.assertIn("moved", interaction.response.sent_messages[0][0][0])
+
+    async def test_persistent_event_views_restore(self):
+        event = await self.cog.service.create_reminder(
+            reminder_type="event", guild_id=123, creator_user_id=10,
+            title="Movie Night", description="", scheduled_at_utc=FUTURE,
+            interpretation_timezone="UTC", destination_channel_id=456,
+            default_offsets=(0,),
         )
-
-    async def test_due_subscription_is_persistently_delivered_by_dm(self):
-        scheduled_at = datetime.now(timezone.utc) - timedelta(minutes=1)
-        cursor = await self.database.execute(
-            """
-            INSERT INTO reminder_subscription_posts (
-                guild_id, channel_id, message_id, destination_channel_id,
-                destination_channel_name, creator_user_id,
-                message, scheduled_at_utc, status, created_at_utc
-            ) VALUES ('123', '456', '700', '456', 'main-stage', '10', ?, ?, 'open', ?)
-            """,
-            ("Shuffle Storm starts now", scheduled_at.isoformat(), datetime.now(timezone.utc).isoformat()),
-        )
-        post_id = int(cursor.lastrowid)
-        await cursor.close()
-        await self.database.execute(
-            """
-            INSERT INTO reminder_subscribers (
-                post_id, user_id, status, subscribed_at_utc
-            ) VALUES (?, '42', 'subscribed', ?)
-            """,
-            (post_id, datetime.now(timezone.utc).isoformat()),
-        )
-        await self.database.commit()
-        member = FakeMember(42)
-        self.bot.users[42] = member
-
-        await self.cog.send_due_subscription_reminders()
-
-        self.assertEqual(member.dm_messages[0]["embed"].title, "🔔 Reminder")
-        self.assertIn(
-            "[Open #main-stage](https://discord.com/channels/123/456)",
-            member.dm_messages[0]["embed"].description,
-        )
-        subscriber = await self.cog.fetch_one("SELECT * FROM reminder_subscribers")
-        post = await self.cog.fetch_one("SELECT * FROM reminder_subscription_posts")
-        self.assertEqual(subscriber["status"], "sent")
-        self.assertEqual(subscriber["attempt_count"], 1)
-        self.assertEqual(post["status"], "completed")
-
-    async def test_send_one_reminder_mentions_target_and_marks_sent(self):
-        scheduled_at = parse_local_datetime(
-            "2026-07-01 7:30 PM",
-            ZoneInfo("America/Chicago"),
-        )
-        row = await self.cog.insert_reminder(
-            guild_id=123,
-            creator_user_id=10,
-            target_user_id=20,
-            channel_id=456,
-            message="Submit the event plan",
-            scheduled_at_utc=scheduled_at,
-        )
-        channel = FakeChannel()
-        self.bot.channels[456] = channel
-
-        await self.cog.send_one_reminder(row)
-
-        self.assertEqual(channel.sent_messages[0]["content"], "<@20>")
-        posted_embed = channel.sent_messages[0]["embed"]
-        self.assertIsNone(posted_embed.title)
-        self.assertEqual(posted_embed.description, "Submit the event plan")
-        self.assertEqual(len(posted_embed.fields), 0)
-        self.assertIsNone(posted_embed.footer.text)
-        stored = await self.cog.fetch_one(
-            "SELECT status, sent_at_utc FROM reminders WHERE id = ?",
-            (row["id"],),
-        )
-        self.assertEqual(stored["status"], "sent")
-        self.assertIsNotNone(stored["sent_at_utc"])
-
-    async def test_send_one_reminder_without_target_has_no_automatic_ping(self):
-        scheduled_at = parse_local_datetime(
-            "2026-07-01 7:30 PM",
-            ZoneInfo("America/Chicago"),
-        )
-        row = await self.cog.insert_reminder(
-            guild_id=123,
-            creator_user_id=10,
-            target_user_id=None,
-            channel_id=456,
-            message="Event starts soon",
-            scheduled_at_utc=scheduled_at,
-        )
-        channel = FakeChannel()
-        self.bot.channels[456] = channel
-
-        await self.cog.send_one_reminder(row)
-
-        self.assertIsNone(channel.sent_messages[0]["content"])
-
-    async def test_explicit_message_user_and_role_mentions_are_pinged_once(self):
-        scheduled_at = parse_local_datetime(
-            "2026-07-01 7:30 PM",
-            ZoneInfo("America/Chicago"),
-        )
-        row = await self.cog.insert_reminder(
-            guild_id=123,
-            creator_user_id=10,
-            target_user_id=None,
-            channel_id=456,
-            message="Please join <@20> and <@&30>. <@20>",
-            scheduled_at_utc=scheduled_at,
-        )
-        channel = FakeChannel()
-        self.bot.channels[456] = channel
-
-        await self.cog.send_one_reminder(row)
-
-        self.assertEqual(channel.sent_messages[0]["content"], "<@20> <@&30>")
-
-    async def test_unsendable_channel_marks_reminder_failed(self):
-        scheduled_at = parse_local_datetime(
-            "2026-07-01 7:30 PM",
-            ZoneInfo("America/Chicago"),
-        )
-        row = await self.cog.insert_reminder(
-            guild_id=123,
-            creator_user_id=10,
-            target_user_id=20,
-            channel_id=456,
-            message="Submit the event plan",
-            scheduled_at_utc=scheduled_at,
-        )
-        self.bot.channels[456] = object()
-
-        with patch("cogs.reminder.logger.warning"):
-            await self.cog.send_one_reminder(row)
-
-        stored = await self.cog.fetch_one(
-            "SELECT status, failure_reason FROM reminders WHERE id = ?",
-            (row["id"],),
-        )
-        self.assertEqual(stored["status"], "failed")
-        self.assertIn("cannot receive messages", stored["failure_reason"])
+        await self.cog.service.set_public_message(int(event["id"]), 456, 700)
+        await self.cog.restore_persistent_views()
+        self.assertEqual(self.bot.views[0][1], 700)
 
 
 if __name__ == "__main__":

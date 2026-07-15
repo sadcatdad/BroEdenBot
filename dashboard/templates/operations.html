@@ -7,6 +7,7 @@
   </div>
 </div>
 <p class="muted">Only predefined service operations are available. There is no terminal, deploy, pull, or arbitrary command input.</p>
+<p><a class="button" href="{{ url_for('reminders_page') }}">Manage reminders</a></p>
 {% if message %}<div class="alert success">{{ message }}</div>{% endif %}
 {% if error %}<div class="alert error">{{ error }}</div>{% endif %}
 

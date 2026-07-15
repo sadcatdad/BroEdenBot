@@ -62,6 +62,12 @@ from dashboard.operations import (
     service_status,
     system_status,
 )
+from dashboard.reminders_manager import (
+    list_reminders as list_dashboard_reminders,
+    queue_reminder_action,
+    reminder_detail as dashboard_reminder_detail,
+    reminder_overview as dashboard_reminder_overview,
+)
 from dashboard.streaks_manager import (
     adjust_streak_day,
     initialize_streak_dashboard_schema,
@@ -1189,6 +1195,132 @@ def operations_redirect(request: Request) -> RedirectResponse:
         url=request.url_for("operations_page"),
         status_code=status.HTTP_303_SEE_OTHER,
     )
+
+
+def reminders_redirect(request: Request, reminder_id: int | None = None) -> RedirectResponse:
+    url = (
+        request.url_for("reminders_detail", reminder_id=reminder_id)
+        if reminder_id is not None
+        else request.url_for("reminders_page")
+    )
+    return RedirectResponse(url=url, status_code=status.HTTP_303_SEE_OTHER)
+
+
+@app.get("/operations/reminders", response_class=HTMLResponse, name="reminders_page")
+async def reminders_page(request: Request) -> HTMLResponse:
+    if redirect := login_redirect(request):
+        return redirect
+    filters = {
+        "guild_id": request.query_params.get("guild_id", "").strip(),
+        "reminder_type": request.query_params.get("reminder_type", "").strip(),
+        "status": request.query_params.get("status", "").strip(),
+        "creator": request.query_params.get("creator", "").strip(),
+        "channel": request.query_params.get("channel", "").strip(),
+        "recurrence": request.query_params.get("recurrence", "").strip(),
+        "date_from": request.query_params.get("date_from", "").strip(),
+        "date_to": request.query_params.get("date_to", "").strip(),
+    }
+    try:
+        reminders = list_dashboard_reminders(**filters)
+        overview = dashboard_reminder_overview(**filters)
+    except (OSError, sqlite3.Error, ValueError) as exc:
+        reminders = []
+        overview = {
+            "upcoming": 0, "completed": 0, "cancelled": 0,
+            "failed": 0, "active_subscriptions": 0, "failed_deliveries": 0,
+        }
+        error = str(exc)
+    else:
+        error = request.session.pop("reminders_error", None)
+    return templates.TemplateResponse(
+        request=request,
+        name="reminders.html",
+        context=template_context(
+            request,
+            page_title="Reminder Operations",
+            reminders=reminders,
+            overview=overview,
+            filters=filters,
+            message=request.session.pop("reminders_message", None),
+            error=error,
+        ),
+    )
+
+
+@app.get(
+    "/operations/reminders/{reminder_id}",
+    response_class=HTMLResponse,
+    name="reminders_detail",
+)
+async def reminders_detail(request: Request, reminder_id: int) -> HTMLResponse:
+    if redirect := login_redirect(request):
+        return redirect
+    detail = dashboard_reminder_detail(
+        reminder_id,
+        guild_id=request.query_params.get("guild_id", "").strip(),
+    )
+    if detail is None:
+        raise HTTPException(status_code=404, detail="Reminder was not found.")
+    if not is_admin(request):
+        detail["subscriptions"] = []
+        for delivery in detail["deliveries"]:
+            delivery["recipient_user_id"] = "Private"
+            delivery["error_detail"] = None
+    return templates.TemplateResponse(
+        request=request,
+        name="reminder_detail.html",
+        context=template_context(
+            request,
+            page_title=detail["reminder"]["title"],
+            detail=detail,
+            message=request.session.pop("reminders_message", None),
+            error=request.session.pop("reminders_error", None),
+        ),
+    )
+
+
+@app.post("/operations/reminders/{reminder_id}/action", name="reminders_action")
+async def reminders_action(request: Request, reminder_id: int) -> RedirectResponse:
+    if redirect := login_redirect(request):
+        return redirect
+    await require_action_csrf(request)
+    if not is_admin(request):
+        raise HTTPException(status_code=403, detail="Admin access is required.")
+    form = await request.form()
+    action = str(form.get("action", "")).strip()
+    guild_id = str(form.get("guild_id", "")).strip()
+    payload: dict[str, Any] = {}
+    if action == "cancel":
+        payload["reason"] = str(form.get("reason", "")).strip()
+    elif action == "retry":
+        payload["delivery_id"] = str(form.get("delivery_id", "")).strip()
+    elif action == "edit":
+        payload = {
+            key: str(form.get(key, "")).strip()
+            for key in (
+                "title",
+                "description",
+                "scheduled_at_utc",
+                "destination_channel_id",
+                "destination_channel_name",
+                "timings",
+            )
+        }
+    try:
+        action_id = queue_reminder_action(
+            reminder_id,
+            action=action,
+            requested_by=dashboard_user_label(request),
+            guild_id=guild_id,
+            payload=payload,
+        )
+    except (OSError, sqlite3.Error, ValueError) as exc:
+        request.session["reminders_error"] = str(exc)
+    else:
+        request.session["reminders_message"] = (
+            f"Reminder action #{action_id} queued. The bot will process it within about 30 seconds."
+        )
+    return reminders_redirect(request, reminder_id)
 
 
 def stats_redirect(request: Request, stat_id: str | None = None) -> RedirectResponse:
