@@ -46,7 +46,12 @@ BUMP_SUBTITLE = (
 )
 BUMP_FOOTER = "!bumpscores = show leaderboard"
 BUMP_ACCENT_COLOR = 0x25B8B8
-BUMP_EXPLOSION_EMOJI = "💥"
+BUMP_SUCCESS_MESSAGE_DEFAULT = (
+    "Thanks for bumping our server, {member}! You gained:\n"
+    "- 💥 + {points} Bump Points\n"
+    "{reward_status}\n"
+    "A bump reminder will be posted in 2 hours."
+)
 BUMP_REMINDER_DELAY = timedelta(hours=2)
 BUMP_REMINDER_BATCH_SIZE = 25
 BUMP_REMINDER_MAX_ATTEMPTS = 3
@@ -255,19 +260,7 @@ class DisboardBumps(commands.Cog):
     ) -> None:
         response_id = str(message.id)
         points = max(1, get_int_setting("BUMP_POINTS_PER_SUCCESS", 1000))
-        if role_status == "awarded":
-            role_line = "- Your configured bump reward role was awarded\n"
-        else:
-            role_line = (
-                "- Your Bump Points were saved; staff can check the reward role setup\n"
-            )
-        fallback_content = (
-            f"Thanks for bumping our server, {member.mention}! You gained:\n"
-            f"- {BUMP_EXPLOSION_EMOJI} + {points:,} Bump Points\n"
-            f"{role_line}"
-            "A bump reminder will be posted in 2 hours."
-        )
-        content = fallback_content
+        content = self._success_content(member, points, role_status)
         embed = None
         template_payload = await self._configured_success_payload()
         if template_payload:
@@ -277,7 +270,6 @@ class DisboardBumps(commands.Cog):
                     response_id,
                     template_payload=template_payload,
                 )
-                content = str(template_payload.get("content") or "").strip()
             except ValueError:
                 logger.warning("Configured successful bump response payload is invalid")
                 template_payload = None
@@ -316,6 +308,30 @@ class DisboardBumps(commands.Cog):
             (str(prompt.id), response_id),
         )
         await self.bot.db.commit()
+
+    @staticmethod
+    def _success_content(
+        member: discord.Member,
+        points: int,
+        role_status: str,
+    ) -> str:
+        if role_status == "awarded":
+            reward_status = "- Your configured bump reward role was awarded"
+        else:
+            reward_status = (
+                "- Your Bump Points were saved; staff can check the reward role setup"
+            )
+        configured = str(
+            get_setting("BUMP_SUCCESS_MESSAGE", BUMP_SUCCESS_MESSAGE_DEFAULT) or ""
+        ).strip()
+        if not configured:
+            configured = BUMP_SUCCESS_MESSAGE_DEFAULT
+        return (
+            configured.replace("{member}", member.mention)
+            .replace("{points}", f"{points:,}")
+            .replace("{reward_status}", reward_status)
+            .strip()
+        )
 
     @staticmethod
     def _invoking_user(message: discord.Message):

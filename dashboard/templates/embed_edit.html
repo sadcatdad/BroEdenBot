@@ -12,7 +12,7 @@
 </div>
 {% if message %}<div class="alert success">{{ message }}</div>{% endif %}
 {% if error %}<div class="alert error">{{ error }}</div>{% endif %}
-{% if embed_template and 'Successful bump response' in embed_template.features %}<div class="alert warning"><strong>Successful bump response:</strong> this feature uses the regular message, embed card, and first four template buttons below. The bot reserves the fifth button for Bump Leaderboard.</div>{% endif %}
+{% if embed_template and 'Successful bump response' in embed_template.features %}<div class="alert warning"><strong>Successful bump response:</strong> this feature uses the embed card and first four template buttons below. Feature Settings replaces this template's regular message; the bot reserves the fifth button for Bump Leaderboard.</div>{% endif %}
 {% if embed_template and 'Bump reminders' in embed_template.features %}<div class="alert warning"><strong>Bump reminder override:</strong> this feature uses only the embed card design below. Feature Settings replaces this template's regular message and ignores all template buttons; the bot adds its Subscribe to Bump Reminders button automatically.</div>{% endif %}
 {% if embed_template and embed_template.features %}<div class="muted embed-feature-usage">Used by: {{ embed_template.features|join(', ') }}.</div>{% endif %}
 
@@ -30,7 +30,7 @@
         <span class="muted">Insert emoji into the last focused message, title, description, footer, field, or button input.</span>
       </div>
       <label>Name<input id="embed-name" name="name" maxlength="100" required value="{{ embed_template.name if embed_template else '' }}" placeholder="Bump reminder"></label>
-      <label>Regular message <span class="muted">Used by successful bump responses and other full-message features. Bump reminders replace this in Feature Settings.</span><textarea id="message-content" maxlength="2000" rows="3" placeholder="Write your message here!"></textarea></label>
+      <label>Regular message <span class="muted">Optional content for features that use a template's message. Both bump response types replace this in Feature Settings.</span><textarea id="message-content" maxlength="2000" rows="3" placeholder="Write your message here!"></textarea></label>
     </div>
 
     <div class="card editor-section embed-fields-card">

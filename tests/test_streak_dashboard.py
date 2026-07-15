@@ -190,6 +190,7 @@ class StreakDashboardTests(unittest.TestCase):
             self.assertIn(label, response.text)
         for key in (
             "BUMP_REWARD_ROLE_ID",
+            "BUMP_SUCCESS_MESSAGE",
             "BUMP_SUCCESS_EMBED_ID",
             "BUMP_REMINDER_EMBED_ID",
             "REMINDER_TIMEZONE",

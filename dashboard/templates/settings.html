@@ -80,6 +80,27 @@
         <channel-multi-select input-name="value" setting-key="{{ setting.key }}" value-format="{{ setting.value_format }}" value="{{ setting.value|e }}"></channel-multi-select>
         {% elif setting.picker == "category" %}
         <category-multi-select input-name="value" setting-key="{{ setting.key }}" value-format="{{ setting.value_format }}" value="{{ setting.value|e }}"></category-multi-select>
+        {% elif setting.picker == "emoji_text" %}
+        <div class="setting-message-editor" data-setting-message-editor>
+          <textarea
+            name="value"
+            rows="6"
+            maxlength="{{ setting.maximum or 2000 }}"
+            aria-label="{{ setting.key }}"
+            data-setting-message-input
+          >{{ setting.value }}</textarea>
+          <div class="setting-message-tools">
+            <button class="button secondary" type="button" data-setting-emoji-toggle>☺ Emoji</button>
+            {% for placeholder in setting.placeholders %}
+            <button class="setting-placeholder-button" type="button" data-setting-placeholder="{{ placeholder }}">{{ placeholder }}</button>
+            {% endfor %}
+          </div>
+          <div class="setting-emoji-popover" data-setting-emoji-popover hidden>
+            <label>Search emoji<input type="search" placeholder="Search smile, heart, bell…" autocomplete="off" data-setting-emoji-search></label>
+            <div class="setting-emoji-results" data-setting-emoji-results></div>
+            <p class="muted">Custom Discord emoji markup can also be pasted directly into the message.</p>
+          </div>
+        </div>
         {% elif setting.picker == "embed" %}
         <select name="value" aria-label="{{ setting.key }}">
           <option value="">{{ "Use the built-in successful bump response" if setting.key == "BUMP_SUCCESS_EMBED_ID" else "Use the built-in bump reminder embed" }}</option>
@@ -131,4 +152,5 @@
 </section>
 </div>
 </div>
+<script src="{{ url_for('static', path='settings_message_editor.js') }}?v=message-editor1" defer></script>
 {% endblock %}

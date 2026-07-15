@@ -218,6 +218,17 @@ class SettingsValidationTests(unittest.TestCase):
                 "12345678901234567,23456789012345678",
             )
 
+    def test_bump_success_message_supports_placeholders_and_discord_limit(self):
+        self.assertEqual(
+            normalize_setting_value(
+                "BUMP_SUCCESS_MESSAGE",
+                "Great bump, {member}! You earned {points}. 🎉",
+            ),
+            "Great bump, {member}! You earned {points}. 🎉",
+        )
+        with self.assertRaisesRegex(ValueError, "2,000"):
+            normalize_setting_value("BUMP_SUCCESS_MESSAGE", "x" * 2001)
+
     def test_forbidden_and_unknown_keys_are_rejected(self):
         for key in (
             "DISCORD_TOKEN",

@@ -198,10 +198,16 @@ class DisboardBumpTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(await cursor.fetchone(), ("scheduled", "700"))
         await cursor.close()
 
-    async def test_success_response_uses_separate_saved_message_and_four_buttons(self):
+    async def test_success_response_uses_setting_message_and_four_template_buttons(self):
         message = self.message(message_id=107)
+
+        def success_settings(key, default=""):
+            if key == "BUMP_SUCCESS_MESSAGE":
+                return "Great bump, {member}! You earned {points} points.\n{reward_status}"
+            return self.settings(key, default)
+
         payload = {
-            "content": "Thanks for supporting the server!",
+            "content": "Ignored template response",
             "embed": {
                 "title": "Bump successful",
                 "description": "Your reward has been recorded.",
@@ -219,7 +225,7 @@ class DisboardBumpTests(unittest.IsolatedAsyncioTestCase):
             ],
         }
         with (
-            patch("cogs.disboard_bumps.get_setting", side_effect=self.settings),
+            patch("cogs.disboard_bumps.get_setting", side_effect=success_settings),
             patch("cogs.disboard_bumps.get_int_setting", return_value=1000),
             patch.object(
                 self.cog,
@@ -230,7 +236,12 @@ class DisboardBumpTests(unittest.IsolatedAsyncioTestCase):
             self.assertTrue(await self.cog._process_bump(message))
 
         prompt_args = message.reply.await_args
-        self.assertEqual(prompt_args.args[0], "Thanks for supporting the server!")
+        self.assertEqual(
+            prompt_args.args[0],
+            "Great bump, <@42>! You earned 1,000 points.\n"
+            "- Your configured bump reward role was awarded",
+        )
+        self.assertNotIn("Ignored template response", prompt_args.args[0])
         self.assertEqual(prompt_args.kwargs["embed"].title, "Bump successful")
         self.assertEqual(
             [item.label for item in prompt_args.kwargs["view"].children],

@@ -53,6 +53,8 @@ class SettingDefinition:
     picker: str = ""
     single: bool = False
     visible: bool = True
+    maximum: Optional[int] = None
+    placeholders: tuple[str, ...] = ()
 
 
 SETTING_DEFINITIONS = (
@@ -205,10 +207,26 @@ SETTING_DEFINITIONS = (
         single=True,
     ),
     SettingDefinition(
+        "BUMP_SUCCESS_MESSAGE",
+        "bumps",
+        "string",
+        "Authoritative message sent after a verified successful /bump. It replaces the regular message stored in the selected success template. Use {member} for the member who bumped, {points} for the awarded points, and {reward_status} for the reward-role result.",
+        default=(
+            "Thanks for bumping our server, {member}! You gained:\n"
+            "- 💥 + {points} Bump Points\n"
+            "{reward_status}\n"
+            "A bump reminder will be posted in 2 hours."
+        ),
+        title="Successful Bump Response Message",
+        picker="emoji_text",
+        maximum=2000,
+        placeholders=("{member}", "{points}", "{reward_status}"),
+    ),
+    SettingDefinition(
         "BUMP_SUCCESS_EMBED_ID",
         "bumps",
         "embed_id",
-        "Saved response sent after a verified successful /bump. It uses the template's regular message, embed card, and first four buttons; the bump feature adds the Bump Leaderboard button. Blank uses the built-in points and reward receipt.",
+        "Saved embed card and buttons used after a verified successful /bump. Its regular message is ignored; the success message setting supplies the text. The first four template buttons are used and the bump feature adds Bump Leaderboard.",
         picker="embed",
         single=True,
         title="Successful Bump Response Embed",
@@ -228,6 +246,9 @@ SETTING_DEFINITIONS = (
         "Authoritative bump reminder message. It replaces the regular message stored in the selected Embed Editor template. Use {role} for the reminder role and {member} for the member whose bump scheduled the reminder.",
         default="{role}",
         title="Bump Reminder Message",
+        picker="emoji_text",
+        maximum=2000,
+        placeholders=("{role}", "{member}"),
     ),
     SettingDefinition(
         "BUMP_REMINDER_EMBED_ID",
@@ -766,6 +787,8 @@ def normalize_setting_value(key: str, value: str) -> str:
         import json
 
         return json.dumps(items)
+    if definition.maximum is not None and len(text) > definition.maximum:
+        raise ValueError(f"Value cannot exceed {definition.maximum:,} characters.")
     return text
 
 
@@ -844,6 +867,8 @@ def settings_for_dashboard() -> dict[str, list[dict[str, object]]]:
                 "picker": definition.picker,
                 "single": definition.single,
                 "value_format": value_format,
+                "maximum": definition.maximum,
+                "placeholders": definition.placeholders,
             }
         )
     return sections

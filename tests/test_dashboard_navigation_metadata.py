@@ -139,7 +139,7 @@ class DashboardNavigationMetadataTests(unittest.TestCase):
         self.assertIn("Live Discord preview", editor.text)
         self.assertIn("Emoji Picker", editor.text)
         self.assertIn("Search emoji", editor.text)
-        self.assertIn("Bump reminders replace this in Feature Settings", editor.text)
+        self.assertIn("Both bump response types replace this in Feature Settings", editor.text)
         self.assertNotIn("Supports {role}", editor.text)
         self.assertIn("+ Add button", editor.text)
         self.assertIn("role-single-select", editor.text)
@@ -178,9 +178,15 @@ class DashboardNavigationMetadataTests(unittest.TestCase):
         self.assertIn(f'<option value="{template_id}"', settings.text)
         self.assertIn("Bump Reminder", settings.text)
         self.assertIn("Successful Bump Response Embed", settings.text)
+        self.assertIn("Successful Bump Response Message", settings.text)
         self.assertIn("Bump Reminder Embed", settings.text)
         self.assertIn("Use the built-in successful bump response", settings.text)
         self.assertIn("Use the built-in bump reminder embed", settings.text)
+        self.assertIn('aria-label="BUMP_SUCCESS_MESSAGE"', settings.text)
+        self.assertIn('data-setting-placeholder="{member}"', settings.text)
+        self.assertIn('data-setting-placeholder="{points}"', settings.text)
+        self.assertIn("data-setting-emoji-toggle", settings.text)
+        self.assertIn("settings_message_editor.js", settings.text)
 
     def test_moved_pages_have_old_url_redirects(self):
         self.login()
@@ -317,6 +323,13 @@ class DashboardNavigationMetadataTests(unittest.TestCase):
         self.assertNotIn("source.replace(/\\{role\\}/", editor_script)
         self.assertIn("renderEmojiPicker", editor_script)
         self.assertIn("custom-emoji-value", editor_script)
+
+        settings_message_script = (
+            root / "dashboard/static/settings_message_editor.js"
+        ).read_text()
+        self.assertIn("data-setting-message-editor", settings_message_script)
+        self.assertIn("insertAtCursor", settings_message_script)
+        self.assertIn("setting-emoji-option", settings_message_script)
 
     def test_category_selection_matches_child_channels(self):
         self.assertTrue(
