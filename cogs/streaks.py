@@ -35,9 +35,11 @@ from utils.streaks import STREAK_SCHEMA, compute_streaks, is_streak_milestone
 
 
 logger = logging.getLogger(__name__)
-REACTION_LIFETIME_SECONDS = 60
 STREAK_FOOTER = "!streak = see your streak | /streak leaderboard = see all"
 STREAK_PAGE_SIZE = 10
+STREAK_MILESTONE_MESSAGE_DEFAULT = (
+    "🎉 Congratulations {member}! You reached a **{days}-day** activity streak!"
+)
 STREAK_BACKGROUND_PATH = (
     Path(__file__).resolve().parent.parent
     / "assets"
@@ -84,7 +86,6 @@ class Streaks(commands.Cog):
     def __init__(self, bot: commands.Bot) -> None:
         self.bot = bot
         self._weekly_refresh_started = False
-        self._reaction_tasks: set[asyncio.Task[None]] = set()
         self._heartbeat_initialized: set[int] = set()
         self._staff_role_ids: Optional[set[int]] = None
 
@@ -112,9 +113,6 @@ class Streaks(commands.Cog):
         self.weekly_refresh.cancel()
         self.heartbeat_worker.cancel()
         self.restore_worker.cancel()
-        for task in self._reaction_tasks:
-            task.cancel()
-        self._reaction_tasks.clear()
 
     @staticmethod
     def _timezone() -> ZoneInfo:
@@ -148,6 +146,11 @@ class Streaks(commands.Cog):
         channel = message.channel
         channel_id = getattr(channel, "id", 0)
         if channel_id in set(get_csv_ids_setting("STREAK_EXCLUDED_CHANNEL_IDS")):
+            return True
+        category_id = getattr(channel, "category_id", None)
+        if category_id is None:
+            category_id = getattr(getattr(channel, "parent", None), "category_id", None)
+        if category_id in set(get_csv_ids_setting("STREAK_EXCLUDED_CATEGORY_IDS")):
             return True
         names = {
             str(getattr(channel, "name", "") or "").casefold(),
@@ -397,46 +400,22 @@ class Streaks(commands.Cog):
         )
         return view
 
-    async def _remove_reaction_later(
-        self,
-        message: discord.Message,
-        emoji: str,
-    ) -> None:
-        await asyncio.sleep(REACTION_LIFETIME_SECONDS)
-        bot_user = self.bot.user
-        if bot_user is None:
-            return
-        try:
-            await message.remove_reaction(emoji, bot_user)
-        except (discord.NotFound, discord.Forbidden, discord.HTTPException):
-            pass
-
-    async def _add_temporary_reaction(
-        self,
-        message: discord.Message,
-        emoji: str,
-    ) -> None:
-        try:
-            await message.add_reaction(emoji)
-        except (discord.Forbidden, discord.HTTPException):
-            return
-        task = asyncio.create_task(self._remove_reaction_later(message, emoji))
-        self._reaction_tasks.add(task)
-        task.add_done_callback(self._reaction_tasks.discard)
-
     @commands.Cog.listener()
     async def on_message(self, message: discord.Message) -> None:
         result = await self._qualify_message(message)
         if result is None:
             return
-        _current, milestone_earned = result
+        current, milestone_earned = result
         if milestone_earned:
             try:
                 await message.add_reaction("🎉")
             except (discord.Forbidden, discord.HTTPException):
                 pass
-            return
-        await self._add_temporary_reaction(message, "🔥")
+            await self._send_milestone_notification(
+                message.guild,
+                message.author,
+                current,
+            )
 
     @commands.Cog.listener()
     async def on_raw_message_delete(
@@ -557,19 +536,76 @@ class Streaks(commands.Cog):
         await self.bot.db.commit()
 
     @staticmethod
-    def _milestone_message(days: int) -> str:
-        messages = {
-            7: "One full week! Keep the fire going.",
-            14: "Two weeks strong! Your consistency is heating up.",
-            30: "A full month of showing up every day. Incredible!",
-            45: "Forty-five days strong! Your streak keeps growing.",
-            60: "Two straight months! That streak is blazing.",
-            100: "One hundred days! You are a streak legend.",
-            150: "One hundred fifty days of incredible consistency!",
-            200: "Two hundred days! Your dedication is unstoppable.",
-            250: "Two hundred fifty days! An extraordinary streak.",
-        }
-        return messages.get(days, f"{days} days of consistency—keep it going!")
+    def _milestone_message(member: discord.Member, days: int) -> str:
+        configured = str(
+            get_setting(
+                "STREAK_MILESTONE_MESSAGE",
+                STREAK_MILESTONE_MESSAGE_DEFAULT,
+            )
+            or ""
+        ).strip()
+        if not configured:
+            configured = STREAK_MILESTONE_MESSAGE_DEFAULT
+        return (
+            configured.replace("{member}", member.mention)
+            .replace("{days}", str(days))
+            .strip()
+        )
+
+    async def _send_milestone_notification(
+        self,
+        guild: discord.Guild,
+        member: discord.Member,
+        milestone_days: int,
+    ) -> None:
+        raw_channel_id = str(
+            get_setting("STREAK_MILESTONE_CHANNEL_ID", "") or ""
+        ).strip()
+        if not raw_channel_id.isdigit():
+            return
+        channel_id = int(raw_channel_id)
+        channel = self.bot.get_channel(channel_id)
+        if channel is None:
+            try:
+                channel = await self.bot.fetch_channel(channel_id)
+            except (discord.NotFound, discord.Forbidden, discord.HTTPException):
+                logger.warning(
+                    "Could not access streak milestone channel guild_id=%s channel_id=%s",
+                    guild.id,
+                    channel_id,
+                )
+                return
+        if getattr(getattr(channel, "guild", None), "id", None) != guild.id:
+            logger.warning(
+                "Ignoring streak milestone channel outside guild_id=%s channel_id=%s",
+                guild.id,
+                channel_id,
+            )
+            return
+        send = getattr(channel, "send", None)
+        if send is None:
+            logger.warning(
+                "Configured streak milestone channel is not messageable guild_id=%s channel_id=%s",
+                guild.id,
+                channel_id,
+            )
+            return
+        try:
+            await send(
+                self._milestone_message(member, milestone_days),
+                allowed_mentions=discord.AllowedMentions(
+                    users=[member],
+                    roles=False,
+                    everyone=False,
+                ),
+            )
+        except (discord.Forbidden, discord.HTTPException):
+            logger.warning(
+                "Could not publish streak milestone guild_id=%s member_id=%s channel_id=%s",
+                guild.id,
+                member.id,
+                channel_id,
+            )
 
     async def _milestone_embed(
         self,
@@ -580,10 +616,7 @@ class Streaks(commands.Cog):
         current, longest = await self._recompute(guild_id, member.id)
         embed = discord.Embed(
             title="🔥 STREAK MILESTONE!",
-            description=(
-                f"{member.mention} reached a **{milestone_days}-day** activity streak!\n\n"
-                f"{self._milestone_message(milestone_days)}"
-            ),
+            description=self._milestone_message(member, milestone_days),
             color=COLOR,
         )
         embed.add_field(name="Current streak", value=f"**{current} days**")

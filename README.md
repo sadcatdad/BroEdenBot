@@ -130,16 +130,20 @@ Qualifying member-accessible messages maintain current and longest daily
 streaks in `data.db`. Channels gated behind an ordinary verified/member role
 count; private channels accessible only through staff/admin roles do not. Bots,
 webhooks, commands, short messages, duplicate messages, private staff channels,
-and configured excluded channels do not count. Deleted source messages are
-removed and affected streaks are recomputed.
+and configured excluded channels or categories do not count. Deleted source
+messages are removed and affected streaks are recomputed.
 
 - `!streak` — Shows the caller's current/longest streak and any unread milestone.
 - `/streak leaderboard [streak_type]` — Shows current or longest streaks in
   ten-row graphical pages.
 
 Milestones begin at 7, 14, 30, 45, 60, and 100 days and continue at the
-configured rolling thresholds. `STREAK_LEADERBOARD_CHANNEL_ID` receives the
-persistent weekly tracker; `STREAK_TIMEZONE` controls day boundaries.
+configured rolling thresholds. `STREAK_MILESTONE_CHANNEL_ID` can announce each
+new milestone with the dashboard-managed `STREAK_MILESTONE_MESSAGE` template,
+which supports `{member}` and `{days}`. Leave the channel blank to keep
+milestone details private to the member's streak view.
+`STREAK_LEADERBOARD_CHANNEL_ID` receives the persistent weekly tracker;
+`STREAK_TIMEZONE` controls day boundaries.
 
 The bot writes a per-guild heartbeat while streak tracking is online. When a
 heartbeat gap exceeds `STREAK_RESTORE_GAP_MINUTES`, the next startup queues an
@@ -1525,6 +1529,9 @@ updated from the authenticated local dashboard without rewriting `.env`.
 | `STREAK_MIN_WORDS` | Minimum word count for a qualifying streak message. Defaults to `4`. |
 | `STREAK_DUPLICATE_LOOKBACK_DAYS` | Exact-message duplicate lookback window. Defaults to `30`. |
 | `STREAK_EXCLUDED_CHANNEL_IDS` | Additional channels excluded from streak qualification. |
+| `STREAK_EXCLUDED_CATEGORY_IDS` | Categories whose channels are excluded from streak qualification. |
+| `STREAK_MILESTONE_CHANNEL_ID` | Optional channel for automatic milestone announcements. Leave blank for private-only milestone details. |
+| `STREAK_MILESTONE_MESSAGE` | Milestone announcement text. Supports `{member}` and `{days}`. |
 | `STREAK_LEADERBOARD_CHANNEL_ID` | Channel receiving the persistent weekly streak tracker. |
 | `STREAK_RESTORE_ENABLED` | Enables automatic history recovery after a heartbeat gap. Defaults to `true`. |
 | `STREAK_RESTORE_GAP_MINUTES` | Missing-heartbeat duration that queues automatic recovery. Defaults to `10`. |

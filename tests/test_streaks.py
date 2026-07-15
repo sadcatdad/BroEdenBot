@@ -20,12 +20,20 @@ class DummyBot:
         self.db = database
         self.guilds = []
         self.guild = None
+        self.channel = None
 
     async def wait_until_ready(self):
         return None
 
     def get_guild(self, guild_id):
         return self.guild if self.guild and self.guild.id == guild_id else None
+
+    def get_channel(self, channel_id):
+        return (
+            self.channel
+            if self.channel and self.channel.id == channel_id
+            else None
+        )
 
 
 class DummyMember:
@@ -329,6 +337,27 @@ class StreakTests(unittest.IsolatedAsyncioTestCase):
         ):
             self.assertEqual(await self.cog._qualify_message(message), (1, False))
 
+    async def test_configured_category_excludes_its_channels(self):
+        guild = SimpleNamespace(id=1, default_role=object())
+        channel = DummyChannel()
+        channel.category_id = 555
+        message = SimpleNamespace(
+            id=8,
+            guild=guild,
+            author=DummyMember(),
+            webhook_id=None,
+            channel=channel,
+            content="This message would otherwise qualify today",
+        )
+        with (
+            patch("cogs.streaks.discord.Member", DummyMember),
+            patch(
+                "cogs.streaks.get_csv_ids_setting",
+                side_effect=lambda key: [555] if key == "STREAK_EXCLUDED_CATEGORY_IDS" else [],
+            ),
+        ):
+            self.assertIsNone(await self.cog._qualify_message(message))
+
     async def test_verified_member_role_makes_role_gated_channel_public(self):
         everyone = DummyRole(1)
         verified = DummyRole(2)
@@ -419,28 +448,72 @@ class StreakTests(unittest.IsolatedAsyncioTestCase):
         ):
             self.assertIsNone(await self.cog._qualify_message(message))
 
-    async def test_milestones_get_permanent_party_reaction_and_other_days_temporary_fire(self):
-        message = SimpleNamespace(add_reaction=AsyncMock())
-        self.cog._add_temporary_reaction = AsyncMock()
+    async def test_only_milestones_receive_a_party_reaction(self):
+        guild = SimpleNamespace(id=1)
+        member = DummyMember()
+        message = SimpleNamespace(
+            guild=guild,
+            author=member,
+            add_reaction=AsyncMock(),
+        )
+        self.cog._send_milestone_notification = AsyncMock()
         with patch.object(self.cog, "_qualify_message", return_value=(7, True)):
             await self.cog.on_message(message)
         message.add_reaction.assert_awaited_once_with("🎉")
-        self.cog._add_temporary_reaction.assert_not_awaited()
+        self.cog._send_milestone_notification.assert_awaited_once_with(
+            guild,
+            member,
+            7,
+        )
 
         message.add_reaction.reset_mock()
+        self.cog._send_milestone_notification.reset_mock()
         with patch.object(self.cog, "_qualify_message", return_value=(3, False)):
             await self.cog.on_message(message)
         message.add_reaction.assert_not_awaited()
-        self.cog._add_temporary_reaction.assert_awaited_once_with(message, "🔥")
+        self.cog._send_milestone_notification.assert_not_awaited()
 
-    async def test_fire_reaction_is_removed_after_one_minute(self):
-        bot_user = object()
-        self.bot.user = bot_user
-        message = SimpleNamespace(remove_reaction=AsyncMock())
-        with patch("cogs.streaks.asyncio.sleep", new=AsyncMock()) as sleep:
-            await self.cog._remove_reaction_later(message, "🔥")
-        sleep.assert_awaited_once_with(60)
-        message.remove_reaction.assert_awaited_once_with("🔥", bot_user)
+    async def test_milestone_notification_uses_configured_channel_and_template(self):
+        guild = SimpleNamespace(id=1)
+        member = DummyMember()
+        channel = SimpleNamespace(
+            id=999,
+            guild=guild,
+            send=AsyncMock(),
+        )
+        self.bot.channel = channel
+
+        def setting_value(key, default=""):
+            return {
+                "STREAK_MILESTONE_CHANNEL_ID": "999",
+                "STREAK_MILESTONE_MESSAGE": "Way to go {member}: {days} days!",
+            }.get(key, default)
+
+        with patch("cogs.streaks.get_setting", side_effect=setting_value):
+            await self.cog._send_milestone_notification(guild, member, 14)
+
+        channel.send.assert_awaited_once()
+        self.assertEqual(
+            channel.send.await_args.args[0],
+            "Way to go <@42>: 14 days!",
+        )
+        self.assertIn("allowed_mentions", channel.send.await_args.kwargs)
+
+    async def test_milestone_embed_uses_configured_template(self):
+        member = DummyMember()
+        with patch(
+            "cogs.streaks.get_setting",
+            side_effect=lambda key, default="": (
+                "Proud of {member} for reaching {days} days!"
+                if key == "STREAK_MILESTONE_MESSAGE"
+                else default
+            ),
+        ):
+            embed = await self.cog._milestone_embed(1, member, 30)
+        self.assertEqual(
+            embed.description,
+            "Proud of <@42> for reaching 30 days!",
+        )
 
     async def test_seventh_day_creates_unread_milestone_once(self):
         today = date(2026, 7, 13)

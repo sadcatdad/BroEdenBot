@@ -229,6 +229,17 @@ class SettingsValidationTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "2,000"):
             normalize_setting_value("BUMP_SUCCESS_MESSAGE", "x" * 2001)
 
+    def test_streak_milestone_message_supports_placeholders_and_discord_limit(self):
+        self.assertEqual(
+            normalize_setting_value(
+                "STREAK_MILESTONE_MESSAGE",
+                "Great work {member}: {days} days! 🎉",
+            ),
+            "Great work {member}: {days} days! 🎉",
+        )
+        with self.assertRaisesRegex(ValueError, "2,000"):
+            normalize_setting_value("STREAK_MILESTONE_MESSAGE", "x" * 2001)
+
     def test_forbidden_and_unknown_keys_are_rejected(self):
         for key in (
             "DISCORD_TOKEN",
