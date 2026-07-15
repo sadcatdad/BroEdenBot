@@ -1,3 +1,4 @@
+import json
 import os
 import re
 import sqlite3
@@ -105,6 +106,7 @@ class DashboardNavigationMetadataTests(unittest.TestCase):
             "Knowledge",
             "Analytics",
             "Streaks",
+            "Embed Editor",
             "Bank",
             "Settings",
         ):
@@ -129,6 +131,48 @@ class DashboardNavigationMetadataTests(unittest.TestCase):
             "Advanced",
         ):
             self.assertIn(label, settings.text)
+
+    def test_embed_editor_create_search_edit_and_feature_picker(self):
+        self.login()
+        editor = self.client.get("/embeds/new")
+        self.assertEqual(editor.status_code, 200)
+        self.assertIn("Live Discord preview", editor.text)
+        self.assertIn("+ Add button", editor.text)
+        self.assertIn("role-single-select", editor.text)
+        token = re.search(r'name="csrf" value="([^"]+)"', editor.text).group(1)
+        payload = {
+            "content": "{role}",
+            "embed": {
+                "title": "Bump time",
+                "description": "Please use `/bump`.",
+                "color": "#25b8b8",
+                "fields": [],
+            },
+            "buttons": [],
+        }
+        saved = self.client.post(
+            "/embeds/save",
+            data={
+                "csrf": token,
+                "template_id": "",
+                "name": "Bump Reminder",
+                "payload_json": json.dumps(payload),
+            },
+            follow_redirects=False,
+        )
+        self.assertEqual(saved.status_code, 303)
+        self.assertRegex(saved.headers["location"], r"/embeds/\d+/edit$")
+
+        listing = self.client.get("/embeds?q=Bump&sort=name&order=asc")
+        self.assertEqual(listing.status_code, 200)
+        self.assertIn("Bump Reminder", listing.text)
+        self.assertIn("Date Modified", listing.text)
+        self.assertIn("Feature(s)", listing.text)
+
+        template_id = saved.headers["location"].split("/")[-2]
+        settings = self.client.get("/settings/features")
+        self.assertIn(f'<option value="{template_id}"', settings.text)
+        self.assertIn("Bump Reminder", settings.text)
 
     def test_moved_pages_have_old_url_redirects(self):
         self.login()
@@ -256,7 +300,7 @@ class DashboardNavigationMetadataTests(unittest.TestCase):
         self.assertIn(".settings-menu-item", styles)
         self.assertIn("text-decoration: none", styles)
         base_template = (root / "dashboard/templates/base.html").read_text()
-        self.assertIn("styles.css') }}?v=streak-dashboard2", base_template)
+        self.assertIn("styles.css') }}?v=embed-editor1", base_template)
         self.assertIn("discord_pickers.js') }}?v=picker-single-values2", base_template)
 
     def test_category_selection_matches_child_channels(self):

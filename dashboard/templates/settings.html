@@ -80,6 +80,13 @@
         <channel-multi-select input-name="value" setting-key="{{ setting.key }}" value-format="{{ setting.value_format }}" value="{{ setting.value|e }}"></channel-multi-select>
         {% elif setting.picker == "category" %}
         <category-multi-select input-name="value" setting-key="{{ setting.key }}" value-format="{{ setting.value_format }}" value="{{ setting.value|e }}"></category-multi-select>
+        {% elif setting.picker == "embed" %}
+        <select name="value" aria-label="{{ setting.key }}">
+          <option value="">Use the built-in bump reminder embed</option>
+          {% for embed in embed_options or [] %}
+          <option value="{{ embed.id }}" {{ "selected" if setting.value == embed.id|string else "" }}>{{ embed.name }}</option>
+          {% endfor %}
+        </select>
         {% else %}
         <input
           name="value"

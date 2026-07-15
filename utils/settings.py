@@ -213,6 +213,21 @@ SETTING_DEFINITIONS = (
         single=True,
     ),
     SettingDefinition(
+        "BUMP_REMINDER_MESSAGE",
+        "bumps",
+        "string",
+        "Regular reminder message. Use {role} for the selected reminder role and {member} for the member who requested the reminder.",
+        default="{role}",
+    ),
+    SettingDefinition(
+        "BUMP_REMINDER_EMBED_ID",
+        "bumps",
+        "embed_id",
+        "Saved Embed Editor message used for the two-hour reminder.",
+        picker="embed",
+        single=True,
+    ),
+    SettingDefinition(
         "BUMP_LEADERBOARD_CHANNEL_ID",
         "bumps",
         "csv_ids",
@@ -693,6 +708,12 @@ def normalize_setting_value(key: str, value: str) -> str:
         if definition.minimum is not None and parsed < definition.minimum:
             raise ValueError(f"Value must be at least {definition.minimum}.")
         return str(parsed)
+    if definition.value_type == "embed_id":
+        if not text:
+            return ""
+        if not text.isdigit():
+            raise ValueError("Choose a saved embed.")
+        return text
     if definition.value_type == "datetime":
         if not text:
             return ""

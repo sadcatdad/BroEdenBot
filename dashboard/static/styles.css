@@ -564,6 +564,71 @@ details summary { color: var(--muted); cursor: pointer; }
 .picker-more { margin: .6rem; justify-self: center; }
 .picker-note { padding: .7rem .85rem; }
 
+.button.small { padding: .45rem .65rem; font-size: .78rem; }
+.embed-table-tools {
+  display: flex;
+  align-items: end;
+  gap: .65rem;
+  margin-bottom: 1rem;
+}
+.embed-table-tools label { flex: 1; }
+.embed-table th a { color: inherit; text-decoration: none; }
+.embed-name-link { color: var(--text); font-weight: 800; text-decoration: none; }
+.embed-name-link:hover { color: #ff9fd3; }
+.embed-feature-actions { display: flex; align-items: center; justify-content: space-between; gap: 1rem; }
+.embed-feature-actions > div { display: flex; flex-wrap: wrap; gap: .35rem; }
+.back-link { display: inline-block; margin-bottom: .5rem; text-decoration: none; }
+.embed-editor-layout {
+  display: grid;
+  grid-template-columns: minmax(0, 1.15fr) minmax(360px, .85fr);
+  gap: 1.25rem;
+  align-items: start;
+}
+.embed-editor-controls { display: grid; gap: 1rem; min-width: 0; }
+.embed-preview-column { position: sticky; top: 5.2rem; min-width: 0; }
+.editor-section { display: grid; gap: 1rem; }
+.editor-section .section-heading { margin-bottom: 0; }
+.embed-fields-card { position: relative; overflow: hidden; padding-left: 1.5rem; }
+.embed-color-rail { position: absolute; inset: 0 auto 0 0; width: .32rem; background: #25b8b8; }
+.color-input-row, .emoji-input-row { display: grid; grid-template-columns: auto minmax(0, 1fr); gap: .5rem; }
+.color-input-row input[type="color"] { width: 3.25rem; min-height: 2.8rem; padding: .25rem; }
+.emoji-input-row { grid-template-columns: minmax(0, 1fr) auto; }
+.dynamic-editor-list { display: grid; gap: .8rem; }
+.dynamic-editor-row { display: grid; gap: .8rem; padding: 1rem; background: #101117; border: 1px solid var(--border); border-radius: .7rem; }
+.dynamic-editor-row .remove-row { justify-self: end; }
+.inline-checkbox { align-self: end; min-height: 2.8rem; }
+.emoji-picker { display: flex; flex-wrap: wrap; gap: .25rem; padding: .5rem; background: var(--panel-soft); border: 1px solid var(--border); border-radius: .55rem; }
+.emoji-picker[hidden] { display: none; }
+.emoji-picker button { padding: .35rem; font-size: 1.25rem; background: transparent; border: 0; border-radius: .35rem; cursor: pointer; }
+.emoji-picker button:hover { background: var(--border); }
+.embed-preview-card { overflow: hidden; }
+.discord-message-preview { display: grid; grid-template-columns: 2.7rem minmax(0, 1fr); gap: .7rem; padding: 1rem 0; }
+.discord-avatar { display: grid; width: 2.7rem; height: 2.7rem; place-items: center; color: white; background: linear-gradient(135deg, #14c7dd, #f0319b 55%, #7857ff); border-radius: 50%; font-weight: 900; }
+.discord-message-body { min-width: 0; }
+.discord-author-line { display: flex; flex-wrap: wrap; align-items: center; gap: .4rem; margin-bottom: .35rem; font-size: .78rem; color: var(--muted); }
+.discord-author-line strong { color: var(--text); font-size: .95rem; }
+.discord-bot-badge { padding: .08rem .28rem; color: white; background: #5865f2; border-radius: .2rem; font-size: .62rem; font-weight: 800; }
+.discord-regular-message { margin-bottom: .5rem; color: #dbdee1; white-space: pre-wrap; overflow-wrap: anywhere; }
+.placeholder { color: #72767d !important; }
+.discord-embed-preview { position: relative; max-width: 33rem; min-height: 4.5rem; padding: .8rem 1rem; overflow: hidden; background: #2b2d31; border-left: 4px solid #25b8b8; border-radius: .25rem; }
+.discord-embed-preview.preview-empty { opacity: .65; }
+.discord-embed-author { margin-bottom: .45rem; color: #f2f3f5; font-size: .82rem; font-weight: 700; }
+.discord-embed-title { display: block; margin-bottom: .45rem; color: #00a8fc; font-weight: 700; text-decoration: none; overflow-wrap: anywhere; }
+.discord-embed-description { color: #dbdee1; font-size: .86rem; line-height: 1.35; white-space: pre-wrap; overflow-wrap: anywhere; }
+.discord-embed-thumbnail { float: right; width: 5rem; max-height: 5rem; margin: 0 0 .6rem .8rem; object-fit: cover; border-radius: .2rem; }
+.discord-embed-fields { display: grid; grid-template-columns: repeat(12, minmax(0, 1fr)); gap: .65rem; clear: both; margin-top: .7rem; }
+.preview-field { display: grid; grid-column: span 12; gap: .15rem; min-width: 0; font-size: .82rem; }
+.preview-field.inline { grid-column: span 4; }
+.preview-field strong, .preview-field span { overflow-wrap: anywhere; white-space: pre-wrap; }
+.discord-embed-image { display: block; width: 100%; max-height: 22rem; margin-top: .8rem; object-fit: contain; object-position: left; border-radius: .25rem; }
+.discord-embed-footer { margin-top: .7rem; color: #b5bac1; font-size: .72rem; overflow-wrap: anywhere; }
+.discord-button-preview { display: flex; flex-wrap: wrap; gap: .4rem; margin-top: .45rem; }
+.preview-discord-button { padding: .48rem .75rem; color: white; background: #4e5058; border-radius: .2rem; font-size: .8rem; font-weight: 650; }
+.preview-discord-button.style-primary { background: #5865f2; }
+.preview-discord-button.style-success { background: #248046; }
+.preview-discord-button.style-danger { background: #da373c; }
+.preview-discord-button.style-link { background: #4e5058; }
+
 @media (max-width: 850px) {
   .site-header { align-items: flex-start; flex-wrap: wrap; }
   nav { order: 3; flex: 0 0 100%; width: 100%; overflow-x: auto; }
@@ -594,6 +659,8 @@ details summary { color: var(--muted); cursor: pointer; }
   .operation-actions { align-items: flex-start; flex-direction: column; }
   .knowledge-filters { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .filter-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .embed-editor-layout { grid-template-columns: 1fr; }
+  .embed-preview-column { position: static; }
 }
 
 @media (max-width: 540px) {
@@ -611,4 +678,6 @@ details summary { color: var(--muted); cursor: pointer; }
   .inline-search { width: 100%; align-items: stretch; flex-direction: column; }
   .inline-search input { min-width: 0; }
   .bar-row { grid-template-columns: 5.8rem minmax(5rem, 1fr) 4rem; gap: .4rem; }
+  .embed-table-tools { align-items: stretch; flex-direction: column; }
+  .preview-field.inline { grid-column: span 12; }
 }

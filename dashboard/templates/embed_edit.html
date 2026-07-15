@@ -1,0 +1,115 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="page-heading embed-editor-heading">
+  <div>
+    <a class="muted back-link" href="{{ url_for('embed_templates') }}">← Embed Editor</a>
+    <h1>{{ embed_template.name if embed_template and embed_template.id else "New Embed" }}</h1>
+  </div>
+  <div class="action-buttons">
+    <a class="button secondary" href="{{ url_for('embed_templates') }}">Discard</a>
+    {% if can_write %}<button class="button" type="submit" form="embed-editor-form">Save</button>{% endif %}
+  </div>
+</div>
+{% if message %}<div class="alert success">{{ message }}</div>{% endif %}
+{% if error %}<div class="alert error">{{ error }}</div>{% endif %}
+{% if embed_template and embed_template.features %}<div class="alert warning">Used by: {{ embed_template.features|join(', ') }}. Saving changes updates the next message sent by those features.</div>{% endif %}
+
+<form id="embed-editor-form" method="post" action="{{ url_for('embed_save') }}" class="embed-editor-layout">
+  <input type="hidden" name="csrf" value="{{ csrf_token }}">
+  <input type="hidden" name="template_id" value="{{ embed_template.id if embed_template and embed_template.id else '' }}">
+  <input type="hidden" id="embed-payload-json" name="payload_json">
+  <section class="embed-editor-controls">
+    <div class="card editor-section">
+      <div class="section-heading">
+        <div><p class="eyebrow">Saved asset</p><h2>Embed details</h2></div>
+      </div>
+      <label>Name<input id="embed-name" name="name" maxlength="100" required value="{{ embed_template.name if embed_template else '' }}" placeholder="Bump reminder"></label>
+      <label>Regular message <span class="muted">Supports {role} and {member} when used by bump reminders.</span><textarea id="message-content" maxlength="2000" rows="3" placeholder="Write your message here!"></textarea></label>
+    </div>
+
+    <div class="card editor-section embed-fields-card">
+      <div class="embed-color-rail" id="embed-color-rail"></div>
+      <div class="form-grid two">
+        <label>Author / header<input id="author-name" maxlength="256" placeholder="Header"></label>
+        <label>Author icon URL<input id="author-icon-url" type="url" placeholder="https://..."></label>
+        <label>Author link URL<input id="author-url" type="url" placeholder="https://..."></label>
+        <label>Embed color<span class="color-input-row"><input id="embed-color" type="color" value="#25b8b8"><input id="embed-color-text" value="#25b8b8" maxlength="7" aria-label="Embed hex color"></span></label>
+      </div>
+      <label>Title<input id="embed-title" maxlength="256" placeholder="Title"></label>
+      <label>Title link URL<input id="embed-url" type="url" placeholder="https://..."></label>
+      <label>Description<textarea id="embed-description" maxlength="4096" rows="6" placeholder="Write your embed message here!"></textarea></label>
+      <div id="embed-field-editors" class="dynamic-editor-list"></div>
+      <button class="button secondary" id="add-embed-field" type="button">+ Add field</button>
+      <div class="form-grid two image-url-grid">
+        <label>Thumbnail URL<input id="thumbnail-url" type="url" placeholder="https://..."></label>
+        <label>Large image URL<input id="image-url" type="url" placeholder="https://..."></label>
+      </div>
+      <div class="form-grid two">
+        <label>Footer<input id="footer-text" maxlength="2048" placeholder="Footer"></label>
+        <label>Footer icon URL<input id="footer-icon-url" type="url" placeholder="https://..."></label>
+      </div>
+    </div>
+
+    <div class="card editor-section">
+      <div class="section-heading">
+        <div><p class="eyebrow">Components</p><h2>Buttons</h2></div>
+        <span class="muted">Up to 5</span>
+      </div>
+      <p class="muted">Role buttons let members add or remove a configured role. URL buttons use Discord's fixed link style. Bump reminders reserve the fifth slot for the subscription button.</p>
+      <div id="button-editors" class="dynamic-editor-list"></div>
+      <button class="button secondary" id="add-embed-button" type="button">+ Add button</button>
+    </div>
+  </section>
+
+  <aside class="embed-preview-column">
+    <div class="card embed-preview-card">
+      <p class="eyebrow">Live Discord preview</p>
+      <div class="discord-message-preview">
+        <div class="discord-avatar">BE</div>
+        <div class="discord-message-body">
+          <div class="discord-author-line"><strong>BroEdenBot</strong><span class="discord-bot-badge">BOT</span><span>Today</span></div>
+          <div id="preview-content" class="discord-regular-message"></div>
+          <div id="preview-embed" class="discord-embed-preview">
+            <div id="preview-author" class="discord-embed-author"></div>
+            <a id="preview-title" class="discord-embed-title"></a>
+            <div id="preview-description" class="discord-embed-description"></div>
+            <img id="preview-thumbnail" class="discord-embed-thumbnail" alt="">
+            <div id="preview-fields" class="discord-embed-fields"></div>
+            <img id="preview-image" class="discord-embed-image" alt="">
+            <div id="preview-footer" class="discord-embed-footer"></div>
+          </div>
+          <div id="preview-buttons" class="discord-button-preview"></div>
+        </div>
+      </div>
+    </div>
+  </aside>
+</form>
+
+<template id="embed-field-template">
+  <div class="dynamic-editor-row embed-field-editor">
+    <div class="form-grid two">
+      <label>Field name<input data-field="name" maxlength="256"></label>
+      <label class="checkbox-line inline-checkbox"><input data-field="inline" type="checkbox"> Display inline</label>
+    </div>
+    <label>Field value<textarea data-field="value" maxlength="1024" rows="3"></textarea></label>
+    <button class="button danger small remove-row" type="button">Remove field</button>
+  </div>
+</template>
+
+<template id="embed-button-template">
+  <div class="dynamic-editor-row button-editor">
+    <div class="form-grid two">
+      <label>Label<input data-button="label" maxlength="80" placeholder="Subscribe"></label>
+      <label>Action<select data-button="action"><option value="add_role">Adds a role</option><option value="remove_role">Removes a role</option><option value="url">Goes to a URL</option></select></label>
+      <label>Button color<select data-button="style"><option value="primary">Blue</option><option value="secondary">Gray</option><option value="success">Green</option><option value="danger">Red</option></select></label>
+      <label>Emoji<div class="emoji-input-row"><input data-button="emoji" maxlength="100" placeholder="🔔 or custom emoji ID"><button class="button secondary emoji-toggle" type="button" aria-label="Choose emoji">☺</button></div><div class="emoji-picker" hidden></div></label>
+    </div>
+    <div class="button-target-role"><label>Role<role-single-select input-name="button_role" value-format="csv" value=""></role-single-select></label></div>
+    <div class="button-target-url" hidden><label>URL<input data-button="url" type="url" placeholder="https://..."></label></div>
+    <button class="button danger small remove-row" type="button">Remove button</button>
+  </div>
+</template>
+
+<script id="embed-initial-data" type="application/json">{{ embed_payload|tojson }}</script>
+<script src="{{ url_for('static', path='embed_editor.js') }}?v=embed-editor1" defer></script>
+{% endblock %}

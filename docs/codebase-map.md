@@ -24,6 +24,10 @@ maintenance.
   manual AI, and live Discord sources, and aggregate server analytics. Discord
   role/channel pickers read a live-guild metadata snapshot written by the bot,
   not historical import tables.
+- `dashboard/templates/embeds.html`, `dashboard/templates/embed_edit.html`, and
+  `dashboard/static/embed_editor.js` — Searchable saved-embed inventory,
+  Discord-style live editor/preview, Unicode emoji chooser, dynamic fields,
+  and role/URL button configuration.
 - `dashboard/streaks_manager.py` — Streak summaries, durable history-restore
   requests, audited source-day adjustments, and current/longest recalculation
   for the top-level Streaks dashboard page.
@@ -42,8 +46,9 @@ maintenance.
 - `cogs/queue.py` — Voice-channel queues and legacy prefix commands.
 - `cogs/leaderboards.py` — Custom banner/accent leaderboards, score controls,
   confirmations, point summaries, and live milestone roles.
-- `cogs/disboard_bumps.py` — Verified DISBOARD bump points, reward-role
-  handoff, persistent reminder controls, and Bump Legends publishing.
+- `cogs/disboard_bumps.py` — Verified DISBOARD `/bump` points, reward-role
+  handoff, automatic two-hour reminder delivery, saved reminder embeds,
+  self-service embed role buttons, and Bump Legends publishing.
 - `cogs/streaks.py` — Daily public-message streak qualification, deletion
   reconciliation, milestones, current/longest graphical leaderboards,
   heartbeat gap detection, and restart-safe Discord-history recovery.
@@ -130,6 +135,8 @@ maintenance.
   dashboard/Discord KB helpers.
 - `utils/settings.py` — Allowlisted, validated runtime settings stored in
   `data.db`, with environment fallback and a non-secret dashboard audit trail.
+- `utils/embed_templates.py` — Saved message/embed schema, Discord-limit and URL
+  validation, feature-use protection, and runtime Discord embed/button builders.
 - `utils/discord_metadata.py` — Shared SQLite snapshot and fixed dashboard
   action helpers for live Discord roles, categories, and channels used by the
   dashboard settings pickers.

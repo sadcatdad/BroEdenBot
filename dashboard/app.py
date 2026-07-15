@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import os
 import re
 import secrets
@@ -128,6 +129,14 @@ from utils.settings import (
     settings_for_dashboard,
 )
 from utils.display_names import normalize_display_name
+from utils.embed_templates import (
+    default_embed_payload,
+    delete_embed_template,
+    get_embed_template,
+    initialize_embed_templates_schema,
+    list_embed_templates,
+    save_embed_template,
+)
 from utils.stats_manager import (
     archive_stat,
     export_stat_csv,
@@ -191,6 +200,7 @@ if dashboard_enabled():
     initialize_live_knowledge_schema_sync()
     initialize_dashboard_users()
     initialize_streak_dashboard_schema()
+    initialize_embed_templates_schema()
 
 app = FastAPI(
     title="BroEdenBot Local Dashboard",
@@ -925,6 +935,124 @@ async def knowledge_live_sync(
     return knowledge_redirect(request)
 
 
+def render_embed_editor(
+    request: Request,
+    *,
+    template: Optional[dict[str, Any]],
+    error: Optional[str] = None,
+) -> HTMLResponse:
+    return templates.TemplateResponse(
+        request=request,
+        name="embed_edit.html",
+        context=template_context(
+            request,
+            page_title=(f"Edit {template['name']}" if template and template.get("id") else "Create Embed"),
+            embed_template=template,
+            embed_payload=(template or {}).get("payload", default_embed_payload()),
+            discord_metadata=picker_metadata(),
+            error=error or request.session.pop("embed_error", None),
+            message=request.session.pop("embed_message", None),
+        ),
+    )
+
+
+@app.get("/embeds", response_class=HTMLResponse, name="embed_templates")
+async def embed_templates_page(
+    request: Request,
+    q: str = "",
+    sort: str = "updated",
+    order: str = "desc",
+) -> HTMLResponse:
+    if redirect := login_redirect(request):
+        return redirect
+    clean_sort = sort if sort in {"name", "updated", "features"} else "updated"
+    clean_order = "asc" if order.casefold() == "asc" else "desc"
+    return templates.TemplateResponse(
+        request=request,
+        name="embeds.html",
+        context=template_context(
+            request,
+            page_title="Embed Editor",
+            embeds=list_embed_templates(q, clean_sort, clean_order),
+            query=q,
+            sort=clean_sort,
+            order=clean_order,
+            message=request.session.pop("embed_message", None),
+            error=request.session.pop("embed_error", None),
+        ),
+    )
+
+
+@app.get("/embeds/new", response_class=HTMLResponse, name="embed_new")
+async def embed_new(request: Request) -> HTMLResponse:
+    if redirect := login_redirect(request):
+        return redirect
+    return render_embed_editor(request, template=None)
+
+
+@app.get("/embeds/{template_id}/edit", response_class=HTMLResponse, name="embed_edit")
+async def embed_edit(request: Request, template_id: int) -> HTMLResponse:
+    if redirect := login_redirect(request):
+        return redirect
+    template = get_embed_template(template_id)
+    if template is None:
+        raise HTTPException(status_code=404, detail="Embed was not found.")
+    return render_embed_editor(request, template=template)
+
+
+@app.post("/embeds/save", name="embed_save")
+async def embed_save(request: Request) -> Response:
+    if redirect := login_redirect(request):
+        return redirect
+    await require_action_csrf(request)
+    form = await request.form()
+    raw_id = str(form.get("template_id", "")).strip()
+    template_id = int(raw_id) if raw_id.isdigit() else None
+    name = str(form.get("name", ""))
+    payload_json = str(form.get("payload_json", ""))
+    try:
+        saved_id = save_embed_template(
+            name=name,
+            payload_json=payload_json,
+            updated_by=dashboard_user_label(request),
+            template_id=template_id,
+        )
+    except (OSError, sqlite3.Error, ValueError) as exc:
+        try:
+            draft_payload = json.loads(payload_json)
+        except json.JSONDecodeError:
+            draft_payload = default_embed_payload()
+        draft = {
+            "id": template_id,
+            "name": name,
+            "payload": draft_payload,
+            "features": [],
+        }
+        return render_embed_editor(request, template=draft, error=str(exc))
+    request.session["embed_message"] = "Embed saved."
+    return RedirectResponse(
+        url=request.url_for("embed_edit", template_id=saved_id),
+        status_code=status.HTTP_303_SEE_OTHER,
+    )
+
+
+@app.post("/embeds/{template_id}/delete", name="embed_delete")
+async def embed_delete(request: Request, template_id: int) -> RedirectResponse:
+    if redirect := login_redirect(request):
+        return redirect
+    await require_action_csrf(request)
+    try:
+        name = delete_embed_template(template_id)
+    except (OSError, sqlite3.Error, ValueError) as exc:
+        request.session["embed_error"] = str(exc)
+    else:
+        request.session["embed_message"] = f"{name} deleted."
+    return RedirectResponse(
+        url=request.url_for("embed_templates"),
+        status_code=status.HTTP_303_SEE_OTHER,
+    )
+
+
 @app.get("/settings", response_class=HTMLResponse, name="settings")
 async def settings(request: Request) -> HTMLResponse:
     if redirect := login_redirect(request):
@@ -997,6 +1125,7 @@ async def settings_features(request: Request) -> HTMLResponse:
         page_title="Feature Settings",
         visible_sections=("bumps", "reminders", "streaks", "stats_features"),
         discord_metadata=picker_metadata(),
+        embed_options=list_embed_templates(sort="name", order="asc"),
     )
 
 

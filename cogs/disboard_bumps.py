@@ -6,6 +6,7 @@ import asyncio
 import io
 import logging
 import re
+import sqlite3
 from functools import lru_cache
 from pathlib import Path
 from datetime import datetime, time, timedelta, timezone
@@ -21,6 +22,11 @@ from utils.ranked_graphic import (
     render_ranked_graphic,
 )
 from utils.settings import get_int_setting, get_setting
+from utils.embed_templates import (
+    discord_embed_from_payload,
+    discord_view_from_payload,
+    get_embed_template,
+)
 
 
 logger = logging.getLogger(__name__)
@@ -224,18 +230,6 @@ class DisboardBumps(commands.Cog):
     ) -> discord.ui.View:
         view = discord.ui.View(timeout=None)
         view.add_item(discord.ui.Button(
-            label="Yes",
-            style=discord.ButtonStyle.success,
-            custom_id=f"bumpreminder|yes|{response_message_id}",
-            disabled=choice_made,
-        ))
-        view.add_item(discord.ui.Button(
-            label="No",
-            style=discord.ButtonStyle.danger,
-            custom_id=f"bumpreminder|no|{response_message_id}",
-            disabled=choice_made,
-        ))
-        view.add_item(discord.ui.Button(
             label="Bump Leaderboard",
             style=discord.ButtonStyle.secondary,
             custom_id=f"bumpleaderboard|show|{response_message_id}",
@@ -261,7 +255,7 @@ class DisboardBumps(commands.Cog):
             f"Thanks for bumping our server, {member.mention}! You gained:\n"
             f"- {BUMP_EXPLOSION_EMOJI} + {points:,} Bump Points\n"
             f"{role_line}"
-            "Do you want a reminder ping in 2 hours?"
+            "A bump reminder will be posted in 2 hours."
         )
         try:
             prompt = await message.reply(
@@ -301,6 +295,9 @@ class DisboardBumps(commands.Cog):
             return getattr(legacy, "user", None), getattr(legacy, "id", None)
         metadata = getattr(message, "interaction_metadata", None)
         if metadata is None:
+            return None, None
+        command_name = str(getattr(metadata, "name", "") or "")
+        if command_name and command_name.casefold() != "bump":
             return None, None
         return getattr(metadata, "user", None), getattr(metadata, "id", None)
 
@@ -394,8 +391,9 @@ class DisboardBumps(commands.Cog):
         await self.bot.db.execute(
             """
             INSERT INTO disboard_bump_reminders (
-                response_message_id, guild_id, member_id, channel_id, due_at
-            ) VALUES (?, ?, ?, ?, ?)
+                response_message_id, guild_id, member_id, channel_id, due_at,
+                status
+            ) VALUES (?, ?, ?, ?, ?, 'scheduled')
             """,
             (
                 str(message.id),
@@ -731,6 +729,14 @@ class DisboardBumps(commands.Cog):
         parts = custom_id.split("|")
         if (
             len(parts) == 3
+            and parts[0] == "embedrole"
+            and parts[1] in {"add", "remove"}
+            and parts[2].isdigit()
+        ):
+            await self._handle_embed_role(interaction, parts[1], int(parts[2]))
+            return
+        if (
+            len(parts) == 3
             and parts[0] == "bumpreminder"
             and parts[1] in {"yes", "no"}
         ):
@@ -760,6 +766,81 @@ class DisboardBumps(commands.Cog):
             ),
             color=BUMP_ACCENT_COLOR,
         )
+
+    async def _handle_embed_role(
+        self,
+        interaction: discord.Interaction,
+        action: str,
+        role_id: int,
+    ) -> None:
+        if interaction.guild is None or not isinstance(interaction.user, discord.Member):
+            await interaction.response.send_message(
+                "This role button can only be used in the server.", ephemeral=True,
+            )
+            return
+        role = interaction.guild.get_role(role_id)
+        bot_member = interaction.guild.me
+        if (
+            role is None
+            or bot_member is None
+            or not bot_member.guild_permissions.manage_roles
+            or role >= bot_member.top_role
+            or role.managed
+        ):
+            await interaction.response.send_message(
+                "That role is unavailable or cannot be managed by the bot.", ephemeral=True,
+            )
+            return
+        try:
+            if action == "add":
+                if role in interaction.user.roles:
+                    message = f"You already have {role.mention}."
+                else:
+                    await interaction.user.add_roles(
+                        role, reason="Self-service embed role button",
+                    )
+                    message = f"Added {role.mention}."
+            elif role not in interaction.user.roles:
+                message = f"You do not have {role.mention}."
+            else:
+                await interaction.user.remove_roles(
+                    role, reason="Self-service embed role button",
+                )
+                message = f"Removed {role.mention}."
+        except discord.Forbidden:
+            message = "I do not have permission to update that role."
+        except discord.HTTPException:
+            message = "Discord could not update that role right now. Please try again."
+        await interaction.response.send_message(
+            message,
+            ephemeral=True,
+            allowed_mentions=discord.AllowedMentions.none(),
+        )
+
+    async def _configured_reminder_payload(self):
+        template_id = _configured_id("BUMP_REMINDER_EMBED_ID")
+        if not template_id:
+            return None
+        try:
+            template = await asyncio.to_thread(get_embed_template, template_id)
+        except (OSError, sqlite3.Error):
+            logger.exception("Could not load configured bump reminder embed id=%s", template_id)
+            return None
+        if template is None:
+            logger.warning("Configured bump reminder embed was not found id=%s", template_id)
+            return None
+        return template["payload"]
+
+    @staticmethod
+    def _reminder_content(member: discord.Member, role, payload) -> str:
+        configured = str(get_setting("BUMP_REMINDER_MESSAGE", "{role}") or "").strip()
+        if not configured and payload:
+            configured = str(payload.get("content") or "").strip()
+        if not configured:
+            configured = "{role}"
+        return configured.replace("{member}", member.mention).replace(
+            "{role}", role.mention if role is not None else "",
+        ).strip()
 
     async def _retry_or_fail_reminder(
         self,
@@ -877,13 +958,21 @@ class DisboardBumps(commands.Cog):
                     guild.id,
                     role_id or "not_configured",
                 )
-            mentions = [member.mention]
-            if role is not None:
-                mentions.append(role.mention)
+            payload = await self._configured_reminder_payload()
+            content = self._reminder_content(member, role, payload)
+            embed = discord_embed_from_payload(payload) if payload else self._reminder_embed()
+            view = discord_view_from_payload(
+                payload or {"content": "", "embed": {
+                    "description": "# 🔔 BUMP TIME 🔔\n# ➡️ If you see this, use `/bump`",
+                    "color": "#25b8b8",
+                }, "buttons": []},
+                subscribe_role_id=role_id if role is not None else 0,
+            )
             try:
                 reminder_message = await channel.send(
-                    " ".join(mentions),
-                    embed=self._reminder_embed(),
+                    content or None,
+                    embed=embed,
+                    view=view,
                     allowed_mentions=discord.AllowedMentions(
                         users=[member],
                         roles=[role] if role is not None else False,

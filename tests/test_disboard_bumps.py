@@ -38,7 +38,9 @@ class DummyMember:
         self.display_avatar = SimpleNamespace(
             replace=lambda **_kwargs: SimpleNamespace(url="https://example/avatar.png")
         )
+        self.roles = []
         self.add_roles = AsyncMock()
+        self.remove_roles = AsyncMock()
 
 
 class DummyGuild:
@@ -184,7 +186,7 @@ class DisboardBumpTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("Riff", prompt_args.args[0])
         self.assertEqual(
             [item.label for item in prompt_args.kwargs["view"].children],
-            ["Yes", "No", "Bump Leaderboard"],
+            ["Bump Leaderboard"],
         )
         cursor = await self.database.execute(
             """
@@ -193,7 +195,7 @@ class DisboardBumpTests(unittest.IsolatedAsyncioTestCase):
             WHERE response_message_id = '100'
             """
         )
-        self.assertEqual(await cursor.fetchone(), ("pending_choice", "700"))
+        self.assertEqual(await cursor.fetchone(), ("scheduled", "700"))
         await cursor.close()
 
     async def test_failed_reward_role_is_reported_without_losing_points(self):
@@ -249,6 +251,11 @@ class DisboardBumpTests(unittest.IsolatedAsyncioTestCase):
             patch("cogs.disboard_bumps.get_int_setting", return_value=1000),
         ):
             await self.cog._process_bump(message)
+        await self.database.execute(
+            "UPDATE disboard_bump_reminders SET status = 'pending_choice' "
+            "WHERE response_message_id = '100'"
+        )
+        await self.database.commit()
         interaction = SimpleNamespace(
             guild=self.guild,
             user=self.member,
@@ -271,9 +278,7 @@ class DisboardBumpTests(unittest.IsolatedAsyncioTestCase):
             datetime.fromisoformat(due_at), before + timedelta(hours=2),
         )
         edited_view = interaction.message.edit.await_args.kwargs["view"]
-        self.assertTrue(edited_view.children[0].disabled)
-        self.assertTrue(edited_view.children[1].disabled)
-        self.assertFalse(edited_view.children[2].disabled)
+        self.assertFalse(edited_view.children[0].disabled)
 
     async def test_other_member_cannot_choose_bumpers_reminder(self):
         message = self.message()
@@ -295,7 +300,7 @@ class DisboardBumpTests(unittest.IsolatedAsyncioTestCase):
         cursor = await self.database.execute(
             "SELECT status FROM disboard_bump_reminders WHERE response_message_id = '100'"
         )
-        self.assertEqual((await cursor.fetchone())[0], "pending_choice")
+        self.assertEqual((await cursor.fetchone())[0], "scheduled")
         await cursor.close()
 
     async def test_no_choice_declines_without_scheduling(self):
@@ -305,6 +310,11 @@ class DisboardBumpTests(unittest.IsolatedAsyncioTestCase):
             patch("cogs.disboard_bumps.get_int_setting", return_value=1000),
         ):
             await self.cog._process_bump(message)
+        await self.database.execute(
+            "UPDATE disboard_bump_reminders SET status = 'pending_choice' "
+            "WHERE response_message_id = '100'"
+        )
+        await self.database.commit()
         interaction = SimpleNamespace(
             guild=self.guild,
             user=self.member,
@@ -348,7 +358,7 @@ class DisboardBumpTests(unittest.IsolatedAsyncioTestCase):
             file=graphic[0], view=graphic[1],
         )
         edited_view = interaction.message.edit.await_args.kwargs["view"]
-        self.assertTrue(edited_view.children[2].disabled)
+        self.assertTrue(edited_view.children[0].disabled)
 
         second = SimpleNamespace(
             guild=self.guild,
@@ -383,13 +393,72 @@ class DisboardBumpTests(unittest.IsolatedAsyncioTestCase):
 
         self.channel.send.assert_awaited_once()
         send_args = self.channel.send.await_args
-        self.assertEqual(send_args.args[0], "<@42> <@&600>")
+        self.assertEqual(send_args.args[0], "<@&600>")
         self.assertIn("BUMP TIME", send_args.kwargs["embed"].description)
+        self.assertEqual(
+            [item.label for item in send_args.kwargs["view"].children],
+            ["Subscribe to Bump Reminders"],
+        )
         cursor = await self.database.execute(
             "SELECT status, reminder_message_id FROM disboard_bump_reminders WHERE response_message_id = '100'"
         )
         self.assertEqual(await cursor.fetchone(), ("sent", "800"))
         await cursor.close()
+
+    async def test_due_reminder_uses_saved_embed_and_configured_message(self):
+        message = self.message(message_id=106)
+
+        def reminder_settings(key, default=""):
+            if key == "BUMP_REMINDER_MESSAGE":
+                return "Reminder for {member}: {role}"
+            return self.settings(key, default)
+
+        payload = {
+            "content": "Ignored template content",
+            "embed": {
+                "title": "Custom bump reminder",
+                "description": "Use `/bump` now.",
+                "color": "#f0319b",
+                "fields": [],
+            },
+            "buttons": [],
+        }
+        with (
+            patch("cogs.disboard_bumps.get_setting", side_effect=reminder_settings),
+            patch("cogs.disboard_bumps.get_int_setting", return_value=1000),
+            patch.object(
+                self.cog,
+                "_configured_reminder_payload",
+                new=AsyncMock(return_value=payload),
+            ),
+        ):
+            await self.cog._process_bump(message)
+            await self.database.execute(
+                "UPDATE disboard_bump_reminders SET due_at = ? WHERE response_message_id = '106'",
+                ((datetime.now(timezone.utc) - timedelta(minutes=1)).isoformat(),),
+            )
+            await self.database.commit()
+            await self.cog._process_due_reminders()
+
+        send_args = self.channel.send.await_args
+        self.assertEqual(send_args.args[0], "Reminder for <@42>: <@&600>")
+        self.assertEqual(send_args.kwargs["embed"].title, "Custom bump reminder")
+        self.assertEqual(send_args.kwargs["view"].children[-1].custom_id, "embedrole|add|600")
+
+    async def test_embed_role_button_assigns_manageable_role_privately(self):
+        interaction = SimpleNamespace(
+            guild=self.guild,
+            user=self.member,
+            response=SimpleNamespace(send_message=AsyncMock()),
+        )
+        with patch("cogs.disboard_bumps.discord.Member", DummyMember):
+            await self.cog._handle_embed_role(interaction, "add", 600)
+        self.member.add_roles.assert_awaited_once_with(
+            self.guild.ping_role,
+            reason="Self-service embed role button",
+        )
+        kwargs = interaction.response.send_message.await_args.kwargs
+        self.assertTrue(kwargs["ephemeral"])
 
     async def test_untrusted_or_unsuccessful_message_is_ignored(self):
         with patch("cogs.disboard_bumps.get_setting", side_effect=self.settings):
@@ -411,6 +480,28 @@ class DisboardBumpTests(unittest.IsolatedAsyncioTestCase):
             patch("cogs.disboard_bumps.get_int_setting", return_value=1000),
         ):
             self.assertTrue(await self.cog._process_bump(message))
+
+    async def test_modern_interaction_metadata_registers_only_bump_command(self):
+        message = self.message(message_id=104)
+        message.interaction = None
+        message.interaction_metadata = SimpleNamespace(
+            id=88,
+            name="bump",
+            user=SimpleNamespace(id=42),
+        )
+        with (
+            patch("cogs.disboard_bumps.get_setting", side_effect=self.settings),
+            patch("cogs.disboard_bumps.get_int_setting", return_value=1000),
+        ):
+            self.assertTrue(await self.cog._process_bump(message))
+            wrong_command = self.message(message_id=105)
+            wrong_command.interaction = None
+            wrong_command.interaction_metadata = SimpleNamespace(
+                id=89,
+                name="help",
+                user=SimpleNamespace(id=42),
+            )
+            self.assertFalse(await self.cog._process_bump(wrong_command))
 
         cursor = await self.database.execute(
             "SELECT points FROM points WHERE id = ? AND leaderboard = ?",

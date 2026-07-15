@@ -1,0 +1,59 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="page-heading">
+  <div>
+    <p class="eyebrow">Reusable Discord messages</p>
+    <h1>Embed Editor</h1>
+    <p class="muted">Create message and embed designs that bot features can send.</p>
+  </div>
+  {% if can_write %}<a class="button" href="{{ url_for('embed_new') }}">+ Create Embed</a>{% endif %}
+</div>
+{% if message %}<div class="alert success">{{ message }}</div>{% endif %}
+{% if error %}<div class="alert error">{{ error }}</div>{% endif %}
+<section class="card">
+  <form class="embed-table-tools" method="get" action="{{ url_for('embed_templates') }}">
+    <label>
+      Search embeds
+      <input type="search" name="q" value="{{ query }}" placeholder="Search by name">
+    </label>
+    <input type="hidden" name="sort" value="{{ sort }}">
+    <input type="hidden" name="order" value="{{ order }}">
+    <button class="button secondary" type="submit">Search</button>
+    {% if query %}<a class="button secondary" href="{{ url_for('embed_templates') }}">Clear</a>{% endif %}
+  </form>
+  {% if embeds %}
+  <div class="table-wrap">
+    <table class="embed-table">
+      <thead>
+        <tr>
+          <th><a href="{{ url_for('embed_templates') }}?q={{ query|urlencode }}&sort=name&order={{ 'desc' if sort == 'name' and order == 'asc' else 'asc' }}">Name {{ '↑' if sort == 'name' and order == 'asc' else ('↓' if sort == 'name' else '') }}</a></th>
+          <th><a href="{{ url_for('embed_templates') }}?q={{ query|urlencode }}&sort=updated&order={{ 'asc' if sort == 'updated' and order == 'desc' else 'desc' }}">Date Modified {{ '↑' if sort == 'updated' and order == 'asc' else ('↓' if sort == 'updated' else '') }}</a></th>
+          <th><a href="{{ url_for('embed_templates') }}?q={{ query|urlencode }}&sort=features&order={{ 'desc' if sort == 'features' and order == 'asc' else 'asc' }}">Feature(s) {{ '↑' if sort == 'features' and order == 'asc' else ('↓' if sort == 'features' else '') }}</a></th>
+        </tr>
+      </thead>
+      <tbody>
+      {% for embed in embeds %}
+        <tr>
+          <td><a class="embed-name-link" href="{{ url_for('embed_edit', template_id=embed.id) }}">{{ embed.name }}</a></td>
+          <td>{{ embed.updated_at.replace('T', ' ')[:19] }} UTC</td>
+          <td>
+            <div class="embed-feature-actions">
+              <div>{% if embed.features %}{% for feature in embed.features %}<span class="badge">{{ feature }}</span>{% endfor %}{% else %}<span class="muted">Not in use</span>{% endif %}</div>
+              {% if can_write %}
+              <form method="post" action="{{ url_for('embed_delete', template_id=embed.id) }}" onsubmit="return confirm('Delete this embed? This cannot be undone.');">
+                <input type="hidden" name="csrf" value="{{ csrf_token }}">
+                <button class="button danger small" type="submit">Delete</button>
+              </form>
+              {% endif %}
+            </div>
+          </td>
+        </tr>
+      {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {% else %}
+  <div class="empty-state">{% if query %}No embeds match “{{ query }}”.{% else %}No embeds have been created yet.{% endif %}</div>
+  {% endif %}
+</section>
+{% endblock %}
