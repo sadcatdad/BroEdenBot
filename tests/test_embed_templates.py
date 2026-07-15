@@ -94,7 +94,15 @@ class EmbedTemplateTests(unittest.TestCase):
             updated_by="owner",
         )
         set_setting("BUMP_REMINDER_EMBED_ID", str(template_id), changed_by="owner")
-        with self.assertRaisesRegex(ValueError, "Bump reminders"):
+        set_setting("BUMP_SUCCESS_EMBED_ID", str(template_id), changed_by="owner")
+        self.assertEqual(
+            list_embed_templates("In Use")[0]["features"],
+            ["Successful bump response", "Bump reminders"],
+        )
+        with self.assertRaisesRegex(
+            ValueError,
+            "Successful bump response, Bump reminders",
+        ):
             delete_embed_template(template_id)
         self.assertEqual(get_embed_template(template_id)["name"], "In Use")
 
@@ -107,4 +115,3 @@ class EmbedTemplateTests(unittest.TestCase):
         payload["buttons"][0]["role_id"] = "123"
         with self.assertRaisesRegex(ValueError, "Discord role"):
             validate_embed_payload(payload)
-

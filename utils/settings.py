@@ -205,6 +205,15 @@ SETTING_DEFINITIONS = (
         single=True,
     ),
     SettingDefinition(
+        "BUMP_SUCCESS_EMBED_ID",
+        "bumps",
+        "embed_id",
+        "Saved response sent after a verified successful /bump. It uses the template's regular message, embed card, and first four buttons; the bump feature adds the Bump Leaderboard button. Blank uses the built-in points and reward receipt.",
+        picker="embed",
+        single=True,
+        title="Successful Bump Response Embed",
+    ),
+    SettingDefinition(
         "BUMP_PING_ROLE_ID",
         "bumps",
         "csv_ids",

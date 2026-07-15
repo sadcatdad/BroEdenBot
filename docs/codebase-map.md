@@ -47,9 +47,9 @@ maintenance.
 - `cogs/leaderboards.py` — Custom banner/accent leaderboards, score controls,
   confirmations, point summaries, and live milestone roles.
 - `cogs/disboard_bumps.py` — Verified DISBOARD `/bump` points, reward-role
-  handoff, automatic two-hour reminder delivery, feature-owned reminder text
-  and subscription controls over saved embed card designs, self-service embed
-  role buttons, and Bump Legends publishing.
+  handoff, separately configurable success responses and two-hour reminder
+  embeds, feature-owned reminder text and subscription controls, self-service
+  embed role buttons, and Bump Legends publishing.
 - `cogs/streaks.py` — Daily public-message streak qualification, deletion
   reconciliation, milestones, current/longest graphical leaderboards,
   heartbeat gap detection, and restart-safe Discord-history recovery.

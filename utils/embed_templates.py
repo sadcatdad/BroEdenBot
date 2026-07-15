@@ -186,6 +186,8 @@ def default_embed_payload() -> dict[str, Any]:
 
 def _feature_names(template_id: int) -> list[str]:
     features = []
+    if str(get_setting("BUMP_SUCCESS_EMBED_ID", "") or "") == str(template_id):
+        features.append("Successful bump response")
     if str(get_setting("BUMP_REMINDER_EMBED_ID", "") or "") == str(template_id):
         features.append("Bump reminders")
     return features

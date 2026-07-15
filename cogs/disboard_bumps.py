@@ -227,8 +227,18 @@ class DisboardBumps(commands.Cog):
         *,
         choice_made: bool = False,
         leaderboard_used: bool = False,
+        template_payload=None,
     ) -> discord.ui.View:
-        view = discord.ui.View(timeout=None)
+        view = None
+        if template_payload:
+            view_payload = {
+                "content": template_payload.get("content", ""),
+                "embed": template_payload.get("embed", {}),
+                "buttons": list(template_payload.get("buttons") or [])[:4],
+            }
+            view = discord_view_from_payload(view_payload)
+        if view is None:
+            view = discord.ui.View(timeout=None)
         view.add_item(discord.ui.Button(
             label="Bump Leaderboard",
             style=discord.ButtonStyle.secondary,
@@ -251,20 +261,41 @@ class DisboardBumps(commands.Cog):
             role_line = (
                 "- Your Bump Points were saved; staff can check the reward role setup\n"
             )
-        content = (
+        fallback_content = (
             f"Thanks for bumping our server, {member.mention}! You gained:\n"
             f"- {BUMP_EXPLOSION_EMOJI} + {points:,} Bump Points\n"
             f"{role_line}"
             "A bump reminder will be posted in 2 hours."
         )
+        content = fallback_content
+        embed = None
+        template_payload = await self._configured_success_payload()
+        if template_payload:
+            try:
+                embed = discord_embed_from_payload(template_payload)
+                view = self._prompt_view(
+                    response_id,
+                    template_payload=template_payload,
+                )
+                content = str(template_payload.get("content") or "").strip()
+            except ValueError:
+                logger.warning("Configured successful bump response payload is invalid")
+                template_payload = None
+        if not template_payload:
+            view = self._prompt_view(response_id)
+        reply_kwargs = {
+            "mention_author": False,
+            "view": view,
+            "allowed_mentions": discord.AllowedMentions(
+                users=[member], roles=False, everyone=False,
+            ),
+        }
+        if embed is not None:
+            reply_kwargs["embed"] = embed
         try:
             prompt = await message.reply(
-                content,
-                mention_author=False,
-                view=self._prompt_view(response_id),
-                allowed_mentions=discord.AllowedMentions(
-                    users=[member], roles=False, everyone=False,
-                ),
+                content or None,
+                **reply_kwargs,
             )
         except (discord.Forbidden, discord.HTTPException) as exc:
             logger.warning(
@@ -590,12 +621,23 @@ class DisboardBumps(commands.Cog):
         await cursor.close()
         if row is None or interaction.message is None:
             return
+        template_payload = await self._configured_success_payload()
         try:
-            await interaction.message.edit(view=self._prompt_view(
+            view = self._prompt_view(
                 response_id,
                 choice_made=str(row[0]) != "pending_choice",
                 leaderboard_used=bool(row[1]),
-            ))
+                template_payload=template_payload,
+            )
+        except ValueError:
+            logger.warning("Configured successful bump response payload is invalid")
+            view = self._prompt_view(
+                response_id,
+                choice_made=str(row[0]) != "pending_choice",
+                leaderboard_used=bool(row[1]),
+            )
+        try:
+            await interaction.message.edit(view=view)
         except (discord.NotFound, discord.Forbidden, discord.HTTPException):
             pass
 
@@ -817,19 +859,39 @@ class DisboardBumps(commands.Cog):
             allowed_mentions=discord.AllowedMentions.none(),
         )
 
-    async def _configured_reminder_payload(self):
-        template_id = _configured_id("BUMP_REMINDER_EMBED_ID")
+    async def _configured_embed_payload(self, setting_key: str, feature_label: str):
+        template_id = _configured_id(setting_key)
         if not template_id:
             return None
         try:
             template = await asyncio.to_thread(get_embed_template, template_id)
         except (OSError, sqlite3.Error):
-            logger.exception("Could not load configured bump reminder embed id=%s", template_id)
+            logger.exception(
+                "Could not load configured %s embed id=%s",
+                feature_label,
+                template_id,
+            )
             return None
         if template is None:
-            logger.warning("Configured bump reminder embed was not found id=%s", template_id)
+            logger.warning(
+                "Configured %s embed was not found id=%s",
+                feature_label,
+                template_id,
+            )
             return None
         return template["payload"]
+
+    async def _configured_reminder_payload(self):
+        return await self._configured_embed_payload(
+            "BUMP_REMINDER_EMBED_ID",
+            "bump reminder",
+        )
+
+    async def _configured_success_payload(self):
+        return await self._configured_embed_payload(
+            "BUMP_SUCCESS_EMBED_ID",
+            "successful bump response",
+        )
 
     @staticmethod
     def _reminder_content(member: discord.Member, role) -> str:

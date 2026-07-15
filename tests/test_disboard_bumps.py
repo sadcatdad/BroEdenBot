@@ -198,6 +198,45 @@ class DisboardBumpTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(await cursor.fetchone(), ("scheduled", "700"))
         await cursor.close()
 
+    async def test_success_response_uses_separate_saved_message_and_four_buttons(self):
+        message = self.message(message_id=107)
+        payload = {
+            "content": "Thanks for supporting the server!",
+            "embed": {
+                "title": "Bump successful",
+                "description": "Your reward has been recorded.",
+                "color": "#f0319b",
+                "fields": [],
+            },
+            "buttons": [
+                {
+                    "label": f"Template {index}",
+                    "action": "url",
+                    "style": "link",
+                    "url": f"https://example.com/{index}",
+                }
+                for index in range(1, 6)
+            ],
+        }
+        with (
+            patch("cogs.disboard_bumps.get_setting", side_effect=self.settings),
+            patch("cogs.disboard_bumps.get_int_setting", return_value=1000),
+            patch.object(
+                self.cog,
+                "_configured_success_payload",
+                new=AsyncMock(return_value=payload),
+            ),
+        ):
+            self.assertTrue(await self.cog._process_bump(message))
+
+        prompt_args = message.reply.await_args
+        self.assertEqual(prompt_args.args[0], "Thanks for supporting the server!")
+        self.assertEqual(prompt_args.kwargs["embed"].title, "Bump successful")
+        self.assertEqual(
+            [item.label for item in prompt_args.kwargs["view"].children],
+            ["Template 1", "Template 2", "Template 3", "Template 4", "Bump Leaderboard"],
+        )
+
     async def test_failed_reward_role_is_reported_without_losing_points(self):
         message = self.message(message_id=103)
         def missing_role_settings(key, default=""):

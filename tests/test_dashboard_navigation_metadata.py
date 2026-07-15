@@ -177,6 +177,10 @@ class DashboardNavigationMetadataTests(unittest.TestCase):
         settings = self.client.get("/settings/features")
         self.assertIn(f'<option value="{template_id}"', settings.text)
         self.assertIn("Bump Reminder", settings.text)
+        self.assertIn("Successful Bump Response Embed", settings.text)
+        self.assertIn("Bump Reminder Embed", settings.text)
+        self.assertIn("Use the built-in successful bump response", settings.text)
+        self.assertIn("Use the built-in bump reminder embed", settings.text)
 
     def test_moved_pages_have_old_url_redirects(self):
         self.login()

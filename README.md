@@ -95,9 +95,12 @@ Verified responses from the configured official DISBOARD bot award
 schedule a reminder automatically for two hours after the successful `/bump`.
 Detection accepts Discord's current interaction metadata and the legacy
 interaction shape, but only when the trusted DISBOARD response identifies the
-`bump` command and contains a known success message. The reward response also
-offers a one-use Bump Leaderboard button. `!bumpscores` displays the branded
-Bump Legends board in ten-row pages.
+`bump` command and contains a known success message. `BUMP_SUCCESS_EMBED_ID`
+selects the full saved response posted after that verified success: its regular
+message, embed card, and first four buttons are used, while the bot reserves
+the fifth slot for the one-use **Bump Leaderboard** button. When no success
+template is selected, the built-in dynamic points and reward receipt is used.
+`!bumpscores` displays the branded Bump Legends board in ten-row pages.
 
 The reminder message is configured with `BUMP_REMINDER_MESSAGE`; `{role}` and
 `{member}` expand to controlled Discord mentions. This feature setting always
@@ -1485,6 +1488,7 @@ updated from the authenticated local dashboard without rewriting `.env`.
 | `REMINDER_TIMEZONE` | IANA timezone used for `/reminder add` and edit date/time input. Defaults to `America/Chicago`. |
 | `DISBOARD_BOT_USER_ID` | Official DISBOARD bot user ID trusted for verified success responses. |
 | `BUMP_REWARD_ROLE_ID` | Role granted after a verified bump for the external XP/reward handoff. |
+| `BUMP_SUCCESS_EMBED_ID` | Optional full saved message sent after a verified bump. Its regular message, embed card, and first four buttons are used; blank keeps the built-in dynamic receipt. |
 | `BUMP_PING_ROLE_ID` | Subscriber role pinged by automatic two-hour bump reminders and assigned by the reminder embed's subscription button. |
 | `BUMP_REMINDER_MESSAGE` | Authoritative reminder message that replaces the selected template's regular message. Supports `{role}` and `{member}` placeholders; defaults to `{role}`. |
 | `BUMP_REMINDER_EMBED_ID` | Optional saved embed card design. Its regular message/buttons are ignored; blank uses the built-in embed. |
@@ -1650,9 +1654,11 @@ button styles; URL buttons use Discord's fixed link style. At send time the bot
 still checks **Manage Roles**, role hierarchy, and managed-role restrictions,
 then confirms role changes privately. Bump reminders use only the saved embed
 card design, ignore its regular message and buttons, and supply their built-in
-**Subscribe to Bump Reminders** button. Embeds used by a feature cannot be
-deleted until a different embed (or the built-in fallback) is selected in
-**Settings → Feature Settings**.
+**Subscribe to Bump Reminders** button. Successful bump responses use the full
+saved message and its first four buttons, then add the built-in **Bump
+Leaderboard** button. Embeds used by a feature cannot be deleted until a
+different embed (or the built-in fallback) is selected in **Settings → Feature
+Settings**.
 
 Set these values in the project-root `.env` and replace the placeholder
 password and signing key before using the dashboard. When
