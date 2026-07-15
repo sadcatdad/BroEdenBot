@@ -1648,14 +1648,19 @@ notify anyone.
 The local FastAPI dashboard provides shared-database status, bank overview,
 historical-import status, database-backed editing for an explicit allowlist of
 safe runtime settings, AI framework status/usage, a unified Knowledge manager,
-a VC XP role-pulse readiness summary, stats graphics management, a reusable
-Embed/Message Editor, and aggregate analytics. It does not edit `.env`, modify bank
-records, expose Discord or Gemini secrets, or provide public hosting.
+a VC XP role-pulse readiness summary, stats graphics management, the reusable
+Message Studio (Embed/Message Editor), and aggregate analytics. It does not
+edit `.env`, modify bank records, expose Discord or Gemini secrets, or provide
+public hosting.
 
-The top-level dashboard tabs are Overview, Operations, AI, Knowledge,
-Analytics, Streaks, Embed/Message Editor, Bank, and Settings when
-`AI_DASHBOARD_VISIBLE=true`; the AI tab is hidden when that flag is false. The
-AI tab shows framework health, usage,
+The responsive dashboard navigation uses grouped sections: **Monitor**
+(Overview and Analytics), **Manage** (Operations, Streaks, and Bank),
+**Content** (Message Studio, Knowledge, and AI), and **System** (Settings).
+It uses the Bro Eden pride icon in the desktop sidebar and mobile header. On
+smaller screens the complete navigation moves into a labeled menu instead of
+hiding destinations in a horizontal strip. `AI_DASHBOARD_VISIBLE=true` shows
+the AI item; the item is hidden when that flag is false. The AI tab shows
+framework health, usage,
 recent `/ask` feedback, and a connected-sources page that explains which
 knowledge chunks are available to AI retrieval. Knowledge changes now happen in
 the top-level Knowledge tab. Stats Graphics lives under Analytics. Imports and
@@ -1663,12 +1668,13 @@ Dashboard Users live under Settings. The older `/stats`, `/settings/knowledge`,
 `/imports`, and `/users` links redirect to their new locations so existing
 bookmarks remain usable.
 
-### Embed/Message Editor
+### Message Studio (Embed/Message Editor)
 
-The top-level **Embed/Message Editor** stores reusable Discord assets in the
-shared `data.db`. **Create** offers an **Embed** or **Message** type, and the
-table can search and sort by name, type, modification date, or the bot features
-currently using each asset. Existing saved rows migrate to `Embed`. Message
+The top-level **Message Studio** stores reusable Discord embed and message
+assets in the shared `data.db`. **Create** offers an **Embed** or **Message**
+type, and the table can search and sort by name, type, modification date, or
+the bot features currently using each asset. Existing saved rows migrate to
+`Embed`. Message
 assets provide trigger-ready content and optional buttons without an embed
 card; Embed assets additionally provide author/header, title and URL,
 description, color, thumbnail, large image, footer, and up to 25 fields. The

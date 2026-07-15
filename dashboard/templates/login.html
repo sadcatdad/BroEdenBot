@@ -1,6 +1,10 @@
 {% extends "base.html" %}
-{% block content %}
+{% block login_content %}
 <section class="login-card">
+  <a class="login-brand" href="{{ url_for('login_page') }}" aria-label="Bro Eden Bot login">
+    <img src="{{ url_for('static', path='broeden-pride-icon.png') }}" alt="">
+    <span><strong>Bro Eden</strong><small>Bot dashboard</small></span>
+  </a>
   <p class="eyebrow">Protected dashboard</p>
   <h1>BroEdenBot</h1>
   <p class="muted">Sign in with an approved Discord account or use the owner password fallback.</p>

@@ -122,13 +122,16 @@ class DashboardNavigationMetadataTests(unittest.TestCase):
             "Knowledge",
             "Analytics",
             "Streaks",
-            "Embed/Message Editor",
+            "Message Studio",
             "Bank",
             "Settings",
         ):
             self.assertIn(label, response.text)
         self.assertNotIn(">Stats</a>", response.text)
         self.assertNotIn(">Users</a>", response.text)
+        self.assertIn('src="http://testserver/static/broeden-pride-icon.png"', response.text)
+        self.assertIn('aria-label="Open navigation"', response.text)
+        self.assertIn('aria-current="page"', response.text)
 
         settings = self.client.get("/settings")
         self.assertEqual(settings.status_code, 200)
@@ -374,7 +377,8 @@ class DashboardNavigationMetadataTests(unittest.TestCase):
         self.assertIn(".settings-menu-item", styles)
         self.assertIn("text-decoration: none", styles)
         base_template = (root / "dashboard/templates/base.html").read_text()
-        self.assertIn("styles.css') }}?v=embed-editor5", base_template)
+        self.assertIn("styles.css') }}?v=dashboard-refresh1", base_template)
+        self.assertIn("dashboard_nav.js') }}?v=dashboard-refresh1", base_template)
         self.assertIn(".embed-fields-card[hidden]", styles)
         self.assertIn("discord_pickers.js') }}?v=picker-single-values2", base_template)
 

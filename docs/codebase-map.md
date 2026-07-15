@@ -24,6 +24,11 @@ maintenance.
   manual AI, and live Discord sources, and aggregate server analytics. Discord
   role/channel pickers read a live-guild metadata snapshot written by the bot,
   not historical import tables.
+- `dashboard/templates/base.html`, `dashboard/static/styles.css`,
+  `dashboard/static/dashboard_nav.js`, and
+  `dashboard/static/broeden-pride-icon.png` — Responsive grouped application
+  navigation, accessible mobile menu/focus behavior, shared visual tokens, and
+  the Bro Eden pride branding used in the sidebar, mobile header, and login.
 - `dashboard/templates/embeds.html`, `dashboard/templates/embed_edit.html`, and
   `dashboard/static/embed_editor.js` — Searchable saved-embed inventory,
   Discord-style live editor/preview, Unicode emoji chooser, dynamic fields,

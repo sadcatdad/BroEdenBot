@@ -1,15 +1,15 @@
 <div class="subnav" aria-label="Analytics sections">
-  <a class="{{ 'active' if current_path == '/analytics' else '' }}" href="{{ url_for('analytics_page') }}?range={{ range_key }}">Overview</a>
-  <a class="{{ 'active' if current_path in ['/analytics/activity', '/analytics/channels', '/analytics/members', '/analytics/heatmap'] else '' }}" href="{{ url_for('analytics_activity') }}?range={{ range_key }}">Activity Analytics</a>
-  <a class="{{ 'active' if current_path.startswith('/analytics/stats') else '' }}" href="{{ url_for('stats_page') }}">Stats Graphics</a>
-  <a class="{{ 'active' if current_path == '/analytics/voice' else '' }}" href="{{ url_for('analytics_voice') }}?range={{ range_key }}&limit={{ limit }}">VC Analytics</a>
-  <a class="{{ 'active' if current_path == '/analytics/exports' else '' }}" href="{{ url_for('analytics_exports') }}?range={{ range_key }}">Exports</a>
+  <a class="{{ 'active' if current_path == '/analytics' else '' }}" href="{{ url_for('analytics_page') }}?range={{ range_key }}" {% if current_path == '/analytics' %}aria-current="page"{% endif %}>Overview</a>
+  <a class="{{ 'active' if current_path in ['/analytics/activity', '/analytics/channels', '/analytics/members', '/analytics/heatmap'] else '' }}" href="{{ url_for('analytics_activity') }}?range={{ range_key }}" {% if current_path in ['/analytics/activity', '/analytics/channels', '/analytics/members', '/analytics/heatmap'] %}aria-current="page"{% endif %}>Activity Analytics</a>
+  <a class="{{ 'active' if current_path.startswith('/analytics/stats') else '' }}" href="{{ url_for('stats_page') }}" {% if current_path.startswith('/analytics/stats') %}aria-current="page"{% endif %}>Stats Graphics</a>
+  <a class="{{ 'active' if current_path == '/analytics/voice' else '' }}" href="{{ url_for('analytics_voice') }}?range={{ range_key }}&limit={{ limit }}" {% if current_path == '/analytics/voice' %}aria-current="page"{% endif %}>VC Analytics</a>
+  <a class="{{ 'active' if current_path == '/analytics/exports' else '' }}" href="{{ url_for('analytics_exports') }}?range={{ range_key }}" {% if current_path == '/analytics/exports' %}aria-current="page"{% endif %}>Exports</a>
 </div>
 {% if current_path in ['/analytics/activity', '/analytics/channels', '/analytics/members', '/analytics/heatmap'] %}
 <div class="subnav secondary-subnav" aria-label="Activity analytics sections">
-  <a class="{{ 'active' if current_path == '/analytics/activity' else '' }}" href="{{ url_for('analytics_activity') }}?range={{ range_key }}">Activity</a>
-  <a class="{{ 'active' if current_path == '/analytics/channels' else '' }}" href="{{ url_for('analytics_channels') }}?range={{ range_key }}&limit={{ limit }}">Channels</a>
-  <a class="{{ 'active' if current_path == '/analytics/members' else '' }}" href="{{ url_for('analytics_members') }}?range={{ range_key }}&limit={{ limit }}">Members</a>
-  <a class="{{ 'active' if current_path == '/analytics/heatmap' else '' }}" href="{{ url_for('analytics_heatmap') }}?range={{ range_key if range_key != '7d' else '30d' }}">Heatmap</a>
+  <a class="{{ 'active' if current_path == '/analytics/activity' else '' }}" href="{{ url_for('analytics_activity') }}?range={{ range_key }}" {% if current_path == '/analytics/activity' %}aria-current="page"{% endif %}>Activity</a>
+  <a class="{{ 'active' if current_path == '/analytics/channels' else '' }}" href="{{ url_for('analytics_channels') }}?range={{ range_key }}&limit={{ limit }}" {% if current_path == '/analytics/channels' %}aria-current="page"{% endif %}>Channels</a>
+  <a class="{{ 'active' if current_path == '/analytics/members' else '' }}" href="{{ url_for('analytics_members') }}?range={{ range_key }}&limit={{ limit }}" {% if current_path == '/analytics/members' %}aria-current="page"{% endif %}>Members</a>
+  <a class="{{ 'active' if current_path == '/analytics/heatmap' else '' }}" href="{{ url_for('analytics_heatmap') }}?range={{ range_key if range_key != '7d' else '30d' }}" {% if current_path == '/analytics/heatmap' %}aria-current="page"{% endif %}>Heatmap</a>
 </div>
 {% endif %}
