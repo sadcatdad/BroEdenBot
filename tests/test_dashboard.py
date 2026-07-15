@@ -123,6 +123,22 @@ class DashboardRouteTests(unittest.TestCase):
         self.assertIn("BANK_LOG_CHANNEL_ID", settings.text)
         self.assertIn('<channel-single-select input-name="value" setting-key="BANK_LOG_CHANNEL_ID"', settings.text)
 
+    def test_reminder_command_permissions_use_role_pickers(self):
+        self.login()
+        settings = self.client.get("/settings/features")
+        self.assertEqual(settings.status_code, 200)
+        for key in (
+            "REMINDER_PERSONAL_ALLOWED_ROLE_IDS",
+            "REMINDER_EVENT_ALLOWED_ROLE_IDS",
+            "REMINDER_MANAGE_ALLOWED_ROLE_IDS",
+            "REMINDER_MANAGE_ALL_ROLE_IDS",
+            "REMINDER_SUBSCRIPTIONS_ALLOWED_ROLE_IDS",
+        ):
+            self.assertIn(
+                f'<role-multi-select input-name="value" setting-key="{key}"',
+                settings.text,
+            )
+
     def test_discord_settings_omits_duplicate_runtime_settings(self):
         self.login()
         settings = self.client.get("/settings/discord")

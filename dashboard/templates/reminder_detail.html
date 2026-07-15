@@ -1,0 +1,54 @@
+{% extends "base.html" %}
+{% block content %}
+{% set reminder = detail.reminder %}
+<div class="page-heading">
+  <div><p class="eyebrow">Reminder detail</p><h1>{{ reminder.title }}</h1></div>
+  <a class="button secondary" href="{{ url_for('reminders_page') }}">All reminders</a>
+</div>
+{% if message %}<div class="alert success">{{ message }}</div>{% endif %}
+{% if error %}<div class="alert error">{{ error }}</div>{% endif %}
+
+<section class="two-column">
+  <article class="card"><h2>Configuration</h2><div class="status-list">
+    <div><span>Type</span><strong>{{ reminder.reminder_type|title }}</strong></div>
+    <div><span>Status</span><strong>{{ reminder.status|title }}</strong></div>
+    <div><span>Guild</span><strong>{{ reminder.guild_id }}</strong></div>
+    <div><span>Creator</span><strong>{{ reminder.creator_user_id }}</strong></div>
+    <div><span>Host</span><strong>{{ reminder.host_user_id or reminder.creator_user_id }}</strong></div>
+    <div><span>Target</span><strong>{{ reminder.target_user_id or 'Subscribers' }}</strong></div>
+    <div><span>Scheduled UTC</span><strong>{{ reminder.scheduled_at_utc }}</strong></div>
+    <div><span>Timezone</span><strong>{{ reminder.interpretation_timezone }}</strong></div>
+    <div><span>Destination</span><strong>{{ reminder.destination_channel_id or 'Private DM' }}</strong></div>
+    <div><span>Recurrence</span><strong>{{ reminder.recurrence_type }}</strong></div>
+    <div><span>Default timings</span><strong><code>{{ reminder.default_offsets_json }}</code></strong></div>
+  </div>{% if reminder.description %}<p>{{ reminder.description }}</p>{% endif %}
+  {% if reminder.public_message_id %}<p><a href="https://discord.com/channels/{{ reminder.guild_id }}/{{ reminder.public_channel_id }}/{{ reminder.public_message_id }}">Open Discord event card</a></p>{% endif %}</article>
+  <article class="card"><h2>Actions</h2>
+    {% if can_write %}
+    <form method="post" action="{{ url_for('reminders_action', reminder_id=reminder.id) }}" class="stacked-form">
+      <input type="hidden" name="csrf" value="{{ csrf_token }}"><input type="hidden" name="guild_id" value="{{ reminder.guild_id }}"><input type="hidden" name="action" value="edit">
+      <label>Title<input name="title" value="{{ reminder.title }}" maxlength="100" required></label>
+      <label>Description<textarea name="description" rows="5">{{ reminder.description }}</textarea></label>
+      <label>Scheduled UTC<input name="scheduled_at_utc" value="{{ reminder.scheduled_at_utc }}"></label>
+      <label>Destination channel ID<input name="destination_channel_id" value="{{ reminder.destination_channel_id or '' }}"></label>
+      <label>Destination name<input name="destination_channel_name" value="{{ reminder.destination_channel_name or '' }}"></label>
+      <label>Timings<input name="timings" value="{{ reminder.default_offsets_json }}"></label>
+      <button class="button" type="submit" {{ 'disabled' if reminder.status != 'upcoming' else '' }}>Queue edit</button>
+    </form>
+    <div class="action-buttons">
+      <form method="post" action="{{ url_for('reminders_action', reminder_id=reminder.id) }}"><input type="hidden" name="csrf" value="{{ csrf_token }}"><input type="hidden" name="guild_id" value="{{ reminder.guild_id }}"><input type="hidden" name="action" value="duplicate"><button class="button secondary" type="submit">Duplicate</button></form>
+      <form method="post" action="{{ url_for('reminders_action', reminder_id=reminder.id) }}"><input type="hidden" name="csrf" value="{{ csrf_token }}"><input type="hidden" name="guild_id" value="{{ reminder.guild_id }}"><input type="hidden" name="action" value="cancel"><input name="reason" placeholder="Optional cancellation reason"><button class="button danger" type="submit" {{ 'disabled' if reminder.status != 'upcoming' else '' }}>Cancel reminder</button></form>
+      <form method="post" action="{{ url_for('reminders_action', reminder_id=reminder.id) }}"><input type="hidden" name="csrf" value="{{ csrf_token }}"><input type="hidden" name="guild_id" value="{{ reminder.guild_id }}"><input type="hidden" name="action" value="archive"><button class="button danger" type="submit" {{ 'disabled' if reminder.status == 'upcoming' or reminder.status == 'deleted' else '' }}>Archive</button></form>
+    </div>
+    {% else %}<p class="muted">Viewer accounts can inspect delivery health but cannot change reminders.</p>{% endif %}
+  </article>
+</section>
+
+<section class="card"><h2>Occurrences</h2><div class="status-list">{% for item in detail.occurrences %}<div><span>#{{ item.occurrence_index + 1 }} · {{ item.scheduled_at_utc }}</span><strong>{{ item.status }}</strong></div>{% else %}<p class="muted">No occurrence rows.</p>{% endfor %}</div></section>
+
+<section class="card"><h2>Subscriptions</h2>{% if not can_manage_users %}<p class="muted">Subscriber identities are restricted to administrators.</p>{% else %}<div class="status-list">{% for item in detail.subscriptions %}<div><span><code>{{ item.user_id }}</code></span><strong>{{ item.status }} · {{ item.custom_offsets_json or 'event defaults' }}</strong></div>{% else %}<p class="muted">No subscriptions.</p>{% endfor %}</div>{% endif %}</section>
+
+<section class="card"><h2>Delivery results</h2><div class="table-wrap"><table><thead><tr><th>Recipient</th><th>Trigger</th><th>Due UTC</th><th>Status</th><th>Attempts</th><th>Error</th><th></th></tr></thead><tbody>{% for item in detail.deliveries %}<tr><td>{{ item.recipient_user_id }}</td><td>{{ item.trigger_key }}</td><td>{{ item.due_at_utc }}</td><td>{{ item.status }}</td><td>{{ item.attempt_count }}</td><td>{{ item.error_category or '' }}</td><td>{% if can_write and item.status == 'failed' %}<form method="post" action="{{ url_for('reminders_action', reminder_id=reminder.id) }}"><input type="hidden" name="csrf" value="{{ csrf_token }}"><input type="hidden" name="guild_id" value="{{ reminder.guild_id }}"><input type="hidden" name="action" value="retry"><input type="hidden" name="delivery_id" value="{{ item.id }}"><button class="button secondary" type="submit">Retry</button></form>{% endif %}</td></tr>{% else %}<tr><td colspan="7" class="muted">No deliveries.</td></tr>{% endfor %}</tbody></table></div></section>
+
+<section class="card"><h2>Audit history</h2><div class="status-list">{% for item in detail.audit %}<div><span>{{ item.created_at_utc }} · {{ item.action }}</span><strong>{{ item.actor_user_id or 'system' }}</strong></div>{% else %}<p class="muted">No audit entries.</p>{% endfor %}</div></section>
+{% endblock %}

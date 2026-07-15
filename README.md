@@ -30,7 +30,11 @@ For a module-by-module architecture and reliability map, see
 | `/context help`, `/context status`, `/context search`, `/context summarize`, `/context timeline`, `/context user`, `/context channel` | Roles listed in `MESSAGE_CONTEXT_ALLOWED_ROLE_IDS` or users listed in `BOT_OWNER_USER_IDS` |
 | `/rulecard draft` and **Draft Rule Reminder** message action | Administrators or roles listed in `MODAI_ALLOWED_ROLE_IDS` |
 | `/checklist` commands and management controls | Roles listed in `CHECKLIST_ALLOWED_ROLE_IDS` or users listed in `BOT_OWNER_USER_IDS` |
-| `/reminder add`, `/reminder manage`, `/remind subscribe`, `/timezone`, `/time`, `!time` | Internal staff only: administrators, `BOT_OWNER_USER_IDS`, `REMINDER_ALLOWED_ROLE_IDS`, or configured staff/admin roles |
+| `/remind personal` | Roles in `REMINDER_PERSONAL_ALLOWED_ROLE_IDS`; blank allows all members. Staff-only targeting and channel delivery remain separately protected. |
+| `/remind event` | Roles in `REMINDER_EVENT_ALLOWED_ROLE_IDS`; blank falls back to `REMINDER_ALLOWED_ROLE_IDS` and configured staff/admin roles. |
+| `/remind manage` | Roles in `REMINDER_MANAGE_ALLOWED_ROLE_IDS`; blank allows all members to manage their own reminders. `REMINDER_MANAGE_ALL_ROLE_IDS` controls guild-wide management. |
+| `/remind subscriptions` and event **Remind Me** buttons | Roles in `REMINDER_SUBSCRIPTIONS_ALLOWED_ROLE_IDS`; blank allows all members. |
+| `/remind help`, `/timezone`, `/time` | All server members. |
 | ModAI commands and context menus | Administrators or roles listed in `MODAI_ALLOWED_ROLE_IDS` |
 | Staff-note commands | Administrators or roles listed in `STAFF_NOTES_ALLOWED_ROLE_IDS` |
 | `/staffnote delete` | Administrators only |
@@ -56,37 +60,37 @@ feature effectively administrator-only. This does not apply to `/ask` or the
 `/bot` or `/checklist` groups. Bot management and checklist management are
 owner-only by default when their broader access settings are blank.
 
-## Internal reminder commands
+## Reminder commands
 
-Reminders live in `data.db` and are checked by a background task every 45
-seconds. Pending reminders survive restarts because the database is the source
-of truth. Setup and management responses are private. Fired reminders post in
-the chosen channel and ping only an explicitly selected target or explicit
-user/role mentions in the reminder text.
+The canonical reminder family is `/remind`. Personal reminders, events,
+occurrences, subscriptions, delivery attempts, and audit history live in
+`data.db`. A 30-second worker claims due delivery records with database leases,
+recovers interrupted claims after restarts, retries temporary Discord failures,
+and suppresses stale deliveries outside the configured grace window.
 
-- `/reminder add <channel> [who]` — Opens a modal for the message and time.
-  `who` defaults to nobody. Natural-language inputs include `in 2 hours`,
-  `tomorrow 9am`, and `Friday 7:30pm`, alongside ISO and US date formats.
-- `/remind subscribe` — Opens a modal and posts a public bell card in the
-  current channel. Members can subscribe for a persistent confirmation DM,
-  cancel from that DM, and receive the scheduled DM after a restart.
-- `/timezone [timezone]` — Privately views or sets the staff member's personal
-  IANA timezone used by reminder and time phrases.
-- `/time <when>` and `!time <when>` — Produce Discord timestamp codes; the slash
-  response is private and the prefix response is public.
-- `/reminder manage` — Privately list pending reminders created by you or aimed
-  at you. The panel supports selecting a reminder, editing message/time,
-  editing the channel, editing the target when permitted, and deleting the
-  reminder before it fires.
+- `/remind personal [destination] [who]` — Create a private one-time or
+  recurring reminder. Members default to their own DMs. Server-channel delivery
+  and targeting another member retain the existing staff permission check.
+- `/remind event` — Configured staff create a public event card with labeled
+  **Remind Me** and **Open Channel** controls. Events support multiple advance
+  timings, recurrence, subscriber timing customization, live subscriber counts,
+  edits, and cancellation notices.
+- `/remind manage [status] [reminder_type] [recurrence]` — Manage reminders you
+  created. Configured staff can manage matching reminders across the guild.
+- `/remind subscriptions` — Change timing, restore event defaults, open the
+  destination, or unsubscribe from active events.
+- `/remind help` — Private member-facing command guidance.
+- `/timezone [timezone]` — View or set the IANA timezone used to interpret
+  natural-language dates. Final dates use Discord timestamps for each viewer.
+- `/time <when>` and staff-only `!time <when>` — Produce Discord timestamp codes.
 
-Using reminders requires administrator permission, a user ID in
-`BOT_OWNER_USER_IDS`, a role in `REMINDER_ALLOWED_ROLE_IDS`, or one of the
-dashboard-managed staff/admin roles. Regular members cannot create or manage
-reminders, including self-reminders. The reminder timezone defaults to
-`America/Chicago`; set `REMINDER_TIMEZONE` to another IANA timezone if the
-community standard changes. Reminder sends require the bot to have **View
-Channel**, **Send Messages** or **Send Messages in Threads**, and **Embed
-Links** in the selected channel.
+`/reminder add`, `/reminder manage`, and `/remind subscribe` are temporary
+compatibility routes backed by the same canonical service. Set
+`ENABLE_LEGACY_REMINDER_COMMANDS=false` after the transition period to disable
+them. Existing reminder rows are migrated idempotently at startup and retained
+untouched for rollback evidence. Full architecture, dashboard, migration,
+manual-test, deployment, and troubleshooting instructions are in
+[`docs/reminders.md`](docs/reminders.md).
 
 ## DISBOARD bump rewards
 
@@ -1496,8 +1500,16 @@ updated from the authenticated local dashboard without rewriting `.env`.
 | `BOT_OWNER_USER_IDS` | Comma-separated Discord user IDs allowed to use `/bot` commands. |
 | `BOT_OWNER_ALLOW_ADMINS` | Allows server administrators to use `/bot` when `true`. Defaults to `false`. |
 | `CHECKLIST_ALLOWED_ROLE_IDS` | Comma-separated Discord role IDs allowed to use `/checklist`; bot owners are also allowed. Blank makes checklist management owner-only. |
-| `REMINDER_ALLOWED_ROLE_IDS` | Comma-separated Discord role IDs allowed to use internal staff reminders. Administrators, bot owners, and configured staff/admin roles are also allowed. |
-| `REMINDER_TIMEZONE` | IANA timezone used for `/reminder add` and edit date/time input. Defaults to `America/Chicago`. |
+| `REMINDER_ALLOWED_ROLE_IDS` | Legacy fallback roles for staff reminder actions. Existing configured staff/admin roles are also recognized. |
+| `REMINDER_PERSONAL_ALLOWED_ROLE_IDS` | Roles allowed to use `/remind personal`. Blank allows all server members. |
+| `REMINDER_EVENT_ALLOWED_ROLE_IDS` | Roles allowed to use `/remind event`. Blank uses the legacy reminder/staff role rules. |
+| `REMINDER_MANAGE_ALLOWED_ROLE_IDS` | Roles allowed to open `/remind manage` for their own reminders. Blank allows all server members. |
+| `REMINDER_MANAGE_ALL_ROLE_IDS` | Roles allowed to manage every reminder in the guild. Blank uses the legacy reminder/staff role rules. |
+| `REMINDER_SUBSCRIPTIONS_ALLOWED_ROLE_IDS` | Roles allowed to subscribe to events and use `/remind subscriptions`. Blank allows all server members. |
+| `REMINDER_TIMEZONE` | Server fallback IANA timezone for reminder date/time input. Defaults to `America/Chicago`; members can override it with `/timezone`. |
+| `ENABLE_LEGACY_REMINDER_COMMANDS` | Keeps `/reminder add`, `/reminder manage`, and `/remind subscribe` transition routes available. Defaults to `true`. |
+| `REMINDER_DELIVERY_GRACE_MINUTES` | Maximum age of a missed delivery that may be caught up after downtime. Defaults to `120`; valid runtime range is 1–1440 minutes. |
+| `REMINDER_EVENT_AUTO_SUBSCRIBE_CREATOR` | Automatically subscribes an event creator to the event defaults. Defaults to `true`. |
 | `DISBOARD_BOT_USER_ID` | Official DISBOARD bot user ID trusted for verified success responses. |
 | `BUMP_REWARD_ROLE_ID` | Role granted after a verified bump for the external XP/reward handoff. |
 | `BUMP_SUCCESS_MESSAGE` | Authoritative successful-bump response text. Supports `{member}`, `{points}`, and `{reward_status}` placeholders. |
