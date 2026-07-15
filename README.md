@@ -213,8 +213,9 @@ have **View Channel**, **Send Messages** (or **Send Messages in Threads**), and
 - `/staffai help`, `/staffai status`, `/staffai ask`, `/staffai search`,
   `/staffai summarize` — Private imported and live staff-channel context tools.
 - `/context help`, `/context status`, `/context search`, `/context summarize`,
-  `/context timeline`, `/context user`, `/context channel` — Private
-  full-server message archive, search, and timeline tools.
+  `/context timeline`, `/context channel` — Private full-server message
+  archive, search, and timeline tools. Authorized staff can run `/context user`
+  to post a deliberately high-level public member evaluation.
 - `/rulecard draft` — AI-drafted rule reminder preview for staff review.
 - `/vcrewards audit` — Runs a private, read-only VCXP safety audit.
 
@@ -417,9 +418,9 @@ match exists. Staff-only KB chunks (`staff` or `staff_only`) are available only
 to staff tools such as context summaries and rulecard drafting.
 
 The framework accepts task types such as `ask_server_guide`,
-`staff_context_user`, `staff_context_channel`, `staff_context_topic`,
-`rulecard_draft`, `ticket_summary`, `moderation_classification`,
-`weekly_recap`, and `onboarding_helper`.
+`staff_context_user`, `public_context_user`, `staff_context_channel`,
+`staff_context_topic`, `rulecard_draft`, `ticket_summary`,
+`moderation_classification`, `weekly_recap`, and `onboarding_helper`.
 
 ## Private staff-context commands
 
@@ -477,14 +478,19 @@ Markdown is escaped, and only Discord message URLs become jump links.
 - `/context timeline <after> [before] [channel] [topic] [granularity]` —
   Chronological staff narrative.
 - `/context user <user> <timeframe> [channel] [include_bots] [max_messages]`
-  — Neutral member participation review. Timeframes include `24h`, `3d`,
-  `7d`, `14d`, `30d`, `60d`, and `90d`.
+  — Authorized staff can post a public member evaluation with a `0`–`100`
+  community-contribution score, strengths, constructive growth opportunities,
+  and up to five representative verbatim quotes with source channel/date/jump
+  links. NSFW-channel quotes are permitted. It never posts secrets, staff-only
+  concerns, moderation history, or other members' content. Timeframes include
+  `24h`, `3d`, `7d`, `14d`, `30d`, `60d`, and `90d`.
 - `/context channel <channel> <timeframe> [topic] [include_bots] [max_messages]`
   — Channel recap. Timeframes include `1h`, `6h`, `12h`, `24h`, `3d`, `7d`,
   `14d`, and `30d`.
 
 Access requires `MESSAGE_CONTEXT_ALLOWED_ROLE_IDS` or `BOT_OWNER_USER_IDS`.
-All replies are ephemeral. Full privacy, Message Content Intent, retention,
+`/context user` posts its safe public evaluation to the invoking channel; all
+other `/context` replies are ephemeral. Full privacy, Message Content Intent, retention,
 configuration, import, and test instructions are in
 [docs/message-context.md](docs/message-context.md).
 

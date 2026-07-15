@@ -16,6 +16,9 @@ from utils.ui import branded_embed, truncate
 
 
 FOOTER_TEXT = "AI-generated staff summary • Review before taking action"
+PUBLIC_EVALUATION_FOOTER_TEXT = (
+    "AI-generated community evaluation • Based on available server activity"
+)
 DESCRIPTION_LIMIT = 500
 FALLBACK_DESCRIPTION_LIMIT = 3_500
 FIELD_VALUE_LIMIT = 900
@@ -342,6 +345,74 @@ def build_user_context_embed(data: dict, metadata: dict) -> discord.Embed:
         value=format_bullet_list(
             data.get("suggestedFollowUp"),
             empty_text="No immediate staff action suggested.",
+        ),
+        inline=False,
+    )
+    limitations = clean_markdown(str(data.get("limitations") or ""))
+    embed.add_field(
+        name="Limitations",
+        value=truncate(limitations, FIELD_VALUE_LIMIT, "No limitations noted."),
+        inline=False,
+    )
+    return truncate_embed(embed)
+
+
+def _community_score(value: object) -> int:
+    """Return a display-safe whole-number community score.
+
+    The model is instructed to produce an integer from 0 through 100, but this
+    guard keeps an unexpected response from rendering an implausible score.
+    """
+    try:
+        return max(0, min(100, int(value)))
+    except (TypeError, ValueError):
+        return 0
+
+
+def build_public_user_evaluation_embed(data: dict, metadata: dict) -> discord.Embed:
+    """Render the deliberately high-level, public `/context user` result.
+
+    The caller deliberately requested public source context, so this can show
+    a small set of representative quotes and their Discord jump links. Do not
+    add staff concerns, staff follow-up, or a raw synthesis fallback here.
+    """
+    summary = clean_markdown(str(data.get("summary") or ""))
+    score = _community_score(data.get("communityContributionScore"))
+    embed = branded_embed(
+        metadata["title"],
+        description=truncate(summary, DESCRIPTION_LIMIT, "No evaluation available."),
+        footer=PUBLIC_EVALUATION_FOOTER_TEXT,
+    )
+    embed.add_field(
+        name="Community Contribution Score",
+        value=f"**{score}/100**",
+        inline=False,
+    )
+    embed.add_field(name="Timeframe", value=metadata["timeframe_text"], inline=False)
+    embed.add_field(
+        name="Strengths Observed",
+        value=format_bullet_list(data.get("strengths")),
+        inline=False,
+    )
+    embed.add_field(
+        name="Growth Opportunities",
+        value=format_bullet_list(
+            data.get("growthOpportunities"),
+            empty_text="No specific growth opportunities noted.",
+        ),
+        inline=False,
+    )
+    embed.add_field(
+        name="Representative Context",
+        value=format_message_references(
+            [
+                {**quote, "label": quote.get("quote", "")}
+                for quote in data.get("contextQuotes", [])
+                if isinstance(quote, dict)
+            ],
+            secondary_field="channelName",
+            secondary_template="in #{value}",
+            empty_text="No representative quotes were available.",
         ),
         inline=False,
     )

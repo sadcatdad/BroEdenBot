@@ -33,6 +33,7 @@ AI_GENERIC_ERROR_MESSAGE = "AI could not complete that request right now."
 FUTURE_TASK_TYPES = {
     "ask_server_guide",
     "staff_context_user",
+    "public_context_user",
     "staff_context_channel",
     "staff_context_topic",
     "rulecard_draft",

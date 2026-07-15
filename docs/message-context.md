@@ -15,9 +15,18 @@ has approved the channels, access roles, retention policy, and member-facing
 privacy disclosures that apply to the server.
 
 Only users listed in `BOT_OWNER_USER_IDS` or members with a role listed in
-`MESSAGE_CONTEXT_ALLOWED_ROLE_IDS` can use `/context`. Every response is
-ephemeral. An empty allowed-role list does not grant administrators access;
-only configured bot owners remain authorized.
+`MESSAGE_CONTEXT_ALLOWED_ROLE_IDS` can use `/context`. Every command response
+is ephemeral except a successful `/context user` evaluation, which the
+authorized invoker deliberately posts to the current channel. An empty
+allowed-role list does not grant administrators access; only configured bot
+owners remain authorized.
+
+The public `/context user` card includes a community-contribution score
+(0–100), observed strengths, constructive growth opportunities, and up to five
+representative verbatim quotes from the selected member with their archived
+channel/date/message links. Quotes from NSFW-marked channels, including NSFW
+content, may be shown publicly. It never posts secrets, staff-only concerns,
+moderation history, or content written by other members.
 
 The archive stores text and message metadata. It does not download attachment,
 image, or video files. It stores attachment counts and filenames only.
@@ -92,8 +101,12 @@ without crashing.
 - `/context timeline after:<time> [before] [channel] [topic] [granularity]`
   builds a chronological narrative.
 - `/context user user:<member> timeframe:<24h|3d|7d|14d|30d|60d|90d>
-  [channel] [include_bots] [max_messages]` reviews that member's stored
-  participation without assigning intent.
+  [channel] [include_bots] [max_messages]` is an authorized-staff command
+  that posts a public, high-level evaluation of that member's stored
+  participation. It uses a 0–100 community-contribution score based on
+  observable activity, plus strengths, constructive growth opportunities, and
+  up to five representative verbatim quotes with their source links. NSFW
+  quotes are permitted; staff/moderation information is not.
 - `/context channel channel:<channel> timeframe:<1h|6h|12h|24h|3d|7d|14d|30d>
   [topic] [include_bots] [max_messages]` reviews a stored channel timeframe.
 

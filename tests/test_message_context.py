@@ -7,7 +7,7 @@ from argparse import Namespace
 from datetime import datetime, timezone
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 
 import aiosqlite
 
@@ -338,6 +338,134 @@ class MessageContextLiveTrackingTests(unittest.IsolatedAsyncioTestCase):
         await cursor.close()
         self.assertNotIn("do-not-store", content)
         self.assertIn("[REDACTED]", content)
+
+
+class PublicUserEvaluationDeliveryTests(unittest.IsolatedAsyncioTestCase):
+    def _interaction(self):
+        return SimpleNamespace(
+            user=SimpleNamespace(id=10),
+            guild_id=42,
+            channel_id=99,
+            followup=SimpleNamespace(send=AsyncMock()),
+        )
+
+    async def test_public_evaluation_posts_the_requested_structured_quotes(self):
+        cog = MessageContext(SimpleNamespace())
+        cog._synthesize_structured = AsyncMock(
+            return_value=(
+                {
+                    "summary": "Helpful in discussions.",
+                    "communityContributionScore": 81,
+                    "strengths": ["Welcomes newcomers."],
+                    "growthOpportunities": [],
+                    "limitations": "Short review window.",
+                    "contextQuotes": [
+                        {
+                            "quote": "I can help with that.",
+                            "timestamp": "2026-07-14T20:00:00+00:00",
+                            "channelName": "general",
+                            "jumpUrl": "https://discord.com/channels/1/2/3",
+                        }
+                    ],
+                },
+                "private raw fallback text",
+            )
+        )
+        interaction = self._interaction()
+
+        await cog._send_structured_analysis(
+            interaction,
+            [object()],
+            kind="public_user",
+            title="Community Evaluation: Alice",
+            task="test",
+            request="test",
+            schema={},
+            timeframe_text="Jul 1 – Jul 14\n20 messages reviewed",
+            total_matching_count=20,
+            target_label="user=123",
+            timeframe_label="14d",
+            source_command="/context user",
+            task_type="public_context_user",
+            public_result=True,
+        )
+
+        payload = interaction.followup.send.await_args.kwargs
+        self.assertFalse(payload["ephemeral"])
+        self.assertIn("discord.com/channels", str(payload["embed"].to_dict()))
+        self.assertIn("I can help with that.", str(payload["embed"].to_dict()))
+        self.assertNotIn("private raw fallback text", str(payload["embed"].to_dict()))
+
+    async def test_public_evaluation_never_falls_back_to_raw_archive_text(self):
+        cog = MessageContext(SimpleNamespace())
+        cog._synthesize_structured = AsyncMock(
+            return_value=(None, "private raw archive recap")
+        )
+        interaction = self._interaction()
+
+        await cog._send_structured_analysis(
+            interaction,
+            [object()],
+            kind="public_user",
+            title="Community Evaluation: Alice",
+            task="test",
+            request="test",
+            schema={},
+            timeframe_text="Jul 1 – Jul 14\n20 messages reviewed",
+            total_matching_count=20,
+            target_label="user=123",
+            timeframe_label="14d",
+            source_command="/context user",
+            task_type="public_context_user",
+            public_result=True,
+        )
+
+        payload = interaction.followup.send.await_args
+        self.assertTrue(payload.kwargs["ephemeral"])
+        self.assertIn("could not be generated", payload.args[0])
+        self.assertNotIn("private raw archive recap", str(payload))
+
+    async def test_public_evaluation_renderer_failure_stays_private(self):
+        cog = MessageContext(SimpleNamespace())
+        cog._synthesize_structured = AsyncMock(
+            return_value=(
+                {
+                    "summary": "Helpful in discussions.",
+                    "communityContributionScore": 81,
+                    "strengths": [],
+                    "growthOpportunities": [],
+                    "limitations": "Short review window.",
+                },
+                "private raw archive recap",
+            )
+        )
+        interaction = self._interaction()
+
+        with patch(
+            "cogs.message_context.build_public_user_evaluation_embed",
+            side_effect=RuntimeError("renderer failure"),
+        ):
+            await cog._send_structured_analysis(
+                interaction,
+                [object()],
+                kind="public_user",
+                title="Community Evaluation: Alice",
+                task="test",
+                request="test",
+                schema={},
+                timeframe_text="Jul 1 – Jul 14\n20 messages reviewed",
+                total_matching_count=20,
+                target_label="user=123",
+                timeframe_label="14d",
+                source_command="/context user",
+                task_type="public_context_user",
+                public_result=True,
+            )
+
+        payload = interaction.followup.send.await_args
+        self.assertTrue(payload.kwargs["ephemeral"])
+        self.assertIn("could not be generated", payload.args[0])
+        self.assertNotIn("private raw archive recap", str(payload))
 
 
 if __name__ == "__main__":
