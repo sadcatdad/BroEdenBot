@@ -390,6 +390,48 @@ class StatsCogCompatibilityTests(unittest.TestCase):
             ],
         )
 
+    def test_bot_enables_discord_emoji_gateway_intent(self):
+        from main import intents
+
+        self.assertTrue(intents.emojis_and_stickers)
+
+
+class StatsCogEmojiRefreshTests(unittest.IsolatedAsyncioTestCase):
+    async def test_metadata_refresh_fetches_emojis_when_gateway_cache_is_empty(self):
+        from cogs.stats import Stats
+
+        emoji = type(
+            "Emoji",
+            (),
+            {
+                "id": 1334088283587874826,
+                "name": "p_freakout",
+                "animated": True,
+                "available": True,
+                "managed": False,
+            },
+        )()
+
+        class Guild:
+            id = 1278253523619807233
+            emojis = []
+
+            async def fetch_emojis(self):
+                return [emoji]
+
+        self.assertEqual(
+            await Stats._fetch_discord_metadata_emojis(Guild()),
+            [
+                {
+                    "id": "1334088283587874826",
+                    "name": "p_freakout",
+                    "animated": True,
+                    "available": True,
+                    "managed": False,
+                }
+            ],
+        )
+
 
 class StatsCogSchemaCompatibilityTests(unittest.IsolatedAsyncioTestCase):
     async def test_cog_async_migration_adds_manager_columns(self):

@@ -71,6 +71,7 @@ def cog_is_enabled(filename: str, enabled_modules: Optional[Set[str]]) -> bool:
 
 intents = discord.Intents.none()
 intents.guilds = True
+intents.emojis_and_stickers = True
 intents.members = True
 intents.guild_messages = True
 intents.message_content = True

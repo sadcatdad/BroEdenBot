@@ -22,8 +22,9 @@ maintenance.
   SQLite backups, a VC XP role-pulse readiness summary, stats management, an
   AI framework status/usage page, a unified Knowledge manager for file-backed,
   manual AI, and live Discord sources, and aggregate server analytics. Discord
-  role/channel pickers read a live-guild metadata snapshot written by the bot,
-  not historical import tables.
+  role/channel/custom-emoji pickers read a live-guild metadata snapshot written
+  by the bot, not historical import tables. Manual metadata refreshes explicitly
+  fetch guild emojis from Discord and fall back to the enabled expression cache.
 - `dashboard/templates/base.html`, `dashboard/static/styles.css`,
   `dashboard/static/dashboard_nav.js`, and
   `dashboard/static/broeden-pride-icon.png` — Responsive grouped application

@@ -3774,7 +3774,7 @@ class Stats(commands.Cog):
 
         roles = self._discord_metadata_roles(guild)
         categories, channels = self._discord_metadata_channels(guild)
-        emojis = self._discord_metadata_emojis(guild)
+        emojis = await self._fetch_discord_metadata_emojis(guild)
         await asyncio.to_thread(
             save_discord_metadata_snapshot,
             guild_id=str(guild.id),
@@ -3791,8 +3791,38 @@ class Stats(commands.Cog):
             f"{len(channels)} channels, {len(emojis)} emojis.",
         )
 
+    @classmethod
+    async def _fetch_discord_metadata_emojis(
+        cls,
+        guild: discord.Guild,
+    ) -> list[dict]:
+        """Fetch current guild emojis, falling back to the gateway cache."""
+
+        source = getattr(guild, "emojis", []) or []
+        fetch_emojis = getattr(guild, "fetch_emojis", None)
+        if callable(fetch_emojis):
+            try:
+                source = await fetch_emojis()
+            except discord.HTTPException as exc:
+                logger.warning(
+                    "Could not fetch Discord emojis for metadata refresh; "
+                    "using gateway cache guild_id=%s error=%s",
+                    guild.id,
+                    type(exc).__name__,
+                )
+        return cls._discord_metadata_emojis(guild, source=source)
+
     @staticmethod
-    def _discord_metadata_emojis(guild: discord.Guild) -> list[dict]:
+    def _discord_metadata_emojis(
+        guild: discord.Guild,
+        *,
+        source=None,
+    ) -> list[dict]:
+        emoji_source = (
+            source
+            if source is not None
+            else (getattr(guild, "emojis", []) or [])
+        )
         emojis = [
             {
                 "id": str(emoji.id),
@@ -3801,7 +3831,7 @@ class Stats(commands.Cog):
                 "available": bool(getattr(emoji, "available", True)),
                 "managed": bool(getattr(emoji, "managed", False)),
             }
-            for emoji in (getattr(guild, "emojis", []) or [])
+            for emoji in emoji_source
         ]
         return sorted(emojis, key=lambda item: str(item["name"]).casefold())
 

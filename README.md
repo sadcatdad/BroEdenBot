@@ -1622,9 +1622,9 @@ source .venv/bin/activate
 .venv/bin/python main.py
 ```
 
-The bot requests only guild, guild-message, voice-state, member, and message-
-content gateway events. Enable **Server Members Intent** and **Message Content
-Intent** in the Discord Developer Portal so VC/member tracking, legacy queue
+The bot requests only guild, guild-expression, guild-message, voice-state,
+member, and message-content gateway events. Enable **Server Members Intent**
+and **Message Content Intent** in the Discord Developer Portal so VC/member tracking, legacy queue
 commands, and the explicitly enabled private context archives work correctly.
 Presence, typing, invite, integration, webhook, and other unrelated intents are
 not requested.
@@ -1852,9 +1852,11 @@ roles, categories, channels, emojis, last refresh time, and the latest refresh e
 one exists, plus the remaining dashboard-managed Discord selector settings.
 The Refresh Discord Metadata button queues the fixed
 `refresh_discord_metadata` dashboard action. The live bot process handles that
-action from its existing dashboard action worker and snapshots current guild
-roles/channels/categories/emojis into SQLite. The FastAPI dashboard still does not
-start a second Discord client and does not expose arbitrary API calls.
+action from its existing dashboard action worker, explicitly fetches the current
+custom emojis from Discord (with the enabled guild-expression gateway cache as a
+fallback), and snapshots guild roles/channels/categories/emojis into SQLite.
+The FastAPI dashboard still does not start a second Discord client and does not
+expose arbitrary API calls.
 Knowledge reindex actions now also queue this fixed Discord metadata refresh,
 so the custom-emoji browser is repopulated after a reindex.
 
