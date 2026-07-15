@@ -126,10 +126,12 @@ happen to use historical RiffBot bump-board names.
 
 ## Daily message streaks
 
-Qualifying public messages maintain current and longest daily streaks in
-`data.db`. Bots, webhooks, commands, short messages, duplicate messages, private
-staff channels, and configured excluded channels do not count. Deleted source
-messages are removed and affected streaks are recomputed.
+Qualifying member-accessible messages maintain current and longest daily
+streaks in `data.db`. Channels gated behind an ordinary verified/member role
+count; private channels accessible only through staff/admin roles do not. Bots,
+webhooks, commands, short messages, duplicate messages, private staff channels,
+and configured excluded channels do not count. Deleted source messages are
+removed and affected streaks are recomputed.
 
 - `!streak` — Shows the caller's current/longest streak and any unread milestone.
 - `/streak leaderboard [streak_type]` — Shows current or longest streaks in

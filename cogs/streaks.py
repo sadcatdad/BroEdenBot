@@ -19,6 +19,7 @@ from discord import app_commands
 from discord.ext import commands, tasks
 
 from config import COLOR
+from utils.access import configured_staff_role_ids
 from utils.ranked_graphic import (
     RankedGraphicItem,
     RankedGraphicSection,
@@ -52,6 +53,18 @@ AUTOMATIC_EXCLUDED_CHANNEL_TERMS = {
     "spam",
 }
 WORD_RE = re.compile(r"[^\W_]+(?:['’-][^\W_]+)*", re.UNICODE)
+STAFF_PERMISSION_NAMES = (
+    "administrator",
+    "manage_guild",
+    "manage_channels",
+    "manage_roles",
+    "manage_messages",
+    "manage_threads",
+    "view_audit_log",
+    "kick_members",
+    "ban_members",
+    "moderate_members",
+)
 
 
 @lru_cache(maxsize=1)
@@ -73,6 +86,7 @@ class Streaks(commands.Cog):
         self._weekly_refresh_started = False
         self._reaction_tasks: set[asyncio.Task[None]] = set()
         self._heartbeat_initialized: set[int] = set()
+        self._staff_role_ids: Optional[set[int]] = None
 
     async def cog_load(self) -> None:
         await self.bot.db.executescript(STREAK_SCHEMA)
@@ -125,6 +139,11 @@ class Streaks(commands.Cog):
     def _normalized_content(content: str) -> str:
         return " ".join(str(content or "").casefold().split())
 
+    def _configured_staff_roles(self) -> set[int]:
+        if self._staff_role_ids is None:
+            self._staff_role_ids = set(configured_staff_role_ids())
+        return self._staff_role_ids
+
     def _channel_is_excluded(self, message: discord.Message) -> bool:
         channel = message.channel
         channel_id = getattr(channel, "id", 0)
@@ -143,8 +162,32 @@ class Streaks(commands.Cog):
         permissions_for = getattr(channel, "permissions_for", None)
         if permissions_for is None:
             return True
-        permissions = permissions_for(message.guild.default_role)
-        return not getattr(permissions, "view_channel", False)
+        default_role = message.guild.default_role
+        permissions = permissions_for(default_role)
+        if getattr(permissions, "view_channel", False):
+            return False
+
+        # Bro Eden's community channels are gated behind a verified-member
+        # role, so @everyone cannot see them even though they are public to the
+        # membership. Accept access granted by an ordinary role held by the
+        # author, but do not let staff/admin roles make a private staff channel
+        # qualify.
+        staff_role_ids = self._configured_staff_roles()
+        for role in getattr(message.author, "roles", ()):
+            if role == default_role or getattr(role, "managed", False):
+                continue
+            if getattr(role, "id", None) in staff_role_ids:
+                continue
+            role_permissions = getattr(role, "permissions", None)
+            if role_permissions and any(
+                getattr(role_permissions, name, False)
+                for name in STAFF_PERMISSION_NAMES
+            ):
+                continue
+            permissions = permissions_for(role)
+            if getattr(permissions, "view_channel", False):
+                return False
+        return True
 
     async def _is_duplicate(
         self,

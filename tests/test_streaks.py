@@ -29,9 +29,10 @@ class DummyBot:
 
 
 class DummyMember:
-    def __init__(self, member_id=42):
+    def __init__(self, member_id=42, roles=()):
         self.id = member_id
         self.bot = False
+        self.roles = list(roles)
         self.display_name = "Member"
         self.name = "member42"
         self.mention = f"<@{member_id}>"
@@ -53,6 +54,31 @@ class DummyChannel:
 
     def permissions_for(self, _role):
         return SimpleNamespace(view_channel=True)
+
+
+class DummyRole:
+    def __init__(self, role_id, *, staff_permission=False, managed=False):
+        self.id = role_id
+        self.managed = managed
+        self.permissions = SimpleNamespace(
+            administrator=False,
+            manage_guild=staff_permission,
+            manage_channels=False,
+            manage_roles=False,
+            kick_members=False,
+            ban_members=False,
+            moderate_members=False,
+        )
+
+
+class RoleGatedChannel(DummyChannel):
+    def __init__(self, visible_role_ids):
+        self.visible_role_ids = set(visible_role_ids)
+
+    def permissions_for(self, role):
+        return SimpleNamespace(
+            view_channel=getattr(role, "id", None) in self.visible_role_ids
+        )
 
 
 class DummyHistoryChannel(DummyChannel):
@@ -302,6 +328,65 @@ class StreakTests(unittest.IsolatedAsyncioTestCase):
             patch("cogs.streaks.get_setting", side_effect=lambda _key, default="": default),
         ):
             self.assertEqual(await self.cog._qualify_message(message), (1, False))
+
+    async def test_verified_member_role_makes_role_gated_channel_public(self):
+        everyone = DummyRole(1)
+        verified = DummyRole(2)
+        guild = SimpleNamespace(id=1, default_role=everyone)
+        message = SimpleNamespace(
+            id=4,
+            guild=guild,
+            author=DummyMember(roles=[everyone, verified]),
+            webhook_id=None,
+            channel=RoleGatedChannel({verified.id}),
+            content="This verified member message qualifies",
+        )
+        with (
+            patch("cogs.streaks.discord.Member", DummyMember),
+            patch("cogs.streaks.configured_staff_role_ids", return_value=set()),
+            patch("cogs.streaks.get_csv_ids_setting", return_value=[]),
+            patch("cogs.streaks.get_int_setting", side_effect=lambda _key, default: default),
+            patch("cogs.streaks.get_setting", side_effect=lambda _key, default="": default),
+        ):
+            self.assertEqual(await self.cog._qualify_message(message), (1, False))
+
+    async def test_staff_role_alone_does_not_make_private_channel_public(self):
+        everyone = DummyRole(1)
+        staff = DummyRole(3)
+        guild = SimpleNamespace(id=1, default_role=everyone)
+        message = SimpleNamespace(
+            id=5,
+            guild=guild,
+            author=DummyMember(roles=[everyone, staff]),
+            webhook_id=None,
+            channel=RoleGatedChannel({staff.id}),
+            content="This private staff message stays excluded",
+        )
+        with (
+            patch("cogs.streaks.discord.Member", DummyMember),
+            patch("cogs.streaks.configured_staff_role_ids", return_value={staff.id}),
+            patch("cogs.streaks.get_csv_ids_setting", return_value=[]),
+        ):
+            self.assertIsNone(await self.cog._qualify_message(message))
+
+    async def test_privileged_role_alone_does_not_make_private_channel_public(self):
+        everyone = DummyRole(1)
+        moderator = DummyRole(4, staff_permission=True)
+        guild = SimpleNamespace(id=1, default_role=everyone)
+        message = SimpleNamespace(
+            id=6,
+            guild=guild,
+            author=DummyMember(roles=[everyone, moderator]),
+            webhook_id=None,
+            channel=RoleGatedChannel({moderator.id}),
+            content="This private moderator message stays excluded",
+        )
+        with (
+            patch("cogs.streaks.discord.Member", DummyMember),
+            patch("cogs.streaks.configured_staff_role_ids", return_value=set()),
+            patch("cogs.streaks.get_csv_ids_setting", return_value=[]),
+        ):
+            self.assertIsNone(await self.cog._qualify_message(message))
 
     async def test_recent_exact_duplicate_does_not_count_on_another_day(self):
         guild = SimpleNamespace(id=1, default_role=object())
