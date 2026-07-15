@@ -28,10 +28,11 @@
   {% if discord_metadata.status.last_error %}
   <div class="alert error">Could not load live Discord roles/channels. Check bot guild access and required intents. {{ discord_metadata.status.last_error }}</div>
   {% endif %}
-  <div class="card-grid three compact-grid">
+  <div class="card-grid compact-grid">
     <article class="card soft-card"><p class="label">Roles loaded</p><p class="metric">{{ discord_metadata.status.roles_count or 0 }}</p></article>
     <article class="card soft-card"><p class="label">Categories loaded</p><p class="metric">{{ discord_metadata.status.categories_count or 0 }}</p></article>
     <article class="card soft-card"><p class="label">Channels loaded</p><p class="metric">{{ discord_metadata.status.channels_count or 0 }}</p></article>
+    <article class="card soft-card"><p class="label">Emojis loaded</p><p class="metric">{{ discord_metadata.status.emojis_count or 0 }}</p></article>
   </div>
   <p class="muted">Last refreshed: {{ discord_metadata.status.last_refreshed_at or "Never" }}</p>
 </section>

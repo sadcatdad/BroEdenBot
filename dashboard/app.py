@@ -49,6 +49,7 @@ from dashboard.db import (
 from dashboard.discord_metadata import (
     categories_metadata,
     channels_metadata,
+    emojis_metadata,
     guild_structure,
     picker_metadata,
     queue_metadata_refresh,
@@ -2114,6 +2115,13 @@ async def api_discord_categories(request: Request) -> JSONResponse:
     if redirect := login_redirect(request):
         return redirect
     return JSONResponse(categories_metadata())
+
+
+@app.get("/api/discord/emojis", response_class=JSONResponse)
+async def api_discord_emojis(request: Request) -> JSONResponse:
+    if redirect := login_redirect(request):
+        return redirect
+    return JSONResponse(emojis_metadata())
 
 
 @app.get("/api/discord/guild-structure", response_class=JSONResponse)

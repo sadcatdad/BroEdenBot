@@ -679,8 +679,11 @@ details summary { color: var(--muted); cursor: pointer; }
 .emoji-results { display: grid; grid-template-columns: repeat(8, minmax(0, 1fr)); gap: .3rem; }
 .emoji-result { display: grid; min-height: 2.7rem; padding: .25rem; place-items: center; background: #15161d; border: 1px solid transparent; border-radius: .45rem; cursor: pointer; font-size: 1.4rem; }
 .emoji-result:hover, .emoji-result:focus-visible { background: var(--border); border-color: var(--accent); outline: none; }
+.custom-emoji-result img { width: 1.75rem; height: 1.75rem; object-fit: contain; }
 .emoji-empty-state { grid-column: 1 / -1; }
 .custom-emoji-insert { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: end; gap: .55rem; }
+.emoji-server-status { min-height: 1em; margin: -.25rem 0 0; font-size: .76rem; }
+.emoji-server-status.error-text { color: var(--danger); }
 .emoji-picker-note { margin: 0; font-size: .76rem; }
 .embed-preview-card { overflow: hidden; }
 .discord-message-preview { display: grid; grid-template-columns: 2.7rem minmax(0, 1fr); gap: .7rem; padding: 1rem 0; }

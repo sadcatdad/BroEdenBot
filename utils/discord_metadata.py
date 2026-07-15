@@ -97,6 +97,19 @@ def initialize_discord_metadata_schema() -> None:
         )
         connection.execute(
             """
+            CREATE TABLE IF NOT EXISTS dashboard_discord_emojis (
+                id TEXT PRIMARY KEY,
+                guild_id TEXT,
+                name TEXT NOT NULL,
+                animated INTEGER NOT NULL DEFAULT 0,
+                available INTEGER NOT NULL DEFAULT 1,
+                managed INTEGER NOT NULL DEFAULT 0,
+                updated_at TEXT NOT NULL
+            )
+            """
+        )
+        connection.execute(
+            """
             CREATE TABLE IF NOT EXISTS dashboard_discord_metadata_status (
                 id INTEGER PRIMARY KEY CHECK (id = 1),
                 guild_id TEXT,
@@ -104,6 +117,7 @@ def initialize_discord_metadata_schema() -> None:
                 roles_count INTEGER NOT NULL DEFAULT 0,
                 categories_count INTEGER NOT NULL DEFAULT 0,
                 channels_count INTEGER NOT NULL DEFAULT 0,
+                emojis_count INTEGER NOT NULL DEFAULT 0,
                 last_refreshed_at TEXT,
                 last_error TEXT
             )
@@ -146,6 +160,12 @@ def initialize_discord_metadata_schema() -> None:
         _ensure_column(connection, "dashboard_discord_channels", "archived", "INTEGER NOT NULL DEFAULT 0")
         _ensure_column(connection, "dashboard_discord_channels", "is_thread", "INTEGER NOT NULL DEFAULT 0")
         _ensure_column(connection, "dashboard_discord_channels", "updated_at", "TEXT NOT NULL DEFAULT ''")
+        _ensure_column(connection, "dashboard_discord_emojis", "guild_id", "TEXT")
+        _ensure_column(connection, "dashboard_discord_emojis", "animated", "INTEGER NOT NULL DEFAULT 0")
+        _ensure_column(connection, "dashboard_discord_emojis", "available", "INTEGER NOT NULL DEFAULT 1")
+        _ensure_column(connection, "dashboard_discord_emojis", "managed", "INTEGER NOT NULL DEFAULT 0")
+        _ensure_column(connection, "dashboard_discord_emojis", "updated_at", "TEXT NOT NULL DEFAULT ''")
+        _ensure_column(connection, "dashboard_discord_metadata_status", "emojis_count", "INTEGER NOT NULL DEFAULT 0")
         connection.commit()
 
 
@@ -197,14 +217,17 @@ def save_discord_metadata_snapshot(
     roles: list[dict[str, Any]],
     categories: list[dict[str, Any]],
     channels: list[dict[str, Any]],
+    emojis: Optional[list[dict[str, Any]]] = None,
 ) -> None:
     initialize_discord_metadata_schema()
     now = datetime.now(timezone.utc).isoformat()
+    emoji_rows = emojis or []
     with _connect() as connection:
         connection.execute("BEGIN IMMEDIATE")
         connection.execute("DELETE FROM dashboard_discord_roles")
         connection.execute("DELETE FROM dashboard_discord_categories")
         connection.execute("DELETE FROM dashboard_discord_channels")
+        connection.execute("DELETE FROM dashboard_discord_emojis")
         connection.executemany(
             """
             INSERT INTO dashboard_discord_roles (
@@ -271,18 +294,38 @@ def save_discord_metadata_snapshot(
                 for channel in channels
             ],
         )
+        connection.executemany(
+            """
+            INSERT INTO dashboard_discord_emojis (
+                id, guild_id, name, animated, available, managed, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?)
+            """,
+            [
+                (
+                    str(emoji["id"]),
+                    str(guild_id),
+                    str(emoji.get("name") or ""),
+                    int(bool(emoji.get("animated"))),
+                    int(bool(emoji.get("available", True))),
+                    int(bool(emoji.get("managed"))),
+                    now,
+                )
+                for emoji in emoji_rows
+            ],
+        )
         connection.execute(
             """
             INSERT INTO dashboard_discord_metadata_status (
                 id, guild_id, guild_name, roles_count, categories_count,
-                channels_count, last_refreshed_at, last_error
-            ) VALUES (1, ?, ?, ?, ?, ?, ?, NULL)
+                channels_count, emojis_count, last_refreshed_at, last_error
+            ) VALUES (1, ?, ?, ?, ?, ?, ?, ?, NULL)
             ON CONFLICT(id) DO UPDATE SET
                 guild_id = excluded.guild_id,
                 guild_name = excluded.guild_name,
                 roles_count = excluded.roles_count,
                 categories_count = excluded.categories_count,
                 channels_count = excluded.channels_count,
+                emojis_count = excluded.emojis_count,
                 last_refreshed_at = excluded.last_refreshed_at,
                 last_error = NULL
             """,
@@ -292,6 +335,7 @@ def save_discord_metadata_snapshot(
                 len(roles),
                 len(categories),
                 len(channels),
+                len(emoji_rows),
                 now,
             ),
         )
@@ -304,8 +348,9 @@ def record_discord_metadata_error(message: str) -> None:
         connection.execute(
             """
             INSERT INTO dashboard_discord_metadata_status (
-                id, roles_count, categories_count, channels_count, last_error
-            ) VALUES (1, 0, 0, 0, ?)
+                id, roles_count, categories_count, channels_count, emojis_count,
+                last_error
+            ) VALUES (1, 0, 0, 0, 0, ?)
             ON CONFLICT(id) DO UPDATE SET last_error = excluded.last_error
             """,
             (str(message)[:1_000],),
@@ -372,6 +417,18 @@ def channels_snapshot() -> list[dict[str, Any]]:
     )
 
 
+def emojis_snapshot() -> list[dict[str, Any]]:
+    initialize_discord_metadata_schema()
+    return _snapshot_rows(
+        "dashboard_discord_emojis",
+        """
+        SELECT id, name, animated, available, managed
+        FROM dashboard_discord_emojis
+        ORDER BY lower(name), id
+        """,
+    )
+
+
 def guild_structure_snapshot() -> dict[str, Any]:
     categories = categories_snapshot()
     channels = channels_snapshot()
@@ -385,6 +442,7 @@ def guild_structure_snapshot() -> dict[str, Any]:
     return {
         "status": metadata_status(),
         "roles": roles_snapshot(),
+        "emojis": emojis_snapshot(),
         "categories": grouped_categories,
         "uncategorized": by_parent.pop(None, []) + by_parent.pop("", []),
     }
@@ -402,7 +460,17 @@ def _snapshot_rows(table: str, query: str) -> list[dict[str, Any]]:
 
 
 def _normalize_booleans(row: dict[str, Any]) -> dict[str, Any]:
-    for key in ("managed", "mentionable", "hoist", "is_bot_role", "nsfw", "archived", "is_thread"):
+    for key in (
+        "managed",
+        "mentionable",
+        "hoist",
+        "is_bot_role",
+        "nsfw",
+        "archived",
+        "is_thread",
+        "animated",
+        "available",
+    ):
         if key in row:
             row[key] = bool(row[key])
     return row
@@ -415,6 +483,7 @@ def _empty_status() -> dict[str, Any]:
         "roles_count": 0,
         "categories_count": 0,
         "channels_count": 0,
+        "emojis_count": 0,
         "last_refreshed_at": None,
         "last_error": None,
     }

@@ -5,7 +5,7 @@
   const byId = (id) => document.getElementById(id);
   const initial = JSON.parse(byId("embed-initial-data").textContent || "{}");
   const embed = initial.embed || {};
-  const emojiChoices = [
+  const unicodeEmojiChoices = [
     ["😀", "grinning happy smile", "Faces"], ["😃", "smile happy", "Faces"], ["😄", "smile laugh", "Faces"],
     ["😁", "beam grin", "Faces"], ["😂", "joy tears laugh", "Faces"], ["🤣", "rolling laugh", "Faces"],
     ["😊", "blush happy", "Faces"], ["😍", "heart eyes love", "Faces"], ["🥰", "hearts love", "Faces"],
@@ -35,8 +35,97 @@
     ["🍕", "pizza", "Food"], ["🍔", "burger", "Food"], ["🍰", "cake", "Food"],
     ["☕", "coffee", "Food"], ["🍻", "beer cheers", "Food"], ["🍓", "strawberry", "Food"],
   ];
+  let serverEmojiChoices = [];
   let activeEmojiTarget = byId("message-content");
   let activeEmojiCategory = "All";
+
+  function serverEmojiMarkup(emoji) {
+    return `<${emoji.animated ? "a" : ""}:${emoji.name}:${emoji.id}>`;
+  }
+
+  function serverEmojiUrl(emoji) {
+    const extension = emoji.animated ? "gif" : "webp";
+    return `https://cdn.discordapp.com/emojis/${emoji.id}.${extension}?size=64&quality=lossless`;
+  }
+
+  function availableEmojiChoices() {
+    const unicode = unicodeEmojiChoices.map(([value, keywords, category]) => ({
+      value,
+      keywords,
+      category,
+      custom: false,
+    }));
+    const custom = serverEmojiChoices.map((emoji) => ({
+      value: serverEmojiMarkup(emoji),
+      keywords: `${emoji.name} ${emoji.id} custom server ${emoji.animated ? "animated" : "static"}`,
+      category: "Server",
+      custom: true,
+      emoji,
+    }));
+    return [...custom, ...unicode];
+  }
+
+  function setEmojiPickerStatus(message, isError = false) {
+    const status = byId("emoji-server-status");
+    if (!status) return;
+    status.textContent = message;
+    status.classList.toggle("error-text", isError);
+  }
+
+  function serverEmojiById(id) {
+    return serverEmojiChoices.find((emoji) => emoji.id === String(id)) || null;
+  }
+
+  function normalizeEmojiValue(value) {
+    const text = String(value || "").trim();
+    if (!text) return { value: "", error: "" };
+    const numericId = text.match(/^\d{17,20}$/);
+    const fullMarkup = text.match(/^<(a?):([A-Za-z0-9_]+):(\d{17,20})>$/);
+    const shorthandMarkup = text.match(/^<([A-Za-z0-9_]+):(\d{17,20})>$/);
+    const id = numericId ? numericId[0] : (fullMarkup ? fullMarkup[3] : (shorthandMarkup ? shorthandMarkup[2] : ""));
+    const known = id ? serverEmojiById(id) : null;
+    if (known) return { value: serverEmojiMarkup(known), error: "" };
+    if (fullMarkup) return { value: text, error: "" };
+    if (shorthandMarkup) return { value: `<:${shorthandMarkup[1]}:${shorthandMarkup[2]}>`, error: "" };
+    if (numericId) {
+      return {
+        value: "",
+        error: "That ID is not in the latest server emoji snapshot. Refresh Discord Metadata or paste full <:name:id> or <a:name:id> markup.",
+      };
+    }
+    return { value: text, error: "" };
+  }
+
+  async function loadServerEmojis() {
+    setEmojiPickerStatus("Loading custom server emojis…");
+    try {
+      const response = await fetch("/api/discord/emojis", { headers: { Accept: "application/json" } });
+      if (!response.ok) throw new Error(`HTTP ${response.status}`);
+      const payload = await response.json();
+      serverEmojiChoices = (Array.isArray(payload) ? payload : []).filter((emoji) => (
+        /^\d{17,20}$/.test(String(emoji.id || ""))
+        && /^[A-Za-z0-9_]+$/.test(String(emoji.name || ""))
+        && emoji.available !== false
+      )).map((emoji) => ({
+        id: String(emoji.id),
+        name: String(emoji.name),
+        animated: Boolean(emoji.animated),
+      }));
+      setEmojiPickerStatus(
+        serverEmojiChoices.length
+          ? `${serverEmojiChoices.length} custom server emoji${serverEmojiChoices.length === 1 ? "" : "s"} available.`
+          : "No custom server emojis are in the current metadata snapshot."
+      );
+      if (!byId("global-emoji-picker").hidden) {
+        renderEmojiCategories();
+        renderEmojiPicker();
+      }
+      updatePreview();
+    } catch (_error) {
+      serverEmojiChoices = [];
+      setEmojiPickerStatus("Custom server emojis could not be loaded. Refresh Discord Metadata and try again.", true);
+    }
+  }
 
   function escapeHtml(value) {
     return String(value || "")
@@ -168,20 +257,30 @@
 
   function renderEmojiPicker() {
     const search = byId("emoji-search").value.trim().toLocaleLowerCase();
-    const matches = emojiChoices.filter(([_emoji, keywords, category]) => (
-      (activeEmojiCategory === "All" || activeEmojiCategory === category)
-      && (!search || `${keywords} ${category}`.toLocaleLowerCase().includes(search))
+    const matches = availableEmojiChoices().filter((choice) => (
+      (activeEmojiCategory === "All" || activeEmojiCategory === choice.category)
+      && (!search || `${choice.keywords} ${choice.category}`.toLocaleLowerCase().includes(search))
     ));
     const results = byId("emoji-results");
     results.innerHTML = "";
-    matches.forEach(([emoji, keywords]) => {
+    matches.forEach((choice) => {
       const button = document.createElement("button");
       button.type = "button";
-      button.className = "emoji-result";
-      button.textContent = emoji;
-      button.title = keywords;
-      button.setAttribute("aria-label", keywords);
-      button.addEventListener("click", () => insertEmoji(emoji));
+      button.className = `emoji-result${choice.custom ? " custom-emoji-result" : ""}`;
+      if (choice.custom) {
+        const image = document.createElement("img");
+        image.src = serverEmojiUrl(choice.emoji);
+        image.alt = `:${choice.emoji.name}:`;
+        image.loading = "lazy";
+        button.append(image);
+      } else {
+        button.textContent = choice.value;
+      }
+      button.title = choice.custom
+        ? `:${choice.emoji.name}: (${choice.emoji.animated ? "animated" : "static"})`
+        : choice.keywords;
+      button.setAttribute("aria-label", button.title);
+      button.addEventListener("click", () => insertEmoji(choice.value));
       results.append(button);
     });
     if (!matches.length) {
@@ -193,7 +292,7 @@
   }
 
   function renderEmojiCategories() {
-    const categories = ["All", ...new Set(emojiChoices.map((item) => item[2]))];
+    const categories = ["All", "Server", ...new Set(unicodeEmojiChoices.map((item) => item[2]))];
     const container = byId("emoji-categories");
     container.innerHTML = "";
     categories.forEach((category) => {
@@ -226,10 +325,12 @@
 
   function insertEmoji(value) {
     if (!activeEmojiTarget || !value) return;
-    let inserted = String(value).trim();
-    if (/^\d{17,20}$/.test(inserted) && !activeEmojiTarget.matches('[data-button="emoji"]')) {
-      inserted = `<:emoji:${inserted}>`;
+    const normalized = normalizeEmojiValue(value);
+    if (normalized.error) {
+      setEmojiPickerStatus(normalized.error, true);
+      return;
     }
+    const inserted = normalized.value;
     const start = Number.isInteger(activeEmojiTarget.selectionStart)
       ? activeEmojiTarget.selectionStart : activeEmojiTarget.value.length;
     const end = Number.isInteger(activeEmojiTarget.selectionEnd)
@@ -405,8 +506,8 @@
     data.buttons.forEach((button) => {
       const item = document.createElement("span");
       item.className = `preview-discord-button style-${button.style}`;
-      const emojiMarkup = /^\d{17,20}$/.test(button.emoji || "")
-        ? `<:emoji:${button.emoji}>` : (button.emoji || "");
+      const normalizedEmoji = normalizeEmojiValue(button.emoji || "");
+      const emojiMarkup = normalizedEmoji.value;
       item.innerHTML = `${emojiMarkup ? `${inlineDiscordMarkdown(emojiMarkup)} ` : ""}${escapeHtml(previewPlainText(button.label || "Button"))}`;
       buttons.append(item);
     });
@@ -440,6 +541,7 @@
     event.preventDefault();
     byId("insert-custom-emoji").click();
   });
+  loadServerEmojis();
   document.addEventListener("keydown", (event) => {
     if (event.key === "Escape" && !byId("global-emoji-picker").hidden) closeEmojiPicker();
   });

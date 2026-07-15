@@ -121,16 +121,17 @@
     <div><strong id="emoji-picker-title">Emoji Picker</strong><span id="emoji-picker-target" class="muted">Inserting into Regular message</span></div>
     <button id="close-emoji-picker" class="emoji-picker-close" type="button" aria-label="Close emoji picker">×</button>
   </div>
-  <label class="emoji-search-label">Search emoji<input id="emoji-search" type="search" placeholder="Search smile, heart, bell…" autocomplete="off"></label>
+  <label class="emoji-search-label">Search emoji<input id="emoji-search" type="search" placeholder="Search smile, heart, bell, or server emoji name…" autocomplete="off"></label>
+  <p id="emoji-server-status" class="muted emoji-server-status" aria-live="polite">Loading custom server emojis…</p>
   <div id="emoji-categories" class="emoji-categories" aria-label="Emoji categories"></div>
   <div id="emoji-results" class="emoji-results" aria-live="polite"></div>
   <div class="custom-emoji-insert">
-    <label>Custom emoji markup or ID<input id="custom-emoji-value" placeholder="&lt;:name:123…&gt; or 123…"></label>
+    <label>Custom emoji markup or ID<input id="custom-emoji-value" placeholder="&lt;:name:id&gt;, &lt;a:name:id&gt;, or known server ID"></label>
     <button id="insert-custom-emoji" class="button secondary" type="button">Insert</button>
   </div>
-  <p class="muted emoji-picker-note">Paste Discord custom emoji markup such as <code>&lt;:name:id&gt;</code>, or paste a numeric emoji ID and the editor will format it for message text automatically.</p>
+  <p class="muted emoji-picker-note">Server results insert exact Discord markup: <code>&lt;:name:id&gt;</code> for static emoji and <code>&lt;a:name:id&gt;</code> for animated emoji. A numeric ID can be resolved only when it exists in the latest server snapshot.</p>
 </div>
 
 <script id="embed-initial-data" type="application/json">{{ embed_payload|tojson }}</script>
-<script src="{{ url_for('static', path='embed_editor.js') }}?v=embed-editor2" defer></script>
+<script src="{{ url_for('static', path='embed_editor.js') }}?v=embed-editor3" defer></script>
 {% endblock %}

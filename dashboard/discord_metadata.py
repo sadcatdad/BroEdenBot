@@ -6,6 +6,7 @@ from typing import Any
 from utils.discord_metadata import (
     categories_snapshot,
     channels_snapshot,
+    emojis_snapshot,
     guild_structure_snapshot,
     metadata_status,
     queue_discord_metadata_refresh,
@@ -24,6 +25,10 @@ def channels_metadata() -> list[dict[str, Any]]:
 
 def categories_metadata() -> list[dict[str, Any]]:
     return categories_snapshot()
+
+
+def emojis_metadata() -> list[dict[str, Any]]:
+    return emojis_snapshot()
 
 
 def guild_structure() -> dict[str, Any]:

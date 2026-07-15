@@ -1668,9 +1668,13 @@ shared `data.db`. Its table can search and sort by name, modification date, or
 the bot features currently using each embed. Selecting a row opens a live
 Discord-style editor for the regular message, author/header, title and URL,
 description, color, thumbnail, large image, footer, and up to 25 fields. The
-editor includes a visible searchable Unicode emoji picker for the regular
-message, author, title, description, footer, fields, and button text. It also
-accepts copied custom emoji markup or emoji IDs. The live Discord preview
+editor includes a visible searchable picker for Unicode emoji and custom emoji
+from the latest live-server metadata snapshot. Server results retain the real
+emoji name and insert Discord's exact `<:name:id>` static or `<a:name:id>`
+animated markup into regular messages, author/title/description/footer text,
+fields, and buttons. A bare numeric ID is accepted only when the current
+snapshot can resolve its real name and animation state; complete copied custom
+emoji markup remains accepted. The live Discord preview
 renders headings, bold, italics, underline, strikethrough, spoilers, quotes,
 lists, inline/fenced code, safe links, custom emoji, and raw Discord mentions
 instead of showing the raw Markdown.
@@ -1816,24 +1820,26 @@ operator defaults such as:
 - `import_archive_path`
 - `import_context_only_default`
 
-Role, channel, and category pickers use local metadata endpoints only:
+Role, channel, category, and custom-emoji pickers use local metadata endpoints only:
 `/api/discord/roles`, `/api/discord/channels`,
-`/api/discord/categories`, and `/api/discord/guild-structure`. These endpoints
+`/api/discord/categories`, `/api/discord/emojis`, and
+`/api/discord/guild-structure`. These endpoints
 require dashboard login and return the latest live-guild snapshot written by
 the running Discord bot: role color, position, managed/mentionable/hoist flags,
 member count when available, channel type, parent category, NSFW/thread flags,
-and Discord sort order. Historical import channels are not used as selector
+custom emoji name/ID/animated/availability flags, and Discord sort order.
+Historical import channels are not used as selector
 options. Missing or deleted saved objects are displayed separately as missing
 saved items so operators can remove stale values deliberately; the dashboard
 does not silently delete saved IDs.
 
 Settings → Discord Roles & Channels includes a Discord Metadata Preview showing
-roles, categories, channels, last refresh time, and the latest refresh error if
+roles, categories, channels, emojis, last refresh time, and the latest refresh error if
 one exists, plus the remaining dashboard-managed Discord selector settings.
 The Refresh Discord Metadata button queues the fixed
 `refresh_discord_metadata` dashboard action. The live bot process handles that
 action from its existing dashboard action worker and snapshots current guild
-roles/channels/categories into SQLite. The FastAPI dashboard still does not
+roles/channels/categories/emojis into SQLite. The FastAPI dashboard still does not
 start a second Discord client and does not expose arbitrary API calls.
 
 Channel settings and category settings are stored separately. A channel is

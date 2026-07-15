@@ -361,6 +361,35 @@ class StatsCogCompatibilityTests(unittest.TestCase):
 
         self.assertTrue(hasattr(Stats, "dashboard_action_worker"))
 
+    def test_discord_metadata_emojis_preserve_names_and_animation(self):
+        from cogs.stats import Stats
+
+        emoji = type(
+            "Emoji",
+            (),
+            {
+                "id": 1334088283587874826,
+                "name": "p_freakout",
+                "animated": True,
+                "available": True,
+                "managed": False,
+            },
+        )()
+        guild = type("Guild", (), {"emojis": [emoji]})()
+
+        self.assertEqual(
+            Stats._discord_metadata_emojis(guild),
+            [
+                {
+                    "id": "1334088283587874826",
+                    "name": "p_freakout",
+                    "animated": True,
+                    "available": True,
+                    "managed": False,
+                }
+            ],
+        )
+
 
 class StatsCogSchemaCompatibilityTests(unittest.IsolatedAsyncioTestCase):
     async def test_cog_async_migration_adds_manager_columns(self):

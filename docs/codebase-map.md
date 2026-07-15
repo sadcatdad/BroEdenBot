@@ -147,8 +147,8 @@ maintenance.
 - `utils/embed_templates.py` — Saved message/embed schema, Discord-limit and URL
   validation, feature-use protection, and runtime Discord embed/button builders.
 - `utils/discord_metadata.py` — Shared SQLite snapshot and fixed dashboard
-  action helpers for live Discord roles, categories, and channels used by the
-  dashboard settings pickers.
+  action helpers for live Discord roles, categories, channels, and custom emoji
+  used by dashboard settings and Embed Editor pickers.
 - `utils/stats_manager.py` — Non-destructive dashboard management for existing
   tracked stats graphics, queued bot-side refreshes, archives, and member
   snapshot CSV exports.

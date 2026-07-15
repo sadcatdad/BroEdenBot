@@ -93,6 +93,22 @@ class DashboardNavigationMetadataTests(unittest.TestCase):
                     "is_thread": False,
                 }
             ],
+            emojis=[
+                {
+                    "id": "1334088283587874826",
+                    "name": "p_freakout",
+                    "animated": True,
+                    "available": True,
+                    "managed": False,
+                },
+                {
+                    "id": "1344458901344747611",
+                    "name": "friends",
+                    "animated": False,
+                    "available": True,
+                    "managed": False,
+                },
+            ],
         )
 
     def test_top_level_nav_and_settings_sidebar_labels_render(self):
@@ -139,6 +155,9 @@ class DashboardNavigationMetadataTests(unittest.TestCase):
         self.assertIn("Live Discord preview", editor.text)
         self.assertIn("Emoji Picker", editor.text)
         self.assertIn("Search emoji", editor.text)
+        self.assertIn("Loading custom server emojis", editor.text)
+        self.assertIn("&lt;a:name:id&gt;", editor.text)
+        self.assertIn("embed-editor3", editor.text)
         self.assertIn("Both bump response types replace this in Feature Settings", editor.text)
         self.assertNotIn("Supports {role}", editor.text)
         self.assertIn("+ Add button", editor.text)
@@ -223,17 +242,25 @@ class DashboardNavigationMetadataTests(unittest.TestCase):
         roles = self.client.get("/api/discord/roles")
         channels = self.client.get("/api/discord/channels")
         categories = self.client.get("/api/discord/categories")
+        emojis = self.client.get("/api/discord/emojis")
         structure = self.client.get("/api/discord/guild-structure")
         self.assertEqual(roles.status_code, 200)
         self.assertEqual(channels.status_code, 200)
         self.assertEqual(categories.status_code, 200)
+        self.assertEqual(emojis.status_code, 200)
         self.assertEqual(structure.status_code, 200)
         self.assertEqual(roles.json()[0]["name"], "Staff")
         self.assertEqual(roles.json()[0]["color"], "#ff00ff")
         self.assertEqual(roles.json()[0]["member_count"], 7)
         self.assertEqual(channels.json()[0]["parent_id"], "222222222222222222")
         self.assertEqual(categories.json()[0]["child_channel_ids"], ["333333333333333333"])
+        self.assertEqual(emojis.json()[0]["name"], "friends")
+        self.assertFalse(emojis.json()[0]["animated"])
+        self.assertEqual(emojis.json()[1]["name"], "p_freakout")
+        self.assertTrue(emojis.json()[1]["animated"])
         self.assertEqual(structure.json()["categories"][0]["channels"][0]["name"], "help-desk")
+        self.assertEqual(structure.json()["status"]["emojis_count"], 2)
+        self.assertEqual(structure.json()["emojis"][1]["id"], "1334088283587874826")
 
     def test_json_settings_save_and_stale_ids_are_preserved(self):
         self.login()
@@ -314,7 +341,7 @@ class DashboardNavigationMetadataTests(unittest.TestCase):
         self.assertIn(".settings-menu-item", styles)
         self.assertIn("text-decoration: none", styles)
         base_template = (root / "dashboard/templates/base.html").read_text()
-        self.assertIn("styles.css') }}?v=embed-editor2", base_template)
+        self.assertIn("styles.css') }}?v=embed-editor3", base_template)
         self.assertIn("discord_pickers.js') }}?v=picker-single-values2", base_template)
 
         editor_script = (root / "dashboard/static/embed_editor.js").read_text()
@@ -323,6 +350,10 @@ class DashboardNavigationMetadataTests(unittest.TestCase):
         self.assertNotIn("source.replace(/\\{role\\}/", editor_script)
         self.assertIn("renderEmojiPicker", editor_script)
         self.assertIn("custom-emoji-value", editor_script)
+        self.assertIn('fetch("/api/discord/emojis"', editor_script)
+        self.assertIn('emoji.animated ? "a" : ""', editor_script)
+        self.assertIn("serverEmojiById", editor_script)
+        self.assertNotIn('inserted = `<:emoji:${inserted}>`', editor_script)
 
         settings_message_script = (
             root / "dashboard/static/settings_message_editor.js"

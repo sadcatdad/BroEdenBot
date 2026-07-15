@@ -3774,6 +3774,7 @@ class Stats(commands.Cog):
 
         roles = self._discord_metadata_roles(guild)
         categories, channels = self._discord_metadata_channels(guild)
+        emojis = self._discord_metadata_emojis(guild)
         await asyncio.to_thread(
             save_discord_metadata_snapshot,
             guild_id=str(guild.id),
@@ -3781,12 +3782,28 @@ class Stats(commands.Cog):
             roles=roles,
             categories=categories,
             channels=channels,
+            emojis=emojis,
         )
         return (
             True,
             "Discord metadata refreshed: "
-            f"{len(roles)} roles, {len(categories)} categories, {len(channels)} channels.",
+            f"{len(roles)} roles, {len(categories)} categories, "
+            f"{len(channels)} channels, {len(emojis)} emojis.",
         )
+
+    @staticmethod
+    def _discord_metadata_emojis(guild: discord.Guild) -> list[dict]:
+        emojis = [
+            {
+                "id": str(emoji.id),
+                "name": emoji.name,
+                "animated": bool(getattr(emoji, "animated", False)),
+                "available": bool(getattr(emoji, "available", True)),
+                "managed": bool(getattr(emoji, "managed", False)),
+            }
+            for emoji in (getattr(guild, "emojis", []) or [])
+        ]
+        return sorted(emojis, key=lambda item: str(item["name"]).casefold())
 
     def _discord_metadata_roles(self, guild: discord.Guild) -> list[dict]:
         member_roles: dict[int, int] = defaultdict(int)
