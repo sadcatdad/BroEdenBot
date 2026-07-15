@@ -11,7 +11,7 @@ from unittest.mock import AsyncMock, patch
 
 import aiosqlite
 
-from cogs.message_context import MessageContext
+from cogs.message_context import MessageContext, PUBLIC_EVALUATION_SYSTEM_INSTRUCTION
 from scripts.import_message_context import ensure_schema, input_files, process_file
 from utils.message_context import (
     MESSAGE_CONTEXT_TABLE_SQL,
@@ -25,6 +25,22 @@ from utils.message_context import (
 
 
 class MessageContextHelperTests(unittest.TestCase):
+    def test_public_evaluation_uses_positive_score_calibration(self):
+        instruction = PUBLIC_EVALUATION_SYSTEM_INSTRUCTION.replace("\n", " ")
+        self.assertIn(
+            "70–79 is a generally respectful, genuine member",
+            instruction,
+        )
+        self.assertIn(
+            "80–89 is an actively positive",
+            instruction,
+        )
+        self.assertIn(
+            "Never deduct for concise messages, GIFs",
+            instruction,
+        )
+        self.assertIn("voice chat", instruction)
+
     def test_access_requires_owner_or_allowed_role(self):
         self.assertTrue(has_message_context_access(10, [], set(), {10}))
         self.assertTrue(has_message_context_access(20, [30], {30}, set()))

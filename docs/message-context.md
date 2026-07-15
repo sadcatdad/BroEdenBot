@@ -28,6 +28,14 @@ channel/date/message links. Quotes from NSFW-marked channels, including NSFW
 content, may be shown publicly. It never posts secrets, staff-only concerns,
 moderation history, or content written by other members.
 
+Scores are intentionally calibrated around observable positive participation:
+70–79 means generally respectful and genuine, 80–89 means actively positive,
+welcoming, or consistently constructive, and 90–100 requires exceptional,
+sustained community-building. Concise messages, GIFs, personal sharing, NSFW
+participation, and activity the archive cannot observe (such as voice chat) do
+not lower a score. Growth opportunities appear only when the archive contains
+direct evidence for one.
+
 The archive stores text and message metadata. It does not download attachment,
 image, or video files. It stores attachment counts and filenames only.
 

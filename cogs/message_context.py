@@ -109,8 +109,18 @@ member's archived messages. Quotes may come from NSFW-marked channels and may
 include NSFW content when present in the archive. Copy each quote, timestamp,
 channel name, and Discord jump URL exactly from the source data; never invent
 or paraphrase a quotation. Describe specific behavior using constructive
-language that can help the member improve. If evidence is limited, say so and
-keep the score conservative. Public /ask does not use this context.
+language that can help the member improve. Calibrate scores generously and
+consistently: 70–79 is a generally respectful, genuine member; 80–89 is an
+actively positive, welcoming, or consistently constructive member; 90–100 is
+exceptional, sustained positive leadership or community-building. Reserve
+60–69 for clear, repeated evidence that participation is mixed or detracting,
+and scores below 60 for clear, repeated harmful or disruptive behavior. Never
+deduct for concise messages, GIFs, personal sharing, NSFW participation, or
+activity unavailable to the archive such as voice chat. Do not invent generic
+growth opportunities: leave them empty unless direct archived evidence
+supports a constructive improvement. State archive coverage limits in
+`limitations` without reducing the score for unobserved activity. Public /ask
+does not use this context.
 """.strip()
 
 CONTEXT_FAILURE_MESSAGE = (
@@ -1850,12 +1860,16 @@ Return a single JSON object that matches the required schema exactly.
             task=(
                 "Produce a constructive public evaluation of the member's observable "
                 "community participation. Assign a communityContributionScore from 0 "
-                "to 100 based only on the available activity: 50 is mixed/typical, "
-                "75 is consistently constructive, and 90+ requires exceptional, "
-                "sustained positive contribution. Scores below 50 need clear, "
-                "repeated observable behavior in the reviewed activity. Include "
-                "specific high-level strengths and growth opportunities that could "
-                "help the member improve. Consider all retrieved messages regardless "
+                "to 100 based only on the available activity: 70–79 is generally "
+                "respectful/genuine; 80–89 is actively positive, welcoming, or "
+                "consistently constructive; and 90+ requires exceptional, sustained "
+                "community-building. Reserve 60–69 for clear, repeated mixed or "
+                "detracting behavior, and scores below 60 for clear, repeated harmful "
+                "or disruptive behavior. Never deduct for concise messages, GIFs, "
+                "personal sharing, NSFW participation, or voice-chat activity the "
+                "archive cannot observe. Include direct-evidence strengths and only "
+                "include growth opportunities when the archive supports them; otherwise "
+                "leave them empty. Consider all retrieved messages regardless "
                 "of an NSFW channel flag. Include up to five representative, concise "
                 "verbatim quotes from the selected member, with their source channel, "
                 "timestamp, and message link. NSFW quotes are permitted. Never expose "

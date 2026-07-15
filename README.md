@@ -482,8 +482,12 @@ Markdown is escaped, and only Discord message URLs become jump links.
   community-contribution score, strengths, constructive growth opportunities,
   and up to five representative verbatim quotes with source channel/date/jump
   links. NSFW-channel quotes are permitted. It never posts secrets, staff-only
-  concerns, moderation history, or other members' content. Timeframes include
-  `24h`, `3d`, `7d`, `14d`, `30d`, `60d`, and `90d`.
+  concerns, moderation history, or other members' content. Scores are
+  calibrated with `70`–`79` as generally respectful/genuine and `80`–`89` as
+  actively positive or consistently constructive; unavailable VC activity,
+  concise messages, GIFs, personal sharing, and NSFW participation are not
+  deductions. Timeframes include `24h`, `3d`, `7d`, `14d`, `30d`, `60d`, and
+  `90d`.
 - `/context channel <channel> <timeframe> [topic] [include_bots] [max_messages]`
   — Channel recap. Timeframes include `1h`, `6h`, `12h`, `24h`, `3d`, `7d`,
   `14d`, and `30d`.
