@@ -100,12 +100,14 @@ offers a one-use Bump Leaderboard button. `!bumpscores` displays the branded
 Bump Legends board in ten-row pages.
 
 The reminder message is configured with `BUMP_REMINDER_MESSAGE`; `{role}` and
-`{member}` expand to controlled Discord mentions. `BUMP_PING_ROLE_ID` is the
-subscriber role pinged by the reminder. `BUMP_REMINDER_EMBED_ID` can select a
-saved dashboard embed; reminders always add a **Subscribe to Bump Reminders**
-button that self-assigns the configured ping role. The built-in bump reminder
-embed is used when no saved embed is selected or the selected record is
-unavailable.
+`{member}` expand to controlled Discord mentions. This feature setting always
+replaces the selected template's regular message. `BUMP_PING_ROLE_ID` is the
+subscriber role pinged by the reminder. `BUMP_REMINDER_EMBED_ID` selects only a
+saved embed card design: the template's regular message and all template
+buttons are ignored. Bump reminders provide only the built-in **Subscribe to
+Bump Reminders** button, which self-assigns the configured ping role. The
+built-in bump reminder embed is used when no saved embed is selected or the
+selected record is unavailable.
 
 The weekly publisher posts the leaderboard to `BUMP_LEADERBOARD_CHANNEL_ID`.
 Detection requires Guild Messages and Message Content intents. Reward-role
@@ -1484,8 +1486,8 @@ updated from the authenticated local dashboard without rewriting `.env`.
 | `DISBOARD_BOT_USER_ID` | Official DISBOARD bot user ID trusted for verified success responses. |
 | `BUMP_REWARD_ROLE_ID` | Role granted after a verified bump for the external XP/reward handoff. |
 | `BUMP_PING_ROLE_ID` | Subscriber role pinged by automatic two-hour bump reminders and assigned by the reminder embed's subscription button. |
-| `BUMP_REMINDER_MESSAGE` | Regular reminder message. Supports `{role}` and `{member}` placeholders; defaults to `{role}`. |
-| `BUMP_REMINDER_EMBED_ID` | Optional saved Embed Editor record used by bump reminders. Blank uses the built-in embed. |
+| `BUMP_REMINDER_MESSAGE` | Authoritative reminder message that replaces the selected template's regular message. Supports `{role}` and `{member}` placeholders; defaults to `{role}`. |
+| `BUMP_REMINDER_EMBED_ID` | Optional saved embed card design. Its regular message/buttons are ignored; blank uses the built-in embed. |
 | `BUMP_LEADERBOARD_CHANNEL_ID` | Channel receiving the seven-day Bump Legends post. |
 | `BUMP_POINTS_PER_SUCCESS` | Bump points awarded per verified success. Defaults to `1000`. |
 | `STREAK_TIMEZONE` | IANA timezone used for daily streak boundaries. Defaults to `America/Chicago`. |
@@ -1635,16 +1637,21 @@ shared `data.db`. Its table can search and sort by name, modification date, or
 the bot features currently using each embed. Selecting a row opens a live
 Discord-style editor for the regular message, author/header, title and URL,
 description, color, thumbnail, large image, footer, and up to 25 fields. The
-editor includes a small Unicode emoji picker and also accepts copied custom
-emoji markup or emoji IDs.
+editor includes a visible searchable Unicode emoji picker for the regular
+message, author, title, description, footer, fields, and button text. It also
+accepts copied custom emoji markup or emoji IDs. The live Discord preview
+renders headings, bold, italics, underline, strikethrough, spoilers, quotes,
+lists, inline/fenced code, safe links, custom emoji, and raw Discord mentions
+instead of showing the raw Markdown.
 
 Each saved message can include up to five buttons. Role buttons may add or
 remove one selected Discord role and use Discord's blue, gray, green, or red
 button styles; URL buttons use Discord's fixed link style. At send time the bot
 still checks **Manage Roles**, role hierarchy, and managed-role restrictions,
-then confirms role changes privately. A bump reminder reserves the fifth
-button slot for **Subscribe to Bump Reminders**. Embeds used by a feature cannot
-be deleted until a different embed (or the built-in fallback) is selected in
+then confirms role changes privately. Bump reminders use only the saved embed
+card design, ignore its regular message and buttons, and supply their built-in
+**Subscribe to Bump Reminders** button. Embeds used by a feature cannot be
+deleted until a different embed (or the built-in fallback) is selected in
 **Settings → Feature Settings**.
 
 Set these values in the project-root `.env` and replace the placeholder

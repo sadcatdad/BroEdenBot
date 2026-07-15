@@ -421,7 +421,14 @@ class DisboardBumpTests(unittest.IsolatedAsyncioTestCase):
                 "color": "#f0319b",
                 "fields": [],
             },
-            "buttons": [],
+            "buttons": [
+                {
+                    "label": "Template link",
+                    "action": "url",
+                    "style": "link",
+                    "url": "https://example.com/",
+                }
+            ],
         }
         with (
             patch("cogs.disboard_bumps.get_setting", side_effect=reminder_settings),
@@ -443,7 +450,16 @@ class DisboardBumpTests(unittest.IsolatedAsyncioTestCase):
         send_args = self.channel.send.await_args
         self.assertEqual(send_args.args[0], "Reminder for <@42>: <@&600>")
         self.assertEqual(send_args.kwargs["embed"].title, "Custom bump reminder")
-        self.assertEqual(send_args.kwargs["view"].children[-1].custom_id, "embedrole|add|600")
+        self.assertEqual(
+            [button.label for button in send_args.kwargs["view"].children],
+            ["Subscribe to Bump Reminders"],
+        )
+        self.assertEqual(send_args.kwargs["view"].children[0].custom_id, "embedrole|add|600")
+
+    async def test_bump_message_never_falls_back_to_template_content(self):
+        with patch("cogs.disboard_bumps.get_setting", return_value=""):
+            content = self.cog._reminder_content(self.member, self.guild.ping_role)
+        self.assertEqual(content, self.guild.ping_role.mention)
 
     async def test_embed_role_button_assigns_manageable_role_privately(self):
         interaction = SimpleNamespace(

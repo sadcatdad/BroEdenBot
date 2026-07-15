@@ -832,10 +832,8 @@ class DisboardBumps(commands.Cog):
         return template["payload"]
 
     @staticmethod
-    def _reminder_content(member: discord.Member, role, payload) -> str:
+    def _reminder_content(member: discord.Member, role) -> str:
         configured = str(get_setting("BUMP_REMINDER_MESSAGE", "{role}") or "").strip()
-        if not configured and payload:
-            configured = str(payload.get("content") or "").strip()
         if not configured:
             configured = "{role}"
         return configured.replace("{member}", member.mention).replace(
@@ -959,15 +957,28 @@ class DisboardBumps(commands.Cog):
                     role_id or "not_configured",
                 )
             payload = await self._configured_reminder_payload()
-            content = self._reminder_content(member, role, payload)
-            embed = discord_embed_from_payload(payload) if payload else self._reminder_embed()
+            content = self._reminder_content(member, role)
+            embed = None
+            if payload:
+                try:
+                    embed = discord_embed_from_payload(payload)
+                except ValueError:
+                    logger.warning("Configured bump reminder embed payload is invalid")
+            fallback_payload = {"content": "", "embed": {
+                "description": "# 🔔 BUMP TIME 🔔\n# ➡️ If you see this, use `/bump`",
+                "color": "#25b8b8",
+            }, "buttons": []}
+            view_payload = {
+                "content": "",
+                "embed": payload.get("embed", {}) if embed is not None else fallback_payload["embed"],
+                "buttons": [],
+            }
             view = discord_view_from_payload(
-                payload or {"content": "", "embed": {
-                    "description": "# 🔔 BUMP TIME 🔔\n# ➡️ If you see this, use `/bump`",
-                    "color": "#25b8b8",
-                }, "buttons": []},
+                view_payload,
                 subscribe_role_id=role_id if role is not None else 0,
             )
+            if embed is None:
+                embed = self._reminder_embed()
             try:
                 reminder_message = await channel.send(
                     content or None,

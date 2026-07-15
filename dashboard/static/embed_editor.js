@@ -5,7 +5,135 @@
   const byId = (id) => document.getElementById(id);
   const initial = JSON.parse(byId("embed-initial-data").textContent || "{}");
   const embed = initial.embed || {};
-  const emojiChoices = ["🔔", "✅", "❌", "❤️", "💥", "🎉", "⭐", "👑", "📣", "👉", "🔗", "🎁", "🚀", "✨", "👍", "👎", "📌", "🛡️", "🌈", "🔥"];
+  const emojiChoices = [
+    ["😀", "grinning happy smile", "Faces"], ["😃", "smile happy", "Faces"], ["😄", "smile laugh", "Faces"],
+    ["😁", "beam grin", "Faces"], ["😂", "joy tears laugh", "Faces"], ["🤣", "rolling laugh", "Faces"],
+    ["😊", "blush happy", "Faces"], ["😍", "heart eyes love", "Faces"], ["🥰", "hearts love", "Faces"],
+    ["😎", "cool sunglasses", "Faces"], ["🤔", "thinking", "Faces"], ["🫡", "salute", "Faces"],
+    ["😭", "cry sob", "Faces"], ["😡", "angry", "Faces"], ["🥳", "party celebrate", "Faces"],
+    ["🤯", "mind blown", "Faces"], ["😇", "angel", "Faces"], ["🤩", "star eyes", "Faces"],
+    ["👍", "thumbs up yes", "People"], ["👎", "thumbs down no", "People"], ["👏", "clap applause", "People"],
+    ["🙌", "raised hands celebrate", "People"], ["🙏", "pray please thanks", "People"], ["👋", "wave hello", "People"],
+    ["👉", "point right", "People"], ["💪", "strong muscle", "People"], ["🤝", "handshake", "People"],
+    ["🫶", "heart hands", "People"], ["👀", "eyes look", "People"], ["🧠", "brain", "People"],
+    ["❤️", "red heart love", "Symbols"], ["🩷", "pink heart", "Symbols"], ["🧡", "orange heart", "Symbols"],
+    ["💛", "yellow heart", "Symbols"], ["💚", "green heart", "Symbols"], ["💙", "blue heart", "Symbols"],
+    ["💜", "purple heart", "Symbols"], ["🖤", "black heart", "Symbols"], ["✅", "check yes done", "Symbols"],
+    ["❌", "cross no", "Symbols"], ["⚠️", "warning", "Symbols"], ["❗", "exclamation", "Symbols"],
+    ["❓", "question", "Symbols"], ["💯", "hundred", "Symbols"], ["♻️", "recycle refresh", "Symbols"],
+    ["✨", "sparkles", "Nature"], ["🔥", "fire", "Nature"], ["🌈", "rainbow", "Nature"],
+    ["⭐", "star", "Nature"], ["🌟", "glowing star", "Nature"], ["☀️", "sun", "Nature"],
+    ["🌙", "moon", "Nature"], ["🌸", "flower", "Nature"], ["🍀", "clover lucky", "Nature"],
+    ["🐸", "frog", "Nature"], ["🐶", "dog", "Nature"], ["🐱", "cat", "Nature"],
+    ["🎉", "party popper celebrate", "Activities"], ["🎊", "confetti", "Activities"], ["🎁", "gift reward", "Activities"],
+    ["🏆", "trophy winner", "Activities"], ["🥇", "gold medal first", "Activities"], ["🎮", "game controller", "Activities"],
+    ["🎵", "music", "Activities"], ["🎨", "art", "Activities"], ["⚽", "soccer ball", "Activities"],
+    ["🔔", "bell reminder notification", "Objects"], ["📣", "megaphone announce", "Objects"], ["📌", "pin", "Objects"],
+    ["🔗", "link", "Objects"], ["🛡️", "shield safety", "Objects"], ["🔒", "lock private", "Objects"],
+    ["💡", "idea light", "Objects"], ["📅", "calendar", "Objects"], ["⏰", "alarm time", "Objects"],
+    ["💥", "boom bump explosion", "Objects"], ["🚀", "rocket launch", "Travel"], ["🌍", "world globe", "Travel"],
+    ["🍕", "pizza", "Food"], ["🍔", "burger", "Food"], ["🍰", "cake", "Food"],
+    ["☕", "coffee", "Food"], ["🍻", "beer cheers", "Food"], ["🍓", "strawberry", "Food"],
+  ];
+  let activeEmojiTarget = byId("message-content");
+  let activeEmojiCategory = "All";
+
+  function escapeHtml(value) {
+    return String(value || "")
+      .replace(/&/g, "&amp;")
+      .replace(/</g, "&lt;")
+      .replace(/>/g, "&gt;")
+      .replace(/"/g, "&quot;")
+      .replace(/'/g, "&#039;");
+  }
+
+  function inlineDiscordMarkdown(value) {
+    let source = String(value || "");
+    const tokens = [];
+    const token = (html) => {
+      const index = tokens.push(html) - 1;
+      return `\uE000${index}\uE001`;
+    };
+    source = source.replace(/`([^`\n]+)`/g, (_match, code) => token(`<code class="md-inline-code">${escapeHtml(code)}</code>`));
+    source = source.replace(/<@&(\d{17,20})>/g, () => token('<span class="md-mention">@role</span>'));
+    source = source.replace(/<@!?(\d{17,20})>/g, () => token('<span class="md-mention">@member</span>'));
+    source = source.replace(/<#(\d{17,20})>/g, () => token('<span class="md-mention">#channel</span>'));
+    source = source.replace(/<(a?):([A-Za-z0-9_]+):(\d{17,20})>/g, (_match, animated, name, id) => {
+      const extension = animated ? "gif" : "webp";
+      const safeName = escapeHtml(name);
+      return token(`<img class="md-custom-emoji" src="https://cdn.discordapp.com/emojis/${id}.${extension}?size=48&quality=lossless" alt=":${safeName}:" title=":${safeName}:">`);
+    });
+    source = source.replace(/\[([^\]]+)\]\((https?:\/\/[^\s)]+)\)/g, (_match, label, url) => {
+      try {
+        const parsed = new URL(url);
+        if (!['http:', 'https:'].includes(parsed.protocol)) return _match;
+      } catch (_error) {
+        return _match;
+      }
+      return token(`<a class="md-link" href="${escapeHtml(url)}" target="_blank" rel="noopener noreferrer">${escapeHtml(label)}</a>`);
+    });
+    let html = escapeHtml(source);
+    html = html.replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>");
+    html = html.replace(/__([^_]+)__/g, "<u>$1</u>");
+    html = html.replace(/~~([^~]+)~~/g, "<s>$1</s>");
+    html = html.replace(/\|\|([^|]+)\|\|/g, '<span class="md-spoiler">$1</span>');
+    html = html.replace(/(^|[^*])\*([^*]+)\*/g, "$1<em>$2</em>");
+    html = html.replace(/(^|[^_])_([^_]+)_/g, "$1<em>$2</em>");
+    return html.replace(/\uE000(\d+)\uE001/g, (_match, index) => tokens[Number(index)] || "");
+  }
+
+  function discordMarkdown(value) {
+    const lines = String(value || "").replace(/\r\n?/g, "\n").split("\n");
+    const output = [];
+    let codeLines = null;
+    lines.forEach((line) => {
+      if (/^```/.test(line)) {
+        if (codeLines === null) codeLines = [];
+        else {
+          output.push(`<pre class="md-code-block"><code>${escapeHtml(codeLines.join("\n"))}</code></pre>`);
+          codeLines = null;
+        }
+        return;
+      }
+      if (codeLines !== null) {
+        codeLines.push(line);
+        return;
+      }
+      if (!line) {
+        output.push('<div class="md-spacer" aria-hidden="true"></div>');
+        return;
+      }
+      const heading = line.match(/^(#{1,3})\s+(.+)$/);
+      if (heading) {
+        output.push(`<div class="md-heading md-heading-${heading[1].length}">${inlineDiscordMarkdown(heading[2])}</div>`);
+        return;
+      }
+      const quote = line.match(/^>\s?(.*)$/);
+      if (quote) {
+        output.push(`<div class="md-quote">${inlineDiscordMarkdown(quote[1])}</div>`);
+        return;
+      }
+      const bullet = line.match(/^[-*]\s+(.+)$/);
+      if (bullet) {
+        output.push(`<div class="md-list-item"><span>•</span><span>${inlineDiscordMarkdown(bullet[1])}</span></div>`);
+        return;
+      }
+      const ordered = line.match(/^(\d+)\.\s+(.+)$/);
+      if (ordered) {
+        output.push(`<div class="md-list-item"><span>${ordered[1]}.</span><span>${inlineDiscordMarkdown(ordered[2])}</span></div>`);
+        return;
+      }
+      output.push(`<div class="md-line">${inlineDiscordMarkdown(line)}</div>`);
+    });
+    if (codeLines !== null) {
+      output.push(`<pre class="md-code-block"><code>${escapeHtml(codeLines.join("\n"))}</code></pre>`);
+    }
+    return output.join("");
+  }
+
+  function previewPlainText(value) {
+    return String(value || "");
+  }
 
   const fieldMap = {
     "message-content": initial.content,
@@ -27,6 +155,105 @@
     if (element) element.value = value || "";
   });
 
+  function emojiTargetLabel(target) {
+    return target && target.dataset.emojiLabel ? target.dataset.emojiLabel : "Regular message";
+  }
+
+  function setActiveEmojiTarget(target) {
+    if (!target) return;
+    activeEmojiTarget = target;
+    const label = byId("emoji-picker-target");
+    if (label) label.textContent = `Inserting into ${emojiTargetLabel(target)}`;
+  }
+
+  function renderEmojiPicker() {
+    const search = byId("emoji-search").value.trim().toLocaleLowerCase();
+    const matches = emojiChoices.filter(([_emoji, keywords, category]) => (
+      (activeEmojiCategory === "All" || activeEmojiCategory === category)
+      && (!search || `${keywords} ${category}`.toLocaleLowerCase().includes(search))
+    ));
+    const results = byId("emoji-results");
+    results.innerHTML = "";
+    matches.forEach(([emoji, keywords]) => {
+      const button = document.createElement("button");
+      button.type = "button";
+      button.className = "emoji-result";
+      button.textContent = emoji;
+      button.title = keywords;
+      button.setAttribute("aria-label", keywords);
+      button.addEventListener("click", () => insertEmoji(emoji));
+      results.append(button);
+    });
+    if (!matches.length) {
+      const empty = document.createElement("div");
+      empty.className = "empty-state emoji-empty-state";
+      empty.textContent = "No matching emoji.";
+      results.append(empty);
+    }
+  }
+
+  function renderEmojiCategories() {
+    const categories = ["All", ...new Set(emojiChoices.map((item) => item[2]))];
+    const container = byId("emoji-categories");
+    container.innerHTML = "";
+    categories.forEach((category) => {
+      const button = document.createElement("button");
+      button.type = "button";
+      button.className = `emoji-category${category === activeEmojiCategory ? " active" : ""}`;
+      button.textContent = category;
+      button.addEventListener("click", () => {
+        activeEmojiCategory = category;
+        renderEmojiCategories();
+        renderEmojiPicker();
+      });
+      container.append(button);
+    });
+  }
+
+  function openEmojiPicker(target = activeEmojiTarget) {
+    setActiveEmojiTarget(target || byId("message-content"));
+    const picker = byId("global-emoji-picker");
+    picker.hidden = false;
+    renderEmojiCategories();
+    renderEmojiPicker();
+    byId("emoji-search").focus();
+  }
+
+  function closeEmojiPicker() {
+    byId("global-emoji-picker").hidden = true;
+    if (activeEmojiTarget) activeEmojiTarget.focus();
+  }
+
+  function insertEmoji(value) {
+    if (!activeEmojiTarget || !value) return;
+    let inserted = String(value).trim();
+    if (/^\d{17,20}$/.test(inserted) && !activeEmojiTarget.matches('[data-button="emoji"]')) {
+      inserted = `<:emoji:${inserted}>`;
+    }
+    const start = Number.isInteger(activeEmojiTarget.selectionStart)
+      ? activeEmojiTarget.selectionStart : activeEmojiTarget.value.length;
+    const end = Number.isInteger(activeEmojiTarget.selectionEnd)
+      ? activeEmojiTarget.selectionEnd : start;
+    activeEmojiTarget.setRangeText(inserted, start, end, "end");
+    activeEmojiTarget.dispatchEvent(new Event("input", { bubbles: true }));
+    closeEmojiPicker();
+  }
+
+  function registerEmojiTarget(target, label) {
+    if (!target || target.dataset.emojiRegistered === "true") return;
+    target.dataset.emojiRegistered = "true";
+    target.dataset.emojiLabel = label;
+    target.addEventListener("focus", () => setActiveEmojiTarget(target));
+    if (target.closest(".emoji-input-row")) return;
+    const action = document.createElement("button");
+    action.type = "button";
+    action.className = "emoji-field-button";
+    action.textContent = "☺ Emoji";
+    action.setAttribute("aria-label", `Insert emoji into ${label}`);
+    action.addEventListener("click", () => openEmojiPicker(target));
+    target.insertAdjacentElement("afterend", action);
+  }
+
   function addField(value = {}) {
     const container = byId("embed-field-editors");
     if (container.children.length >= 25) return;
@@ -41,19 +268,9 @@
     row.addEventListener("input", updatePreview);
     row.addEventListener("change", updatePreview);
     container.append(row);
+    registerEmojiTarget(row.querySelector('[data-field="name"]'), "Field name");
+    registerEmojiTarget(row.querySelector('[data-field="value"]'), "Field value");
     updatePreview();
-  }
-
-  function drawEmojiPicker(row) {
-    const picker = row.querySelector(".emoji-picker");
-    picker.innerHTML = emojiChoices.map((emoji) => `<button type="button" data-emoji="${emoji}">${emoji}</button>`).join("");
-    picker.querySelectorAll("[data-emoji]").forEach((button) => {
-      button.addEventListener("click", () => {
-        row.querySelector('[data-button="emoji"]').value = button.dataset.emoji;
-        picker.hidden = true;
-        updatePreview();
-      });
-    });
   }
 
   function syncButtonTarget(row) {
@@ -77,19 +294,18 @@
       row.remove();
       updatePreview();
     });
-    row.querySelector(".emoji-toggle").addEventListener("click", () => {
-      const picker = row.querySelector(".emoji-picker");
-      picker.hidden = !picker.hidden;
-    });
+    const buttonEmojiInput = row.querySelector('[data-button="emoji"]');
+    row.querySelector(".emoji-toggle").addEventListener("click", () => openEmojiPicker(buttonEmojiInput));
     row.querySelector('[data-button="action"]').addEventListener("change", () => {
       syncButtonTarget(row);
       updatePreview();
     });
     row.addEventListener("input", updatePreview);
     row.addEventListener("change", updatePreview);
-    drawEmojiPicker(row);
     syncButtonTarget(row);
     container.append(row);
+    registerEmojiTarget(row.querySelector('[data-button="label"]'), "Button label");
+    registerEmojiTarget(buttonEmojiInput, "Button emoji");
     updatePreview();
   }
 
@@ -154,17 +370,19 @@
     const color = /^#[0-9a-f]{6}$/i.test(data.embed.color) ? data.embed.color : "#25b8b8";
     byId("embed-color-rail").style.background = color;
     card.style.borderLeftColor = color;
-    byId("preview-content").textContent = data.content || "Write your message here!";
-    byId("preview-content").classList.toggle("placeholder", !data.content);
-    byId("preview-author").textContent = data.embed.author_name;
+    const previewContent = byId("preview-content");
+    previewContent.innerHTML = discordMarkdown(data.content || "Write your message here!");
+    previewContent.classList.toggle("placeholder", !data.content);
+    byId("preview-author").textContent = previewPlainText(data.embed.author_name);
     byId("preview-author").hidden = !data.embed.author_name;
     const title = byId("preview-title");
-    title.textContent = data.embed.title;
+    title.innerHTML = inlineDiscordMarkdown(data.embed.title);
     title.hidden = !data.embed.title;
     title.href = data.embed.url || "#";
     title.removeAttribute("target");
-    byId("preview-description").textContent = data.embed.description || "Write your embed message here!";
-    byId("preview-description").classList.toggle("placeholder", !data.embed.description);
+    const description = byId("preview-description");
+    description.innerHTML = discordMarkdown(data.embed.description || "Write your embed message here!");
+    description.classList.toggle("placeholder", !data.embed.description);
     setOptionalImage(byId("preview-thumbnail"), data.embed.thumbnail_url);
     setOptionalImage(byId("preview-image"), data.embed.image_url);
     const fields = byId("preview-fields");
@@ -173,20 +391,23 @@
       const item = document.createElement("div");
       item.className = field.inline ? "preview-field inline" : "preview-field";
       const strong = document.createElement("strong");
-      strong.textContent = field.name || "Field name";
-      const value = document.createElement("span");
-      value.textContent = field.value || "Field value";
+      strong.innerHTML = inlineDiscordMarkdown(field.name || "Field name");
+      const value = document.createElement("div");
+      value.className = "preview-field-value";
+      value.innerHTML = discordMarkdown(field.value || "Field value");
       item.append(strong, value);
       fields.append(item);
     });
-    byId("preview-footer").textContent = data.embed.footer_text;
+    byId("preview-footer").textContent = previewPlainText(data.embed.footer_text);
     byId("preview-footer").hidden = !data.embed.footer_text;
     const buttons = byId("preview-buttons");
     buttons.innerHTML = "";
     data.buttons.forEach((button) => {
       const item = document.createElement("span");
       item.className = `preview-discord-button style-${button.style}`;
-      item.textContent = `${button.emoji ? `${button.emoji} ` : ""}${button.label || "Button"}`;
+      const emojiMarkup = /^\d{17,20}$/.test(button.emoji || "")
+        ? `<:emoji:${button.emoji}>` : (button.emoji || "");
+      item.innerHTML = `${emojiMarkup ? `${inlineDiscordMarkdown(emojiMarkup)} ` : ""}${escapeHtml(previewPlainText(button.label || "Button"))}`;
       buttons.append(item);
     });
     const hasEmbed = Boolean(
@@ -198,6 +419,30 @@
 
   (embed.fields || []).forEach(addField);
   (initial.buttons || []).forEach(addButton);
+  [
+    [byId("message-content"), "Regular message"],
+    [byId("author-name"), "Author / header"],
+    [byId("embed-title"), "Title"],
+    [byId("embed-description"), "Description"],
+    [byId("footer-text"), "Footer"],
+  ].forEach(([target, label]) => registerEmojiTarget(target, label));
+  byId("open-emoji-picker").addEventListener("click", () => openEmojiPicker());
+  byId("close-emoji-picker").addEventListener("click", closeEmojiPicker);
+  byId("emoji-search").addEventListener("input", renderEmojiPicker);
+  byId("insert-custom-emoji").addEventListener("click", () => {
+    const custom = byId("custom-emoji-value");
+    if (!custom.value.trim()) return;
+    insertEmoji(custom.value);
+    custom.value = "";
+  });
+  byId("custom-emoji-value").addEventListener("keydown", (event) => {
+    if (event.key !== "Enter") return;
+    event.preventDefault();
+    byId("insert-custom-emoji").click();
+  });
+  document.addEventListener("keydown", (event) => {
+    if (event.key === "Escape" && !byId("global-emoji-picker").hidden) closeEmojiPicker();
+  });
   byId("add-embed-field").addEventListener("click", () => addField());
   byId("add-embed-button").addEventListener("click", () => addButton());
   form.addEventListener("input", updatePreview);

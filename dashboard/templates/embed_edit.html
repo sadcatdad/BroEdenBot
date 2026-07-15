@@ -12,7 +12,8 @@
 </div>
 {% if message %}<div class="alert success">{{ message }}</div>{% endif %}
 {% if error %}<div class="alert error">{{ error }}</div>{% endif %}
-{% if embed_template and embed_template.features %}<div class="alert warning">Used by: {{ embed_template.features|join(', ') }}. Saving changes updates the next message sent by those features.</div>{% endif %}
+{% if embed_template and 'Bump reminders' in embed_template.features %}<div class="alert warning"><strong>Bump reminder override:</strong> this feature uses only the embed card design below. Feature Settings replaces this template's regular message and ignores all template buttons; the bot adds its Subscribe to Bump Reminders button automatically.</div>
+{% elif embed_template and embed_template.features %}<div class="alert warning">Used by: {{ embed_template.features|join(', ') }}. Saving changes updates the next message sent by those features.</div>{% endif %}
 
 <form id="embed-editor-form" method="post" action="{{ url_for('embed_save') }}" class="embed-editor-layout">
   <input type="hidden" name="csrf" value="{{ csrf_token }}">
@@ -23,8 +24,12 @@
       <div class="section-heading">
         <div><p class="eyebrow">Saved asset</p><h2>Embed details</h2></div>
       </div>
+      <div class="emoji-editor-toolbar">
+        <button class="button secondary" id="open-emoji-picker" type="button">☺ Emoji Picker</button>
+        <span class="muted">Insert emoji into the last focused message, title, description, footer, field, or button input.</span>
+      </div>
       <label>Name<input id="embed-name" name="name" maxlength="100" required value="{{ embed_template.name if embed_template else '' }}" placeholder="Bump reminder"></label>
-      <label>Regular message <span class="muted">Supports {role} and {member} when used by bump reminders.</span><textarea id="message-content" maxlength="2000" rows="3" placeholder="Write your message here!"></textarea></label>
+      <label>Regular message <span class="muted">Optional content for features that use a template's message. Bump reminders replace this in Feature Settings.</span><textarea id="message-content" maxlength="2000" rows="3" placeholder="Write your message here!"></textarea></label>
     </div>
 
     <div class="card editor-section embed-fields-card">
@@ -55,7 +60,7 @@
         <div><p class="eyebrow">Components</p><h2>Buttons</h2></div>
         <span class="muted">Up to 5</span>
       </div>
-      <p class="muted">Role buttons let members add or remove a configured role. URL buttons use Discord's fixed link style. Bump reminders reserve the fifth slot for the subscription button.</p>
+      <p class="muted">Role buttons let members add or remove a configured role. URL buttons use Discord's fixed link style. Bump reminders ignore these template buttons and provide their built-in subscription button instead.</p>
       <div id="button-editors" class="dynamic-editor-list"></div>
       <button class="button secondary" id="add-embed-button" type="button">+ Add button</button>
     </div>
@@ -102,7 +107,7 @@
       <label>Label<input data-button="label" maxlength="80" placeholder="Subscribe"></label>
       <label>Action<select data-button="action"><option value="add_role">Adds a role</option><option value="remove_role">Removes a role</option><option value="url">Goes to a URL</option></select></label>
       <label>Button color<select data-button="style"><option value="primary">Blue</option><option value="secondary">Gray</option><option value="success">Green</option><option value="danger">Red</option></select></label>
-      <label>Emoji<div class="emoji-input-row"><input data-button="emoji" maxlength="100" placeholder="🔔 or custom emoji ID"><button class="button secondary emoji-toggle" type="button" aria-label="Choose emoji">☺</button></div><div class="emoji-picker" hidden></div></label>
+      <label>Emoji<div class="emoji-input-row"><input data-button="emoji" maxlength="100" placeholder="🔔 or custom emoji ID"><button class="button secondary emoji-toggle" type="button" aria-label="Choose emoji">☺</button></div></label>
     </div>
     <div class="button-target-role"><label>Role<role-single-select input-name="button_role" value-format="csv" value=""></role-single-select></label></div>
     <div class="button-target-url" hidden><label>URL<input data-button="url" type="url" placeholder="https://..."></label></div>
@@ -110,6 +115,21 @@
   </div>
 </template>
 
+<div id="global-emoji-picker" class="global-emoji-picker" hidden role="dialog" aria-modal="false" aria-labelledby="emoji-picker-title">
+  <div class="emoji-picker-heading">
+    <div><strong id="emoji-picker-title">Emoji Picker</strong><span id="emoji-picker-target" class="muted">Inserting into Regular message</span></div>
+    <button id="close-emoji-picker" class="emoji-picker-close" type="button" aria-label="Close emoji picker">×</button>
+  </div>
+  <label class="emoji-search-label">Search emoji<input id="emoji-search" type="search" placeholder="Search smile, heart, bell…" autocomplete="off"></label>
+  <div id="emoji-categories" class="emoji-categories" aria-label="Emoji categories"></div>
+  <div id="emoji-results" class="emoji-results" aria-live="polite"></div>
+  <div class="custom-emoji-insert">
+    <label>Custom emoji markup or ID<input id="custom-emoji-value" placeholder="&lt;:name:123…&gt; or 123…"></label>
+    <button id="insert-custom-emoji" class="button secondary" type="button">Insert</button>
+  </div>
+  <p class="muted emoji-picker-note">Paste Discord custom emoji markup such as <code>&lt;:name:id&gt;</code>, or paste a numeric emoji ID and the editor will format it for message text automatically.</p>
+</div>
+
 <script id="embed-initial-data" type="application/json">{{ embed_payload|tojson }}</script>
-<script src="{{ url_for('static', path='embed_editor.js') }}?v=embed-editor1" defer></script>
+<script src="{{ url_for('static', path='embed_editor.js') }}?v=embed-editor2" defer></script>
 {% endblock %}

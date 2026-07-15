@@ -137,11 +137,15 @@ class DashboardNavigationMetadataTests(unittest.TestCase):
         editor = self.client.get("/embeds/new")
         self.assertEqual(editor.status_code, 200)
         self.assertIn("Live Discord preview", editor.text)
+        self.assertIn("Emoji Picker", editor.text)
+        self.assertIn("Search emoji", editor.text)
+        self.assertIn("Bump reminders replace this in Feature Settings", editor.text)
+        self.assertNotIn("Supports {role}", editor.text)
         self.assertIn("+ Add button", editor.text)
         self.assertIn("role-single-select", editor.text)
         token = re.search(r'name="csrf" value="([^"]+)"', editor.text).group(1)
         payload = {
-            "content": "{role}",
+            "content": "Optional template message",
             "embed": {
                 "title": "Bump time",
                 "description": "Please use `/bump`.",
@@ -300,8 +304,15 @@ class DashboardNavigationMetadataTests(unittest.TestCase):
         self.assertIn(".settings-menu-item", styles)
         self.assertIn("text-decoration: none", styles)
         base_template = (root / "dashboard/templates/base.html").read_text()
-        self.assertIn("styles.css') }}?v=embed-editor1", base_template)
+        self.assertIn("styles.css') }}?v=embed-editor2", base_template)
         self.assertIn("discord_pickers.js') }}?v=picker-single-values2", base_template)
+
+        editor_script = (root / "dashboard/static/embed_editor.js").read_text()
+        self.assertIn("function discordMarkdown(value)", editor_script)
+        self.assertIn("function inlineDiscordMarkdown(value)", editor_script)
+        self.assertNotIn("source.replace(/\\{role\\}/", editor_script)
+        self.assertIn("renderEmojiPicker", editor_script)
+        self.assertIn("custom-emoji-value", editor_script)
 
     def test_category_selection_matches_child_channels(self):
         self.assertTrue(

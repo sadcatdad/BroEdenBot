@@ -588,6 +588,22 @@ details summary { color: var(--muted); cursor: pointer; }
 .embed-preview-column { position: sticky; top: 5.2rem; min-width: 0; }
 .editor-section { display: grid; gap: 1rem; }
 .editor-section .section-heading { margin-bottom: 0; }
+.emoji-editor-toolbar { display: flex; align-items: center; gap: .75rem; flex-wrap: wrap; }
+.emoji-editor-toolbar .button { flex: 0 0 auto; }
+.emoji-field-button {
+  justify-self: end;
+  margin-top: -.2rem;
+  padding: .25rem .5rem;
+  color: #c9cad3;
+  background: transparent;
+  border: 1px solid var(--border);
+  border-radius: .4rem;
+  cursor: pointer;
+  font: inherit;
+  font-size: .76rem;
+  font-weight: 700;
+}
+.emoji-field-button:hover { color: var(--text); background: var(--panel-soft); }
 .embed-fields-card { position: relative; overflow: hidden; padding-left: 1.5rem; }
 .embed-color-rail { position: absolute; inset: 0 auto 0 0; width: .32rem; background: #25b8b8; }
 .color-input-row, .emoji-input-row { display: grid; grid-template-columns: auto minmax(0, 1fr); gap: .5rem; }
@@ -597,10 +613,36 @@ details summary { color: var(--muted); cursor: pointer; }
 .dynamic-editor-row { display: grid; gap: .8rem; padding: 1rem; background: #101117; border: 1px solid var(--border); border-radius: .7rem; }
 .dynamic-editor-row .remove-row { justify-self: end; }
 .inline-checkbox { align-self: end; min-height: 2.8rem; }
-.emoji-picker { display: flex; flex-wrap: wrap; gap: .25rem; padding: .5rem; background: var(--panel-soft); border: 1px solid var(--border); border-radius: .55rem; }
-.emoji-picker[hidden] { display: none; }
-.emoji-picker button { padding: .35rem; font-size: 1.25rem; background: transparent; border: 0; border-radius: .35rem; cursor: pointer; }
-.emoji-picker button:hover { background: var(--border); }
+.global-emoji-picker {
+  position: fixed;
+  z-index: 60;
+  top: 5.5rem;
+  right: max(1rem, calc((100vw - 1180px) / 2));
+  display: grid;
+  width: min(30rem, calc(100vw - 2rem));
+  max-height: calc(100vh - 7rem);
+  gap: .75rem;
+  padding: 1rem;
+  overflow: auto;
+  background: #20212b;
+  border: 1px solid #454758;
+  border-radius: .9rem;
+  box-shadow: 0 24px 80px rgba(0, 0, 0, .55);
+}
+.global-emoji-picker[hidden] { display: none; }
+.emoji-picker-heading { display: flex; align-items: start; justify-content: space-between; gap: 1rem; }
+.emoji-picker-heading > div { display: grid; gap: .15rem; }
+.emoji-picker-close { padding: 0 .35rem; color: var(--muted); background: transparent; border: 0; cursor: pointer; font-size: 1.6rem; line-height: 1; }
+.emoji-search-label input { margin-top: .2rem; }
+.emoji-categories { display: flex; gap: .35rem; overflow-x: auto; padding-bottom: .2rem; }
+.emoji-category { padding: .38rem .55rem; color: var(--muted); background: #15161d; border: 1px solid var(--border); border-radius: 99px; cursor: pointer; font: inherit; font-size: .72rem; font-weight: 750; white-space: nowrap; }
+.emoji-category:hover, .emoji-category.active { color: var(--text); background: var(--accent-soft); border-color: var(--accent); }
+.emoji-results { display: grid; grid-template-columns: repeat(8, minmax(0, 1fr)); gap: .3rem; }
+.emoji-result { display: grid; min-height: 2.7rem; padding: .25rem; place-items: center; background: #15161d; border: 1px solid transparent; border-radius: .45rem; cursor: pointer; font-size: 1.4rem; }
+.emoji-result:hover, .emoji-result:focus-visible { background: var(--border); border-color: var(--accent); outline: none; }
+.emoji-empty-state { grid-column: 1 / -1; }
+.custom-emoji-insert { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: end; gap: .55rem; }
+.emoji-picker-note { margin: 0; font-size: .76rem; }
 .embed-preview-card { overflow: hidden; }
 .discord-message-preview { display: grid; grid-template-columns: 2.7rem minmax(0, 1fr); gap: .7rem; padding: 1rem 0; }
 .discord-avatar { display: grid; width: 2.7rem; height: 2.7rem; place-items: center; color: white; background: linear-gradient(135deg, #14c7dd, #f0319b 55%, #7857ff); border-radius: 50%; font-weight: 900; }
@@ -608,18 +650,35 @@ details summary { color: var(--muted); cursor: pointer; }
 .discord-author-line { display: flex; flex-wrap: wrap; align-items: center; gap: .4rem; margin-bottom: .35rem; font-size: .78rem; color: var(--muted); }
 .discord-author-line strong { color: var(--text); font-size: .95rem; }
 .discord-bot-badge { padding: .08rem .28rem; color: white; background: #5865f2; border-radius: .2rem; font-size: .62rem; font-weight: 800; }
-.discord-regular-message { margin-bottom: .5rem; color: #dbdee1; white-space: pre-wrap; overflow-wrap: anywhere; }
+.discord-regular-message { margin-bottom: .5rem; color: #dbdee1; overflow-wrap: anywhere; }
 .placeholder { color: #72767d !important; }
 .discord-embed-preview { position: relative; max-width: 33rem; min-height: 4.5rem; padding: .8rem 1rem; overflow: hidden; background: #2b2d31; border-left: 4px solid #25b8b8; border-radius: .25rem; }
 .discord-embed-preview.preview-empty { opacity: .65; }
 .discord-embed-author { margin-bottom: .45rem; color: #f2f3f5; font-size: .82rem; font-weight: 700; }
 .discord-embed-title { display: block; margin-bottom: .45rem; color: #00a8fc; font-weight: 700; text-decoration: none; overflow-wrap: anywhere; }
-.discord-embed-description { color: #dbdee1; font-size: .86rem; line-height: 1.35; white-space: pre-wrap; overflow-wrap: anywhere; }
+.discord-embed-description { color: #dbdee1; font-size: .86rem; line-height: 1.35; overflow-wrap: anywhere; }
 .discord-embed-thumbnail { float: right; width: 5rem; max-height: 5rem; margin: 0 0 .6rem .8rem; object-fit: cover; border-radius: .2rem; }
 .discord-embed-fields { display: grid; grid-template-columns: repeat(12, minmax(0, 1fr)); gap: .65rem; clear: both; margin-top: .7rem; }
 .preview-field { display: grid; grid-column: span 12; gap: .15rem; min-width: 0; font-size: .82rem; }
 .preview-field.inline { grid-column: span 4; }
-.preview-field strong, .preview-field span { overflow-wrap: anywhere; white-space: pre-wrap; }
+.preview-field strong, .preview-field span, .preview-field-value { overflow-wrap: anywhere; }
+.md-line { min-height: 1.2em; }
+.md-spacer { height: .65rem; }
+.md-heading { color: #f2f3f5; font-weight: 750; line-height: 1.2; }
+.md-heading-1 { margin: .25rem 0 .45rem; font-size: 1.35rem; }
+.md-heading-2 { margin: .2rem 0 .35rem; font-size: 1.15rem; }
+.md-heading-3 { margin: .15rem 0 .3rem; font-size: 1rem; }
+.md-quote { margin: .25rem 0; padding-left: .65rem; border-left: 3px solid #4e5058; }
+.md-list-item { display: grid; grid-template-columns: auto minmax(0, 1fr); gap: .45rem; padding-left: .35rem; }
+.md-inline-code, .md-code-block { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
+.md-inline-code { padding: .08rem .25rem; color: #e3e5e8; background: #1e1f22; border-radius: .2rem; }
+.md-code-block { margin: .35rem 0; padding: .65rem; overflow-x: auto; color: #e3e5e8; background: #1e1f22; border: 1px solid #111214; border-radius: .25rem; white-space: pre-wrap; }
+.md-spoiler { color: transparent; background: #1e1f22; border-radius: .18rem; cursor: pointer; }
+.md-spoiler:hover { color: inherit; }
+.md-mention { display: inline-block; padding: 0 .18rem; color: #c9cdfb; background: rgba(88, 101, 242, .3); border-radius: .18rem; font-weight: 600; }
+.md-link { color: #00a8fc; text-decoration: none; }
+.md-link:hover { text-decoration: underline; }
+.md-custom-emoji { width: 1.35em; height: 1.35em; vertical-align: -.3em; object-fit: contain; }
 .discord-embed-image { display: block; width: 100%; max-height: 22rem; margin-top: .8rem; object-fit: contain; object-position: left; border-radius: .25rem; }
 .discord-embed-footer { margin-top: .7rem; color: #b5bac1; font-size: .72rem; overflow-wrap: anywhere; }
 .discord-button-preview { display: flex; flex-wrap: wrap; gap: .4rem; margin-top: .45rem; }
@@ -680,4 +739,7 @@ details summary { color: var(--muted); cursor: pointer; }
   .bar-row { grid-template-columns: 5.8rem minmax(5rem, 1fr) 4rem; gap: .4rem; }
   .embed-table-tools { align-items: stretch; flex-direction: column; }
   .preview-field.inline { grid-column: span 12; }
+  .global-emoji-picker { top: 1rem; right: .5rem; width: calc(100vw - 1rem); max-height: calc(100vh - 2rem); }
+  .emoji-results { grid-template-columns: repeat(7, minmax(0, 1fr)); }
+  .custom-emoji-insert { grid-template-columns: 1fr; }
 }
