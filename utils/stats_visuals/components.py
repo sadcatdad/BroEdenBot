@@ -1,5 +1,5 @@
 import io
-from typing import Iterable, Optional, Sequence, Tuple
+from typing import Any, Iterable, Mapping, Optional, Sequence, Tuple
 
 from PIL import Image, ImageDraw, ImageOps
 
@@ -10,6 +10,62 @@ from .theme import COLORS, SPACING, LayoutProfile
 
 
 Color = Tuple[int, int, int]
+
+
+def _style_color(style: Mapping[str, Any], key: str, fallback: Color) -> Color:
+    value = str(style.get(key, "") or "").strip().lstrip("#")
+    try:
+        return tuple(bytes.fromhex(value)) if len(value) == 6 else fallback
+    except ValueError:
+        return fallback
+
+
+class ResolvedColors:
+    """Per-render palette resolved from the selected Studio theme/settings."""
+
+    def __init__(self, style: Mapping[str, Any], accent: Color) -> None:
+        self.canvas = _style_color(style, "background_overlay", COLORS.canvas)
+        panel = _style_color(style, "panel_color", COLORS.card)
+        opacity = max(0.0, min(float(style.get("panel_opacity", 1.0)), 1.0))
+        self.card = tuple(
+            int(round(panel[index] * opacity + self.canvas[index] * (1 - opacity)))
+            for index in range(3)
+        )
+        self.surface = _style_color(style, "secondary_color", COLORS.surface)
+        self.surface_alt = COLORS.surface_alt
+        self.border = _style_color(style, "border_color", COLORS.border)
+        self.divider = _style_color(style, "divider_color", COLORS.divider)
+        self.text = _style_color(
+            style,
+            "title_color",
+            _style_color(style, "text_color", COLORS.text),
+        )
+        self.secondary_text = _style_color(
+            style,
+            "body_text_color",
+            _style_color(style, "text_color", COLORS.secondary_text),
+        )
+        self.muted_text = _style_color(style, "muted_text_color", COLORS.muted_text)
+        self.accent = accent
+        self.avatar_shape = str((style or {}).get("avatar_shape", "circle"))
+        self.accent_soft = tuple(max(0, int(channel * 0.31)) for channel in accent)
+        self.positive = COLORS.positive
+        self.negative = COLORS.negative
+        self.neutral = COLORS.neutral
+        self.warning = COLORS.warning
+        self.gold = _style_color(style, "first_place_color", COLORS.gold)
+        self.silver = _style_color(style, "second_place_color", COLORS.silver)
+        self.bronze = _style_color(style, "third_place_color", COLORS.bronze)
+        self.chart = (accent, *COLORS.chart[1:])
+        if bool(style.get("high_contrast", False)):
+            self.card = (8, 8, 12)
+            self.surface = (20, 20, 28)
+            self.surface_alt = (30, 30, 40)
+            self.border = (255, 255, 255)
+            self.divider = (210, 210, 220)
+            self.text = (255, 255, 255)
+            self.secondary_text = (245, 245, 248)
+            self.muted_text = (220, 220, 228)
 
 
 class VisualCanvas:
@@ -23,22 +79,49 @@ class VisualCanvas:
         *,
         background_bytes: Optional[bytes] = None,
         banner_bytes: Optional[bytes] = None,
+        logo_bytes: Optional[bytes] = None,
+        watermark_bytes: Optional[bytes] = None,
+        style: Optional[Mapping[str, Any]] = None,
     ) -> None:
         self.width = width
         self.height = height
         self.profile = profile
         self.state = state
         self.scale = min(width / profile.width, height / profile.height)
-        self.image = Image.new("RGB", (width, height), COLORS.canvas)
+        self.colors = ResolvedColors(style or {}, accent)
+        self.image = Image.new("RGB", (width, height), self.colors.canvas)
         background = _fitted_image(background_bytes, (width, height))
         if background is not None:
-            shade = Image.new("RGB", background.size, COLORS.canvas)
-            self.image.paste(Image.blend(background, shade, 0.56))
+            shade = Image.new("RGB", background.size, self.colors.canvas)
+            overlay_opacity = max(
+                0.0,
+                min(float((style or {}).get("background_overlay_opacity", 0.56)), 1.0),
+            )
+            self.image.paste(Image.blend(background, shade, overlay_opacity))
         self.draw = ImageDraw.Draw(self.image)
         self.accent = accent
         self.banner_bytes = banner_bytes
+        self.logo_bytes = logo_bytes
+        self.watermark_bytes = watermark_bytes
+        self.avatar_shape = self.colors.avatar_shape
+        self.reduced_decoration = bool((style or {}).get("reduced_decoration", False))
+        title_roles = {"graphic_title", "section_heading", "primary_metric", "ranking_number", "empty_title"}
+        size_overrides = {
+            "graphic_title": (style or {}).get("title_size"),
+            "graphic_subtitle": (style or {}).get("subtitle_size"),
+            "footer": (style or {}).get("footer_size"),
+        }
         self.fonts = {
-            role: load_font(role, self.scale)
+            role: load_font(
+                role,
+                self.scale,
+                (style or {}).get("title_font") if role in title_roles else (style or {}).get("body_font"),
+                size_override=size_overrides.get(role) or (
+                    (style or {}).get("body_size")
+                    if role not in {"graphic_title", "graphic_subtitle", "footer"}
+                    else None
+                ),
+            )
             for role in (
                 "graphic_title",
                 "graphic_subtitle",
@@ -72,6 +155,9 @@ def base_canvas(
     *,
     background_bytes: Optional[bytes] = None,
     banner_bytes: Optional[bytes] = None,
+    logo_bytes: Optional[bytes] = None,
+    watermark_bytes: Optional[bytes] = None,
+    style: Optional[Mapping[str, Any]] = None,
 ) -> VisualCanvas:
     return VisualCanvas(
         width,
@@ -81,6 +167,9 @@ def base_canvas(
         accent,
         background_bytes=background_bytes,
         banner_bytes=banner_bytes,
+        logo_bytes=logo_bytes,
+        watermark_bytes=watermark_bytes,
+        style=style,
     )
 
 
@@ -98,12 +187,28 @@ def _fitted_image(data: Optional[bytes], size: Tuple[int, int]) -> Optional[Imag
         return None
 
 
+def _contained_rgba(data: Optional[bytes], size: Tuple[int, int]) -> Optional[Image.Image]:
+    if not data:
+        return None
+    try:
+        with Image.open(io.BytesIO(data)) as source:
+            image = source.convert("RGBA")
+            image.thumbnail(size, Image.Resampling.LANCZOS)
+            return image.copy()
+    except (OSError, ValueError):
+        return None
+
+
 def draw_brand_mark(canvas: VisualCanvas, x: float, y: float) -> None:
     draw = canvas.draw
     x, y = canvas.s(x), canvas.s(y)
     size = canvas.s(26)
     stripe = max(2, canvas.s(4))
-    colors = (canvas.accent, COLORS.positive, COLORS.chart[2], COLORS.warning)
+    colors = (
+        (canvas.accent,)
+        if canvas.reduced_decoration
+        else (canvas.accent, canvas.colors.positive, canvas.colors.chart[2], canvas.colors.warning)
+    )
     for index, color in enumerate(colors):
         offset = index * stripe
         draw.rounded_rectangle(
@@ -128,15 +233,15 @@ def draw_page_indicator(
     canvas.draw.rounded_rectangle(
         (right_px - width, top_px, right_px, top_px + height),
         radius=height // 2,
-        fill=COLORS.surface,
-        outline=COLORS.border,
+        fill=canvas.colors.surface,
+        outline=canvas.colors.border,
         width=max(1, canvas.s(SPACING.border)),
     )
     canvas.draw.text(
         (right_px - width + canvas.s(14), top_px + canvas.s(8)),
         label,
         font=font,
-        fill=COLORS.secondary_text,
+        fill=canvas.colors.secondary_text,
     )
 
 
@@ -150,7 +255,7 @@ def draw_date_range_label(canvas: VisualCanvas, label: str, x: float, y: float) 
         canvas.s(620),
         state=canvas.state,
     )
-    canvas.draw.text((x_px, y_px), safe, font=font, fill=COLORS.muted_text)
+    canvas.draw.text((x_px, y_px), safe, font=font, fill=canvas.colors.muted_text)
 
 
 def draw_header(
@@ -173,10 +278,10 @@ def draw_header(
         canvas.draw.rounded_rectangle(
             (left, top, right, bottom),
             radius=canvas.s(SPACING.radius),
-            fill=COLORS.card,
+            fill=canvas.colors.card,
         )
     else:
-        shade = Image.new("RGB", banner.size, COLORS.card)
+        shade = Image.new("RGB", banner.size, canvas.colors.card)
         banner = Image.blend(banner, shade, 0.42)
         mask = Image.new("L", banner.size, 0)
         ImageDraw.Draw(mask).rounded_rectangle(
@@ -188,7 +293,7 @@ def draw_header(
     canvas.draw.rounded_rectangle(
         (left, top, right, bottom),
         radius=canvas.s(SPACING.radius),
-        outline=COLORS.border,
+        outline=canvas.colors.border,
         width=max(1, canvas.s(SPACING.border)),
     )
     canvas.draw.rounded_rectangle(
@@ -196,7 +301,16 @@ def draw_header(
         radius=canvas.s(4),
         fill=canvas.accent,
     )
-    draw_brand_mark(canvas, margin + 28, margin + 30)
+    logo = _contained_rgba(canvas.logo_bytes, (canvas.s(48), canvas.s(48)))
+    if logo is not None:
+        canvas.image.paste(
+            logo,
+            (canvas.s(margin + 20), canvas.s(margin + 18)),
+            logo,
+        )
+        canvas.draw = ImageDraw.Draw(canvas.image)
+    else:
+        draw_brand_mark(canvas, margin + 28, margin + 30)
     text_x = margin + 72
     show_page = page_count > 1 or canvas.profile.name == "portrait_leaderboard"
     title_width = canvas.profile.width - text_x - margin - (190 if show_page else 20)
@@ -211,7 +325,7 @@ def draw_header(
         (canvas.s(text_x), canvas.s(margin + 24)),
         safe_title,
         font=canvas.fonts["graphic_title"],
-        fill=COLORS.text,
+        fill=canvas.colors.text,
     )
     safe_subtitle = truncate_text(
         canvas.draw,
@@ -224,7 +338,7 @@ def draw_header(
         (canvas.s(text_x), canvas.s(margin + 88)),
         safe_subtitle,
         font=canvas.fonts["graphic_subtitle"],
-        fill=COLORS.secondary_text,
+        fill=canvas.colors.secondary_text,
     )
     if date_range:
         draw_date_range_label(canvas, date_range, text_x, margin + 132)
@@ -257,7 +371,7 @@ def draw_section_heading(
         (canvas.s(x), canvas.s(y)),
         safe,
         font=canvas.fonts["section_heading"],
-        fill=COLORS.text,
+        fill=canvas.colors.text,
     )
 
 
@@ -278,8 +392,8 @@ def draw_metric_card(
     canvas.draw.rounded_rectangle(
         box,
         radius=canvas.s(SPACING.radius),
-        fill=COLORS.card,
-        outline=COLORS.border,
+        fill=canvas.colors.card,
+        outline=canvas.colors.border,
         width=max(1, canvas.s(SPACING.border)),
     )
     canvas.draw.rounded_rectangle(
@@ -305,13 +419,13 @@ def draw_metric_card(
         (canvas.s(x + 22), canvas.s(y + 42)),
         safe_label,
         font=canvas.fonts["metric_label"],
-        fill=COLORS.muted_text,
+        fill=canvas.colors.muted_text,
     )
     canvas.draw.text(
         (canvas.s(x + 22), canvas.s(y + 78)),
         safe_value,
         font=canvas.fonts["primary_metric"],
-        fill=COLORS.text,
+        fill=canvas.colors.text,
     )
     if supporting:
         safe_supporting = truncate_text(
@@ -325,7 +439,7 @@ def draw_metric_card(
             (canvas.s(x + 22), canvas.s(y + height - 42)),
             safe_supporting,
             font=canvas.fonts["supporting_stat"],
-            fill=COLORS.secondary_text,
+            fill=canvas.colors.secondary_text,
         )
 
 
@@ -337,11 +451,11 @@ def draw_trend_indicator(
     label: str = "",
 ) -> None:
     if value > 0:
-        color, arrow = COLORS.positive, "↑"
+        color, arrow = canvas.colors.positive, "↑"
     elif value < 0:
-        color, arrow = COLORS.negative, "↓"
+        color, arrow = canvas.colors.negative, "↓"
     else:
-        color, arrow = COLORS.neutral, "→"
+        color, arrow = canvas.colors.neutral, "→"
     text = "{} {:+.1f}%{}".format(arrow, value, " " + label if label else "")
     canvas.draw.text(
         (canvas.s(x), canvas.s(y)),
@@ -362,8 +476,8 @@ def draw_chart_container(
     canvas.draw.rounded_rectangle(
         canvas.box((x, y, x + width, y + height)),
         radius=canvas.s(SPACING.radius),
-        fill=COLORS.card,
-        outline=COLORS.border,
+        fill=canvas.colors.card,
+        outline=canvas.colors.border,
         width=max(1, canvas.s(SPACING.border)),
     )
     draw_section_heading(canvas, title, x + 26, y + 22, width - 52)
@@ -396,7 +510,7 @@ def draw_legend(
             (cursor + canvas.s(18), top),
             safe,
             font=font,
-            fill=COLORS.secondary_text,
+            fill=canvas.colors.secondary_text,
         )
         cursor += int(needed)
 
@@ -408,14 +522,14 @@ def draw_rank_badge(
     y: float,
     size: float = 48,
 ) -> None:
-    color = {1: COLORS.gold, 2: COLORS.silver, 3: COLORS.bronze}.get(
-        rank, COLORS.muted_text
+    color = {1: canvas.colors.gold, 2: canvas.colors.silver, 3: canvas.colors.bronze}.get(
+        rank, canvas.colors.muted_text
     )
     box = canvas.box((x, y, x + size, y + size))
     canvas.draw.rounded_rectangle(
         box,
         radius=canvas.s(12),
-        fill=COLORS.surface if rank > 3 else tuple(max(0, c - 135) for c in color),
+        fill=canvas.colors.surface if rank > 3 else tuple(max(0, c - 135) for c in color),
         outline=color,
         width=max(1, canvas.s(2)),
     )
@@ -446,23 +560,41 @@ def draw_avatar_container(
     count_fallback: bool = True,
 ) -> None:
     size_px = canvas.s(size)
-    avatar = prepare_avatar(avatar_data, size_px)
+    avatar = prepare_avatar(avatar_data, size_px, canvas.avatar_shape)
     if avatar is not None:
         canvas.image.paste(avatar, (canvas.s(x), canvas.s(y)), avatar)
-        canvas.draw.ellipse(
-            canvas.box((x, y, x + size, y + size)),
-            outline=COLORS.border,
-            width=max(1, canvas.s(2)),
-        )
+        if canvas.avatar_shape == "circle":
+            canvas.draw.ellipse(
+                canvas.box((x, y, x + size, y + size)),
+                outline=canvas.colors.border,
+                width=max(1, canvas.s(2)),
+            )
+        else:
+            canvas.draw.rounded_rectangle(
+                canvas.box((x, y, x + size, y + size)),
+                radius=0 if canvas.avatar_shape == "square" else canvas.s(size / 5),
+                outline=canvas.colors.border,
+                width=max(1, canvas.s(2)),
+            )
         return
     if count_fallback:
         canvas.state.avatar_fallback_count += 1
-    canvas.draw.ellipse(
-        canvas.box((x, y, x + size, y + size)),
-        fill=COLORS.accent_soft,
-        outline=canvas.accent,
-        width=max(1, canvas.s(2)),
-    )
+    avatar_box = canvas.box((x, y, x + size, y + size))
+    if canvas.avatar_shape == "circle":
+        canvas.draw.ellipse(
+            avatar_box,
+            fill=canvas.colors.accent_soft,
+            outline=canvas.accent,
+            width=max(1, canvas.s(2)),
+        )
+    else:
+        canvas.draw.rounded_rectangle(
+            avatar_box,
+            radius=0 if canvas.avatar_shape == "square" else canvas.s(size / 5),
+            fill=canvas.colors.accent_soft,
+            outline=canvas.accent,
+            width=max(1, canvas.s(2)),
+        )
     initial = (fallback_label[:1] or "?").upper()
     font = canvas.fonts["ranking_number"]
     bbox = canvas.draw.textbbox((0, 0), initial, font=font)
@@ -473,7 +605,7 @@ def draw_avatar_container(
         ),
         initial,
         font=font,
-        fill=COLORS.text,
+        fill=canvas.colors.text,
     )
 
 
@@ -491,13 +623,15 @@ def draw_leaderboard_row(
     width: float,
     height: float,
     progress: float,
+    show_avatar: bool = True,
+    show_rank: bool = True,
 ) -> None:
-    fill = COLORS.surface if rank <= 3 else COLORS.card
+    fill = canvas.colors.surface if rank <= 3 else canvas.colors.card
     canvas.draw.rounded_rectangle(
         canvas.box((x, y, x + width, y + height)),
         radius=canvas.s(16),
         fill=fill,
-        outline=COLORS.border,
+        outline=canvas.colors.border,
         width=max(1, canvas.s(SPACING.border)),
     )
     if progress > 0:
@@ -507,16 +641,19 @@ def draw_leaderboard_row(
             radius=canvas.s(2),
             fill=canvas.accent,
         )
-    draw_rank_badge(canvas, rank, x + 18, y + (height - 48) / 2)
-    draw_avatar_container(
-        canvas,
-        avatar_data=avatar_data,
-        fallback_label=label,
-        x=x + 82,
-        y=y + (height - 56) / 2,
-        size=56,
-        count_fallback=avatar_expected,
-    )
+    if show_rank:
+        draw_rank_badge(canvas, rank, x + 18, y + (height - 48) / 2)
+    avatar_x = x + (82 if show_rank else 18)
+    if show_avatar:
+        draw_avatar_container(
+            canvas,
+            avatar_data=avatar_data,
+            fallback_label=label,
+            x=avatar_x,
+            y=y + (height - 56) / 2,
+            size=56,
+            count_fallback=avatar_expected,
+        )
     value_font = canvas.fonts["username"]
     value_safe = truncate_text(
         canvas.draw, value, value_font, canvas.s(245), canvas.state
@@ -528,17 +665,17 @@ def draw_leaderboard_row(
     canvas.draw.rounded_rectangle(
         (pill_left, canvas.s(y + 22), pill_right, canvas.s(y + height - 22)),
         radius=canvas.s(22),
-        fill=COLORS.surface_alt,
-        outline=COLORS.border,
+        fill=canvas.colors.surface_alt,
+        outline=canvas.colors.border,
         width=max(1, canvas.s(1)),
     )
     canvas.draw.text(
         (pill_left + (pill_width - value_width) / 2, canvas.s(y + 31)),
         value_safe,
         font=value_font,
-        fill=COLORS.text,
+        fill=canvas.colors.text,
     )
-    text_x = x + 154
+    text_x = avatar_x + (72 if show_avatar else 0)
     max_text = (pill_left - canvas.s(18)) - canvas.s(text_x)
     safe_label = truncate_text(
         canvas.draw, label, canvas.fonts["username"], max_text, canvas.state
@@ -547,7 +684,7 @@ def draw_leaderboard_row(
         (canvas.s(text_x), canvas.s(y + 22)),
         safe_label,
         font=canvas.fonts["username"],
-        fill=COLORS.text,
+        fill=canvas.colors.text,
     )
     if subtitle:
         safe_subtitle = truncate_text(
@@ -561,7 +698,7 @@ def draw_leaderboard_row(
             (canvas.s(text_x), canvas.s(y + 55)),
             safe_subtitle,
             font=canvas.fonts["supporting_stat"],
-            fill=COLORS.muted_text,
+            fill=canvas.colors.muted_text,
         )
 
 
@@ -578,8 +715,8 @@ def draw_empty_state(
     canvas.draw.rounded_rectangle(
         canvas.box((x, y, x + width, y + height)),
         radius=canvas.s(SPACING.radius),
-        fill=COLORS.card,
-        outline=COLORS.border,
+        fill=canvas.colors.card,
+        outline=canvas.colors.border,
         width=max(1, canvas.s(SPACING.border)),
     )
     canvas.draw.text(
@@ -592,7 +729,7 @@ def draw_empty_state(
             canvas.state,
         ),
         font=canvas.fonts["empty_title"],
-        fill=COLORS.text,
+        fill=canvas.colors.text,
     )
     lines = wrap_text(
         canvas.draw,
@@ -607,7 +744,7 @@ def draw_empty_state(
             (canvas.s(x + 32), canvas.s(y + 92 + index * 30)),
             line,
             font=canvas.fonts["empty_body"],
-            fill=COLORS.muted_text,
+            fill=canvas.colors.muted_text,
         )
 
 
@@ -632,7 +769,7 @@ def draw_error_state(
     canvas.draw.rounded_rectangle(
         canvas.box((x, y, x + 8, y + height)),
         radius=canvas.s(4),
-        fill=COLORS.negative,
+        fill=canvas.colors.negative,
     )
 
 
@@ -647,12 +784,20 @@ def draw_footer(
     left = truncate_text(canvas.draw, left_text, font, canvas.s(500), canvas.state)
     right = truncate_text(canvas.draw, right_text, font, canvas.s(520), canvas.state)
     canvas.draw.text(
-        (canvas.s(48), canvas.s(y)), left, font=font, fill=COLORS.muted_text
+        (canvas.s(48), canvas.s(y)), left, font=font, fill=canvas.colors.muted_text
     )
     right_width = canvas.draw.textlength(right, font=font)
     canvas.draw.text(
         (canvas.s(canvas.profile.width - 48) - right_width, canvas.s(y)),
         right,
         font=font,
-        fill=COLORS.muted_text,
+        fill=canvas.colors.muted_text,
     )
+    watermark = _contained_rgba(
+        canvas.watermark_bytes,
+        (canvas.s(220), canvas.s(34)),
+    )
+    if watermark is not None:
+        x = canvas.s(canvas.profile.width / 2) - watermark.width // 2
+        canvas.image.paste(watermark, (x, canvas.s(y - 5)), watermark)
+        canvas.draw = ImageDraw.Draw(canvas.image)

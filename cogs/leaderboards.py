@@ -1599,6 +1599,7 @@ class Leaderboards(commands.Cog):
             total_entries=total_entries,
             banner_bytes=banner_bytes,
             layout="leaderboard",
+            template_key="custom_leaderboard",
         )
         file = discord.File(io.BytesIO(png), filename="leaderboard.png")
         token = self._token(leaderboard)

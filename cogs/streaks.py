@@ -791,6 +791,7 @@ class Streaks(commands.Cog):
             layout="leaderboard",
             footer_text=STREAK_FOOTER,
             force_columns=2,
+            template_key="streak_leaderboard",
         )
         view = discord.ui.View(timeout=None)
         view.add_item(discord.ui.Button(

@@ -3542,6 +3542,7 @@ class Stats(commands.Cog):
             sections=sections,
             updated_at=self._utcnow(),
             accent_color=COLOR,
+            template_key="activity_leaderboard",
         )
         return result.attachments(f"stats_{report_type}_leaderboard.png")
 

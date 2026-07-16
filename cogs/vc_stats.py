@@ -1775,6 +1775,7 @@ class VCStats(commands.Cog):
                 sections=[RankedGraphicSection("Member leaderboard", items)],
                 updated_at=utc_now(),
                 accent_color=COLOR,
+                template_key="vc_leaderboard",
             )
         except Exception:
             logger.exception(

@@ -9,8 +9,9 @@ import discord
 import requests
 from discord import app_commands
 from discord.ext import commands
-from PIL import Image, ImageDraw, ImageFont, UnidentifiedImageError
+from PIL import Image, ImageDraw, ImageFont, ImageOps, UnidentifiedImageError
 
+from utils.stats_visuals.text import FONT_FAMILIES
 from utils.ui import (
     INFO_COLOR,
     branded_embed,
@@ -18,6 +19,7 @@ from utils.ui import (
     success_embed,
     warning_embed,
 )
+from utils.visual_studio.runtime import load_runtime_customization_sync
 
 
 logger = logging.getLogger(__name__)
@@ -289,7 +291,22 @@ class Queue(commands.Cog):
 
     def create_banner(self, user: discord.Member) -> Optional[discord.File]:
         try:
-            background = Image.open("assets/up_next.png").convert("RGBA")
+            customization = load_runtime_customization_sync("queue_next")
+            if customization.background_bytes:
+                background = Image.open(
+                    io.BytesIO(customization.background_bytes)
+                ).convert("RGBA")
+            else:
+                background = Image.open("assets/up_next.png").convert("RGBA")
+            background = ImageOps.fit(
+                background,
+                (1024, 258),
+                Image.Resampling.LANCZOS,
+                centering=(
+                    float(customization.settings.get("focal_x", 0.5)),
+                    float(customization.settings.get("focal_y", 0.5)),
+                ),
+            )
             with requests.get(
                 user.display_avatar.url,
                 timeout=10,
@@ -310,13 +327,31 @@ class Queue(commands.Cog):
         avatar.putalpha(mask)
         background.paste(avatar, (667, 45), avatar)
         draw = ImageDraw.Draw(background)
-        font = ImageFont.truetype("assets/calibri.ttf", 40)
+        accent_text = str(customization.settings.get("accent_color", "#f0319b"))
+        try:
+            accent = tuple(bytes.fromhex(accent_text.lstrip("#")))
+        except ValueError:
+            accent = (240, 49, 155)
+        if customization.customized:
+            draw.ellipse((663, 41, 838, 216), outline=accent, width=4)
+        font_size = max(
+            24,
+            min(56, int(customization.settings.get("body_size", 40))),
+        )
+        family = str(customization.settings.get("title_font", "Calibri"))
+        font_path = FONT_FAMILIES.get(family, FONT_FAMILIES["Calibri"])
+        font = ImageFont.truetype(str(font_path), font_size)
+        text_color = str(customization.settings.get("text_color", "#ffffff"))
+        try:
+            fill = tuple(bytes.fromhex(text_color.lstrip("#")))
+        except ValueError:
+            fill = (255, 255, 255)
         display_name = user.display_name[:28]
         draw.text(
             (120, 150),
             f"@{display_name}",
             font=font,
-            fill=(255, 255, 255),
+            fill=fill,
         )
         image_binary = io.BytesIO()
         background.save(image_binary, "PNG", optimize=True)

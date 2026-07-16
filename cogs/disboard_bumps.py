@@ -603,6 +603,7 @@ class DisboardBumps(commands.Cog):
             layout="leaderboard",
             footer_text=BUMP_FOOTER,
             force_columns=2,
+            template_key="bump_leaderboard",
         )
         view = discord.ui.View(timeout=None)
         view.add_item(discord.ui.Button(
