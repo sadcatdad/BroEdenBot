@@ -585,8 +585,8 @@ class DisboardBumps(commands.Cog):
             formatted = f"{float(points):,.2f}".rstrip("0").rstrip(".")
             items.append(
                 RankedGraphicItem(
-                    label=member.display_name,
-                    subtitle=f"@{member.name}",
+                    label=member.name,
+                    subtitle="",
                     value=formatted,
                     avatar_url=str(member.display_avatar.replace(size=64).url),
                     score=float(points),

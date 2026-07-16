@@ -142,6 +142,8 @@ class LeaderboardFeatureTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(call["accent_color"], 0xF97316)
         self.assertEqual(call["sections"][0].rank_start, 11)
         self.assertEqual(len(call["sections"][0].items), 2)
+        self.assertEqual(call["sections"][0].items[0].label, "member11")
+        self.assertEqual(call["sections"][0].items[0].subtitle, "")
         self.assertEqual(view.children[1].label, "Page 2 of 2")
 
     async def test_milestone_role_tracks_points_in_both_directions(self):

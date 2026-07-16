@@ -346,10 +346,10 @@ class Queue(commands.Cog):
             fill = tuple(bytes.fromhex(text_color.lstrip("#")))
         except ValueError:
             fill = (255, 255, 255)
-        display_name = user.display_name[:28]
+        username = user.name[:28]
         draw.text(
             (120, 150),
-            f"@{display_name}",
+            f"@{username}",
             font=font,
             fill=fill,
         )

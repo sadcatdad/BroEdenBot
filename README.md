@@ -2011,6 +2011,12 @@ custom data falls back to the legacy renderer and bundled/BLOB assets instead
 of breaking the Discord command. Existing per-image Discord byte-limit
 enforcement remains authoritative.
 
+Member-list graphics use Discord account usernames rather than server
+nicknames or global display names. This keeps decorated nickname text, symbols,
+and emoji from turning into missing-glyph boxes in Pillow-rendered images.
+Unsupported glyphs in historical labels are normalized or removed before
+drawing as an additional fallback.
+
 See [the complete admin, developer, migration, backup, rollback, and
 troubleshooting guide](docs/visual-content-studio.md), the
 [registry-generated upload-size table](docs/visual-content-studio-size-reference.md),

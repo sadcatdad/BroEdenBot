@@ -758,8 +758,8 @@ class Streaks(commands.Cog):
             days = int(streak)
             items.append(
                 RankedGraphicItem(
-                    label=member.display_name,
-                    subtitle=f"@{member.name}",
+                    label=member.name,
+                    subtitle="",
                     value=f"{days:,} day{'s' if days != 1 else ''}",
                     avatar_url=avatar_url,
                     score=float(days),

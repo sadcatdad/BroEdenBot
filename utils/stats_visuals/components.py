@@ -3,6 +3,8 @@ from typing import Any, Iterable, Mapping, Optional, Sequence, Tuple
 
 from PIL import Image, ImageDraw, ImageOps
 
+from utils.display_names import normalize_for_font
+
 from .avatars import prepare_avatar
 from .models import RenderState
 from .text import load_font, truncate_text, wrap_text
@@ -627,6 +629,8 @@ def draw_leaderboard_row(
     show_rank: bool = True,
 ) -> None:
     fill = canvas.colors.surface if rank <= 3 else canvas.colors.card
+    label_font = canvas.fonts["username"]
+    renderable_label = normalize_for_font(label, label_font)
     canvas.draw.rounded_rectangle(
         canvas.box((x, y, x + width, y + height)),
         radius=canvas.s(16),
@@ -648,7 +652,7 @@ def draw_leaderboard_row(
         draw_avatar_container(
             canvas,
             avatar_data=avatar_data,
-            fallback_label=label,
+            fallback_label=renderable_label,
             x=avatar_x,
             y=y + (height - 56) / 2,
             size=56,
@@ -678,12 +682,12 @@ def draw_leaderboard_row(
     text_x = avatar_x + (72 if show_avatar else 0)
     max_text = (pill_left - canvas.s(18)) - canvas.s(text_x)
     safe_label = truncate_text(
-        canvas.draw, label, canvas.fonts["username"], max_text, canvas.state
+        canvas.draw, renderable_label, label_font, max_text, canvas.state
     )
     canvas.draw.text(
         (canvas.s(text_x), canvas.s(y + 22)),
         safe_label,
-        font=canvas.fonts["username"],
+        font=label_font,
         fill=canvas.colors.text,
     )
     if subtitle:

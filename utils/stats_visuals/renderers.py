@@ -8,6 +8,8 @@ from typing import Dict, Iterable, List, Mapping, Optional, Sequence, Tuple
 
 from PIL import Image, ImageDraw, ImageOps
 
+from utils.display_names import normalize_for_font
+
 from .avatars import fetch_avatars, prepare_avatar
 from .components import (
     base_canvas,
@@ -780,6 +782,8 @@ async def _render_compact_roster_result(
                         width=max(1, canvas.s(1)),
                     )
                     avatar_size = 48
+                    label_font = canvas.fonts["username"]
+                    renderable_label = normalize_for_font(item.label, label_font)
                     avatar = prepare_avatar(
                         avatars.data.get(item.avatar_url or ""),
                         canvas.s(avatar_size),
@@ -802,7 +806,7 @@ async def _render_compact_roster_result(
                                 outline=accent,
                                 width=max(1, canvas.s(2)),
                             )
-                            initial = (item.label[:1] or "?").upper()
+                            initial = (renderable_label[:1] or "?").upper()
                             font = canvas.fonts["ranking_number"]
                             bbox = canvas.draw.textbbox((0, 0), initial, font=font)
                             canvas.draw.text(
@@ -817,19 +821,19 @@ async def _render_compact_roster_result(
                         text_x += avatar_size + 16
                     safe = truncate_text(
                         canvas.draw,
-                        item.label,
-                        canvas.fonts["username"],
+                        renderable_label,
+                        label_font,
                         canvas.s(panel_width - (text_x - panel_x) - 58),
                         state,
                     )
-                    bbox = canvas.draw.textbbox((0, 0), safe, font=canvas.fonts["username"])
+                    bbox = canvas.draw.textbbox((0, 0), safe, font=label_font)
                     canvas.draw.text(
                         (
                             canvas.s(text_x),
                             canvas.s(y + row_height / 2) - (bbox[3] - bbox[1]) / 2 - bbox[1],
                         ),
                         safe,
-                        font=canvas.fonts["username"],
+                        font=label_font,
                         fill=canvas.colors.text,
                     )
             draw_footer(
