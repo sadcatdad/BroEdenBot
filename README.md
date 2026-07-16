@@ -1674,10 +1674,13 @@ The top-level **Message Studio** stores reusable Discord embed and message
 assets in the shared `data.db`. **Create** offers an **Embed** or **Message**
 type, and the table can search and sort by name, type, modification date, or
 the bot features currently using each asset. Existing saved rows migrate to
-`Embed`. Message
-assets provide trigger-ready content and optional buttons without an embed
-card; Embed assets additionally provide author/header, title and URL,
+`Embed`. Message assets provide trigger-ready content and optional buttons
+without an embed card. Embed assets can contain up to 10 ordered embed cards in
+one Discord message; each card provides author/header, title and URL,
 description, color, thumbnail, large image, footer, and up to 25 fields. The
+combined text across the cards follows Discord's 6,000-character message limit.
+Existing single-card assets migrate automatically and keep their original
+content. The
 editor includes a visible searchable picker for Unicode emoji and custom emoji
 from the latest live-server metadata snapshot. Server results retain the real
 emoji name and insert Discord's exact `<:name:id>` static or `<a:name:id>`

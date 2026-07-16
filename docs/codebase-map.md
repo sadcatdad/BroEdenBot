@@ -31,9 +31,9 @@ maintenance.
   navigation, accessible mobile menu/focus behavior, shared visual tokens, and
   the Bro Eden pride branding used in the sidebar, mobile header, and login.
 - `dashboard/templates/embeds.html`, `dashboard/templates/embed_edit.html`, and
-  `dashboard/static/embed_editor.js` — Searchable saved-embed inventory,
-  Discord-style live editor/preview, Unicode emoji chooser, dynamic fields,
-  and role/URL button configuration.
+  `dashboard/static/embed_editor.js` — Searchable saved-asset inventory,
+  Discord-style live editor/preview, ordered multi-embed creation, Unicode
+  emoji chooser, dynamic fields, and role/URL button configuration.
 - `dashboard/streaks_manager.py` — Streak summaries, durable history-restore
   requests, audited source-day adjustments, and current/longest recalculation
   for the top-level Streaks dashboard page.

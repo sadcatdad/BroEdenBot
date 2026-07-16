@@ -34,6 +34,7 @@ from utils.settings import (
 )
 from utils.embed_templates import (
     discord_embed_from_payload,
+    discord_embeds_from_payload,
     discord_view_from_payload,
     get_embed_template,
     render_feature_payload,
@@ -619,16 +620,16 @@ class Streaks(commands.Cog):
             return
         payload = await self._milestone_asset_payload(member, milestone_days)
         content = self._milestone_message(member, milestone_days)
-        embed = None
+        embeds = []
         view = None
         if payload:
             content = payload["content"]
-            embed = discord_embed_from_payload(payload)
+            embeds = discord_embeds_from_payload(payload)
             view = discord_view_from_payload(payload)
         try:
             await send(
                 content or None,
-                embed=embed,
+                embeds=embeds,
                 view=view,
                 allowed_mentions=discord.AllowedMentions(
                     users=[member],

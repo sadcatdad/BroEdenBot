@@ -9,6 +9,7 @@ from unittest.mock import patch
 from utils.embed_templates import (
     delete_embed_template,
     discord_embed_from_payload,
+    discord_embeds_from_payload,
     discord_view_from_payload,
     get_embed_template,
     list_embed_templates,
@@ -77,7 +78,7 @@ class EmbedTemplateTests(unittest.TestCase):
         )
         saved = get_embed_template(template_id)
         self.assertEqual(saved["name"], "Bump Reminder")
-        self.assertEqual(saved["payload"]["embed"]["fields"][0]["name"], "Reward")
+        self.assertEqual(saved["payload"]["embeds"][0]["fields"][0]["name"], "Reward")
         self.assertEqual(list_embed_templates("bump", "name", "asc")[0]["id"], template_id)
 
         embed = discord_embed_from_payload(saved["payload"])
@@ -127,6 +128,7 @@ class EmbedTemplateTests(unittest.TestCase):
         )
         saved = get_embed_template(message_id)
         self.assertEqual(saved["asset_type"], "message")
+        self.assertEqual(saved["payload"]["embeds"], [])
         rendered = render_feature_payload(
             saved["payload"],
             user_mention="<@42>",
@@ -150,10 +152,10 @@ class EmbedTemplateTests(unittest.TestCase):
             placeholders={"points": "1,000"},
         )
         self.assertEqual(
-            rendered_embed["embed"]["description"],
+            rendered_embed["embeds"][0]["description"],
             "Triggered by <@42> for <@&10>",
         )
-        self.assertEqual(rendered_embed["embed"]["fields"][0]["value"], "Award: 1,000")
+        self.assertEqual(rendered_embed["embeds"][0]["fields"][0]["value"], "Award: 1,000")
         self.assertEqual(rendered_embed["buttons"][0]["label"], "Help <@42>")
 
         invalid = sample_payload()
@@ -189,3 +191,43 @@ class EmbedTemplateTests(unittest.TestCase):
         payload["buttons"][0]["role_id"] = "123"
         with self.assertRaisesRegex(ValueError, "Discord role"):
             validate_embed_payload(payload)
+
+    def test_multiple_embeds_are_ordered_rendered_and_limited(self):
+        first = sample_payload()["embed"]
+        second = {
+            "title": "Second card for {user.feature}",
+            "description": "Assigned to {role.feature}",
+            "color": "#f0319b",
+            "fields": [],
+        }
+        payload = {
+            "content": "Two cards",
+            "embeds": [first, second],
+            "buttons": [],
+        }
+        rendered = render_feature_payload(
+            payload,
+            user_mention="<@42>",
+            role_mentions=["<@&10>"],
+        )
+        self.assertEqual(len(rendered["embeds"]), 2)
+        self.assertEqual(rendered["embeds"][1]["title"], "Second card for <@42>")
+        self.assertEqual(rendered["embeds"][1]["description"], "Assigned to <@&10>")
+        discord_embeds = discord_embeds_from_payload(rendered)
+        self.assertEqual([item.title for item in discord_embeds], ["Bump time", "Second card for <@42>"])
+        self.assertEqual(discord_embed_from_payload(rendered).title, "Bump time")
+
+        too_many = {"content": "", "embeds": [first] * 11, "buttons": []}
+        with self.assertRaisesRegex(ValueError, "at most 10 embeds"):
+            validate_embed_payload(too_many)
+
+        too_long = {
+            "content": "",
+            "embeds": [
+                {"description": "x" * 3001, "color": "#25b8b8", "fields": []},
+                {"description": "y" * 3001, "color": "#25b8b8", "fields": []},
+            ],
+            "buttons": [],
+        }
+        with self.assertRaisesRegex(ValueError, "across all embeds"):
+            validate_embed_payload(too_long)

@@ -12,7 +12,7 @@
 </div>
 {% if message %}<div class="alert success">{{ message }}</div>{% endif %}
 {% if error %}<div class="alert error">{{ error }}</div>{% endif %}
-{% if embed_template and embed_template.features %}<div class="alert warning"><strong>Feature asset:</strong> the configured feature sends this asset's message, embed card (when applicable), and buttons after resolving supported placeholders.</div>{% endif %}
+{% if embed_template and embed_template.features %}<div class="alert warning"><strong>Feature asset:</strong> the configured feature sends this asset's message, embed cards (when applicable), and buttons after resolving supported placeholders.</div>{% endif %}
 {% if embed_template and embed_template.features %}<div class="muted embed-feature-usage">Used by: {{ embed_template.features|join(', ') }}.</div>{% endif %}
 
 <form id="embed-editor-form" method="post" action="{{ url_for('embed_save') }}" class="embed-editor-layout" data-asset-type="{{ asset_type }}">
@@ -36,30 +36,13 @@
         <button type="button" data-editor-placeholder="{role.feature}">{role.feature}</button>
       </div>
       <p class="muted placeholder-help"><code>{user.feature}</code> mentions the user who triggered the feature. <code>{role.feature}</code> mentions every role designated by that feature. Feature-specific placeholders such as <code>{points}</code> and <code>{days}</code> are also supported where documented.</p>
-      <label>Message content <span class="muted">{{ "Required for Message assets." if asset_type == "message" else "Optional text sent above the embed card." }}</span><textarea id="message-content" maxlength="2000" rows="{{ 8 if asset_type == 'message' else 3 }}" placeholder="Write your message here!"></textarea></label>
+      <label>Message content <span class="muted">{{ "Required for Message assets." if asset_type == "message" else "Optional text sent above the embed cards." }}</span><textarea id="message-content" maxlength="2000" rows="{{ 8 if asset_type == 'message' else 3 }}" placeholder="Write your message here!"></textarea></label>
     </div>
 
-    <div class="card editor-section embed-fields-card" {% if asset_type == "message" %}hidden{% endif %}>
-      <div class="embed-color-rail" id="embed-color-rail"></div>
-      <div class="form-grid two">
-        <label>Author / header<input id="author-name" maxlength="256" placeholder="Header"></label>
-        <label>Author icon URL<input id="author-icon-url" type="url" placeholder="https://..."></label>
-        <label>Author link URL<input id="author-url" type="url" placeholder="https://..."></label>
-        <label>Embed color<span class="color-input-row"><input id="embed-color" type="color" value="#25b8b8"><input id="embed-color-text" value="#25b8b8" maxlength="7" aria-label="Embed hex color"></span></label>
-      </div>
-      <label>Title<input id="embed-title" maxlength="256" placeholder="Title"></label>
-      <label>Title link URL<input id="embed-url" type="url" placeholder="https://..."></label>
-      <label>Description<textarea id="embed-description" maxlength="4096" rows="6" placeholder="Write your embed message here!"></textarea></label>
-      <div id="embed-field-editors" class="dynamic-editor-list"></div>
-      <button class="button secondary" id="add-embed-field" type="button">+ Add field</button>
-      <div class="form-grid two image-url-grid">
-        <label>Thumbnail URL<input id="thumbnail-url" type="url" placeholder="https://..."></label>
-        <label>Large image URL<input id="image-url" type="url" placeholder="https://..."></label>
-      </div>
-      <div class="form-grid two">
-        <label>Footer<input id="footer-text" maxlength="2048" placeholder="Footer"></label>
-        <label>Footer icon URL<input id="footer-icon-url" type="url" placeholder="https://..."></label>
-      </div>
+    <div id="embed-card-editors" class="embed-card-editors" {% if asset_type == "message" %}hidden{% endif %}></div>
+    <div class="embed-card-add-row" {% if asset_type == "message" %}hidden{% endif %}>
+      <button class="button secondary" id="add-embed-card" type="button">+ Add embed</button>
+      <span id="embed-card-count" class="muted">Up to 10 embeds per message</span>
     </div>
 
     <div class="card editor-section">
@@ -81,21 +64,58 @@
         <div class="discord-message-body">
           <div class="discord-author-line"><strong>BroEdenBot</strong><span class="discord-bot-badge">BOT</span><span>Today</span></div>
           <div id="preview-content" class="discord-regular-message"></div>
-          <div id="preview-embed" class="discord-embed-preview">
-            <div id="preview-author" class="discord-embed-author"></div>
-            <a id="preview-title" class="discord-embed-title"></a>
-            <div id="preview-description" class="discord-embed-description"></div>
-            <img id="preview-thumbnail" class="discord-embed-thumbnail" alt="">
-            <div id="preview-fields" class="discord-embed-fields"></div>
-            <img id="preview-image" class="discord-embed-image" alt="">
-            <div id="preview-footer" class="discord-embed-footer"></div>
-          </div>
+          <div id="preview-embeds" class="discord-embed-stack"></div>
           <div id="preview-buttons" class="discord-button-preview"></div>
         </div>
       </div>
     </div>
   </aside>
 </form>
+
+<template id="embed-card-template">
+  <div class="card editor-section embed-fields-card embed-card-editor">
+    <div class="embed-color-rail" data-embed-rail></div>
+    <div class="section-heading embed-card-heading">
+      <div><p class="eyebrow">Embed card</p><h2>Embed <span data-embed-number>1</span></h2></div>
+      <div class="embed-card-actions">
+        <button class="button secondary small" data-move-embed="up" type="button">Move up</button>
+        <button class="button secondary small" data-move-embed="down" type="button">Move down</button>
+        <button class="button danger small" data-remove-embed type="button">Remove</button>
+      </div>
+    </div>
+    <div class="form-grid two">
+      <label>Author / header<input data-embed="author_name" maxlength="256" placeholder="Header"></label>
+      <label>Author icon URL<input data-embed="author_icon_url" type="url" placeholder="https://..."></label>
+      <label>Author link URL<input data-embed="author_url" type="url" placeholder="https://..."></label>
+      <label>Embed color<span class="color-input-row"><input data-embed-color-picker type="color" value="#25b8b8"><input data-embed="color" value="#25b8b8" maxlength="7" aria-label="Embed hex color"></span></label>
+    </div>
+    <label>Title<input data-embed="title" maxlength="256" placeholder="Title"></label>
+    <label>Title link URL<input data-embed="url" type="url" placeholder="https://..."></label>
+    <label>Description<textarea data-embed="description" maxlength="4096" rows="6" placeholder="Write your embed message here!"></textarea></label>
+    <div data-embed-fields class="dynamic-editor-list"></div>
+    <button class="button secondary" data-add-embed-field type="button">+ Add field</button>
+    <div class="form-grid two image-url-grid">
+      <label>Thumbnail URL<input data-embed="thumbnail_url" type="url" placeholder="https://..."></label>
+      <label>Large image URL<input data-embed="image_url" type="url" placeholder="https://..."></label>
+    </div>
+    <div class="form-grid two">
+      <label>Footer<input data-embed="footer_text" maxlength="2048" placeholder="Footer"></label>
+      <label>Footer icon URL<input data-embed="footer_icon_url" type="url" placeholder="https://..."></label>
+    </div>
+  </div>
+</template>
+
+<template id="embed-preview-template">
+  <div class="discord-embed-preview">
+    <div data-preview="author" class="discord-embed-author"></div>
+    <a data-preview="title" class="discord-embed-title"></a>
+    <div data-preview="description" class="discord-embed-description"></div>
+    <img data-preview="thumbnail" class="discord-embed-thumbnail" alt="">
+    <div data-preview="fields" class="discord-embed-fields"></div>
+    <img data-preview="image" class="discord-embed-image" alt="">
+    <div data-preview="footer" class="discord-embed-footer"></div>
+  </div>
+</template>
 
 <template id="embed-field-template">
   <div class="dynamic-editor-row embed-field-editor">
@@ -139,5 +159,5 @@
 </div>
 
 <script id="embed-initial-data" type="application/json">{{ embed_payload|tojson }}</script>
-<script src="{{ url_for('static', path='embed_editor.js') }}?v=embed-editor4" defer></script>
+<script src="{{ url_for('static', path='embed_editor.js') }}?v=multi-embed1" defer></script>
 {% endblock %}

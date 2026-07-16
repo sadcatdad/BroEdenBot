@@ -203,12 +203,20 @@ class DisboardBumpTests(unittest.IsolatedAsyncioTestCase):
 
         payload = {
             "content": "Great bump, {user.feature}! You earned {points} points.\n{reward_status}\nRole: {role.feature}",
-            "embed": {
-                "title": "Bump successful",
-                "description": "Your reward has been recorded.",
-                "color": "#f0319b",
-                "fields": [],
-            },
+            "embeds": [
+                {
+                    "title": "Bump successful",
+                    "description": "Your reward has been recorded.",
+                    "color": "#f0319b",
+                    "fields": [],
+                },
+                {
+                    "title": "Next bump",
+                    "description": "Come back in two hours.",
+                    "color": "#25b8b8",
+                    "fields": [],
+                },
+            ],
             "buttons": [
                 {
                     "label": f"Template {index}",
@@ -236,7 +244,8 @@ class DisboardBumpTests(unittest.IsolatedAsyncioTestCase):
             "Great bump, <@42>! You earned 1,000 points.\n"
             "- Your configured bump reward role was awarded\nRole: <@&500>",
         )
-        self.assertEqual(prompt_args.kwargs["embed"].title, "Bump successful")
+        self.assertEqual(prompt_args.kwargs["embeds"][0].title, "Bump successful")
+        self.assertEqual(prompt_args.kwargs["embeds"][1].title, "Next bump")
         self.assertEqual(
             [item.label for item in prompt_args.kwargs["view"].children],
             ["Template 1", "Template 2", "Template 3", "Template 4", "Bump Leaderboard"],
@@ -438,7 +447,7 @@ class DisboardBumpTests(unittest.IsolatedAsyncioTestCase):
         self.channel.send.assert_awaited_once()
         send_args = self.channel.send.await_args
         self.assertEqual(send_args.args[0], "<@&600>")
-        self.assertIn("BUMP TIME", send_args.kwargs["embed"].description)
+        self.assertIn("BUMP TIME", send_args.kwargs["embeds"][0].description)
         self.assertIsNone(send_args.kwargs["view"])
         cursor = await self.database.execute(
             "SELECT status, reminder_message_id FROM disboard_bump_reminders WHERE response_message_id = '100'"
@@ -485,7 +494,7 @@ class DisboardBumpTests(unittest.IsolatedAsyncioTestCase):
 
         send_args = self.channel.send.await_args
         self.assertEqual(send_args.args[0], "Reminder for <@42>: <@&600>")
-        self.assertEqual(send_args.kwargs["embed"].title, "Custom bump reminder")
+        self.assertEqual(send_args.kwargs["embeds"][0].title, "Custom bump reminder")
         self.assertEqual(
             [button.label for button in send_args.kwargs["view"].children],
             ["Template link"],

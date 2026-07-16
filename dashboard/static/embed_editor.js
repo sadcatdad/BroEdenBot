@@ -5,7 +5,9 @@
   const byId = (id) => document.getElementById(id);
   const assetType = form.dataset.assetType === "message" ? "message" : "embed";
   const initial = JSON.parse(byId("embed-initial-data").textContent || "{}");
-  const embed = initial.embed || {};
+  const initialEmbeds = Array.isArray(initial.embeds)
+    ? initial.embeds
+    : (initial.embed ? [initial.embed] : []);
   const unicodeEmojiChoices = [
     ["😀", "grinning happy smile", "Faces"], ["😃", "smile happy", "Faces"], ["😄", "smile laugh", "Faces"],
     ["😁", "beam grin", "Faces"], ["😂", "joy tears laugh", "Faces"], ["🤣", "rolling laugh", "Faces"],
@@ -227,25 +229,7 @@
     return String(value || "");
   }
 
-  const fieldMap = {
-    "message-content": initial.content,
-    "author-name": embed.author_name,
-    "author-url": embed.author_url,
-    "author-icon-url": embed.author_icon_url,
-    "embed-title": embed.title,
-    "embed-url": embed.url,
-    "embed-description": embed.description,
-    "embed-color": embed.color || "#25b8b8",
-    "embed-color-text": embed.color || "#25b8b8",
-    "thumbnail-url": embed.thumbnail_url,
-    "image-url": embed.image_url,
-    "footer-text": embed.footer_text,
-    "footer-icon-url": embed.footer_icon_url,
-  };
-  Object.entries(fieldMap).forEach(([id, value]) => {
-    const element = byId(id);
-    if (element) element.value = value || "";
-  });
+  byId("message-content").value = initial.content || "";
 
   function emojiTargetLabel(target) {
     return target && target.dataset.emojiLabel ? target.dataset.emojiLabel : "Regular message";
@@ -369,8 +353,8 @@
     target.insertAdjacentElement("afterend", action);
   }
 
-  function addField(value = {}) {
-    const container = byId("embed-field-editors");
+  function addField(card, value = {}) {
+    const container = card.querySelector("[data-embed-fields]");
     if (container.children.length >= 25) return;
     const row = byId("embed-field-template").content.firstElementChild.cloneNode(true);
     row.querySelector('[data-field="name"]').value = value.name || "";
@@ -380,11 +364,68 @@
       row.remove();
       updatePreview();
     });
-    row.addEventListener("input", updatePreview);
-    row.addEventListener("change", updatePreview);
     container.append(row);
     registerEmojiTarget(row.querySelector('[data-field="name"]'), "Field name");
     registerEmojiTarget(row.querySelector('[data-field="value"]'), "Field value");
+    updatePreview();
+  }
+
+  function updateEmbedCardOrder() {
+    const cards = [...document.querySelectorAll(".embed-card-editor")];
+    cards.forEach((card, index) => {
+      card.querySelector("[data-embed-number]").textContent = String(index + 1);
+      card.querySelector('[data-move-embed="up"]').disabled = index === 0;
+      card.querySelector('[data-move-embed="down"]').disabled = index === cards.length - 1;
+    });
+    byId("add-embed-card").disabled = cards.length >= 10;
+    byId("embed-card-count").textContent = `${cards.length} of 10 embeds`;
+  }
+
+  function addEmbedCard(value = {}) {
+    const container = byId("embed-card-editors");
+    if (container.children.length >= 10) return;
+    const card = byId("embed-card-template").content.firstElementChild.cloneNode(true);
+    card.querySelectorAll("[data-embed]").forEach((input) => {
+      const key = input.dataset.embed;
+      input.value = key === "color" ? (value[key] || "#25b8b8") : (value[key] || "");
+    });
+    const colorInput = card.querySelector("[data-embed-color-picker]");
+    colorInput.value = /^#[0-9a-f]{6}$/i.test(value.color || "") ? value.color : "#25b8b8";
+    colorInput.addEventListener("input", () => {
+      card.querySelector('[data-embed="color"]').value = colorInput.value;
+      updatePreview();
+    });
+    card.querySelector('[data-embed="color"]').addEventListener("input", (event) => {
+      if (/^#[0-9a-f]{6}$/i.test(event.target.value)) colorInput.value = event.target.value;
+    });
+    card.querySelector("[data-add-embed-field]").addEventListener("click", () => addField(card));
+    card.querySelector("[data-remove-embed]").addEventListener("click", () => {
+      if (card.contains(activeEmojiTarget)) setActiveEmojiTarget(byId("message-content"));
+      card.remove();
+      updateEmbedCardOrder();
+      updatePreview();
+    });
+    card.querySelectorAll("[data-move-embed]").forEach((button) => {
+      button.addEventListener("click", () => {
+        const sibling = button.dataset.moveEmbed === "up"
+          ? card.previousElementSibling
+          : card.nextElementSibling;
+        if (!sibling) return;
+        if (button.dataset.moveEmbed === "up") container.insertBefore(card, sibling);
+        else container.insertBefore(sibling, card);
+        updateEmbedCardOrder();
+        updatePreview();
+      });
+    });
+    container.append(card);
+    (value.fields || []).forEach((field) => addField(card, field));
+    [
+      [card.querySelector('[data-embed="author_name"]'), "Author / header"],
+      [card.querySelector('[data-embed="title"]'), "Title"],
+      [card.querySelector('[data-embed="description"]'), "Description"],
+      [card.querySelector('[data-embed="footer_text"]'), "Footer"],
+    ].forEach(([target, label]) => registerEmojiTarget(target, label));
+    updateEmbedCardOrder();
     updatePreview();
   }
 
@@ -424,11 +465,28 @@
     updatePreview();
   }
 
-  function collectFields() {
-    return [...document.querySelectorAll(".embed-field-editor")].map((row) => ({
+  function collectFields(card) {
+    return [...card.querySelectorAll(".embed-field-editor")].map((row) => ({
       name: row.querySelector('[data-field="name"]').value,
       value: row.querySelector('[data-field="value"]').value,
       inline: row.querySelector('[data-field="inline"]').checked,
+    }));
+  }
+
+  function collectEmbeds() {
+    return [...document.querySelectorAll(".embed-card-editor")].map((card) => ({
+      author_name: card.querySelector('[data-embed="author_name"]').value,
+      author_url: card.querySelector('[data-embed="author_url"]').value,
+      author_icon_url: card.querySelector('[data-embed="author_icon_url"]').value,
+      title: card.querySelector('[data-embed="title"]').value,
+      url: card.querySelector('[data-embed="url"]').value,
+      description: card.querySelector('[data-embed="description"]').value,
+      color: card.querySelector('[data-embed="color"]').value,
+      thumbnail_url: card.querySelector('[data-embed="thumbnail_url"]').value,
+      image_url: card.querySelector('[data-embed="image_url"]').value,
+      footer_text: card.querySelector('[data-embed="footer_text"]').value,
+      footer_icon_url: card.querySelector('[data-embed="footer_icon_url"]').value,
+      fields: collectFields(card),
     }));
   }
 
@@ -450,20 +508,7 @@
   function collectPayload() {
     return {
       content: byId("message-content").value,
-      embed: {
-        author_name: byId("author-name").value,
-        author_url: byId("author-url").value,
-        author_icon_url: byId("author-icon-url").value,
-        title: byId("embed-title").value,
-        url: byId("embed-url").value,
-        description: byId("embed-description").value,
-        color: byId("embed-color-text").value,
-        thumbnail_url: byId("thumbnail-url").value,
-        image_url: byId("image-url").value,
-        footer_text: byId("footer-text").value,
-        footer_icon_url: byId("footer-icon-url").value,
-        fields: collectFields(),
-      },
+      embeds: assetType === "message" ? [] : collectEmbeds(),
       buttons: collectButtons(),
     };
   }
@@ -479,30 +524,27 @@
     element.onerror = () => { element.hidden = true; };
   }
 
-  function updatePreview() {
-    const data = collectPayload();
-    const card = byId("preview-embed");
-    const color = /^#[0-9a-f]{6}$/i.test(data.embed.color) ? data.embed.color : "#25b8b8";
-    byId("embed-color-rail").style.background = color;
+  function renderPreviewEmbed(data, index) {
+    const card = byId("embed-preview-template").content.firstElementChild.cloneNode(true);
+    const color = /^#[0-9a-f]{6}$/i.test(data.color) ? data.color : "#25b8b8";
+    const editorCard = document.querySelectorAll(".embed-card-editor")[index];
+    if (editorCard) editorCard.querySelector("[data-embed-rail]").style.background = color;
     card.style.borderLeftColor = color;
-    const previewContent = byId("preview-content");
-    previewContent.innerHTML = discordMarkdown(data.content || "Write your message here!");
-    previewContent.classList.toggle("placeholder", !data.content);
-    byId("preview-author").textContent = previewPlainText(data.embed.author_name);
-    byId("preview-author").hidden = !data.embed.author_name;
-    const title = byId("preview-title");
-    title.innerHTML = inlineDiscordMarkdown(data.embed.title);
-    title.hidden = !data.embed.title;
-    title.href = data.embed.url || "#";
+    const author = card.querySelector('[data-preview="author"]');
+    author.textContent = previewPlainText(data.author_name);
+    author.hidden = !data.author_name;
+    const title = card.querySelector('[data-preview="title"]');
+    title.innerHTML = inlineDiscordMarkdown(data.title);
+    title.hidden = !data.title;
+    title.href = data.url || "#";
     title.removeAttribute("target");
-    const description = byId("preview-description");
-    description.innerHTML = discordMarkdown(data.embed.description || "Write your embed message here!");
-    description.classList.toggle("placeholder", !data.embed.description);
-    setOptionalImage(byId("preview-thumbnail"), data.embed.thumbnail_url);
-    setOptionalImage(byId("preview-image"), data.embed.image_url);
-    const fields = byId("preview-fields");
-    fields.innerHTML = "";
-    data.embed.fields.forEach((field) => {
+    const description = card.querySelector('[data-preview="description"]');
+    description.innerHTML = discordMarkdown(data.description || "Write your embed message here!");
+    description.classList.toggle("placeholder", !data.description);
+    setOptionalImage(card.querySelector('[data-preview="thumbnail"]'), data.thumbnail_url);
+    setOptionalImage(card.querySelector('[data-preview="image"]'), data.image_url);
+    const fields = card.querySelector('[data-preview="fields"]');
+    data.fields.forEach((field) => {
       const item = document.createElement("div");
       item.className = field.inline ? "preview-field inline" : "preview-field";
       const strong = document.createElement("strong");
@@ -513,8 +555,26 @@
       item.append(strong, value);
       fields.append(item);
     });
-    byId("preview-footer").textContent = previewPlainText(data.embed.footer_text);
-    byId("preview-footer").hidden = !data.embed.footer_text;
+    const footer = card.querySelector('[data-preview="footer"]');
+    footer.textContent = previewPlainText(data.footer_text);
+    footer.hidden = !data.footer_text;
+    const hasContent = Boolean(
+      data.author_name || data.title || data.description || data.thumbnail_url ||
+      data.image_url || data.footer_text || data.fields.length
+    );
+    card.classList.toggle("preview-empty", !hasContent);
+    return card;
+  }
+
+  function updatePreview() {
+    const data = collectPayload();
+    const previewContent = byId("preview-content");
+    previewContent.innerHTML = discordMarkdown(data.content || "Write your message here!");
+    previewContent.classList.toggle("placeholder", !data.content);
+    const previewEmbeds = byId("preview-embeds");
+    previewEmbeds.innerHTML = "";
+    data.embeds.forEach((embed, index) => previewEmbeds.append(renderPreviewEmbed(embed, index)));
+    previewEmbeds.hidden = assetType === "message" || !data.embeds.length;
     const buttons = byId("preview-buttons");
     buttons.innerHTML = "";
     data.buttons.forEach((button) => {
@@ -525,23 +585,13 @@
       item.innerHTML = `${emojiMarkup ? `${inlineDiscordMarkdown(emojiMarkup)} ` : ""}${escapeHtml(previewPlainText(button.label || "Button"))}`;
       buttons.append(item);
     });
-    const hasEmbed = Boolean(
-      data.embed.author_name || data.embed.title || data.embed.description || data.embed.thumbnail_url ||
-      data.embed.image_url || data.embed.footer_text || data.embed.fields.length
-    );
-    card.hidden = assetType === "message";
-    card.classList.toggle("preview-empty", !hasEmbed);
   }
 
-  (embed.fields || []).forEach(addField);
+  if (assetType === "embed") {
+    (initialEmbeds.length ? initialEmbeds : [{}]).forEach(addEmbedCard);
+  }
   (initial.buttons || []).forEach(addButton);
-  [
-    [byId("message-content"), "Regular message"],
-    [byId("author-name"), "Author / header"],
-    [byId("embed-title"), "Title"],
-    [byId("embed-description"), "Description"],
-    [byId("footer-text"), "Footer"],
-  ].forEach(([target, label]) => registerEmojiTarget(target, label));
+  registerEmojiTarget(byId("message-content"), "Regular message");
   byId("open-emoji-picker").addEventListener("click", () => openEmojiPicker());
   byId("close-emoji-picker").addEventListener("click", closeEmojiPicker);
   byId("emoji-search").addEventListener("input", renderEmojiPicker);
@@ -563,17 +613,10 @@
   document.addEventListener("keydown", (event) => {
     if (event.key === "Escape" && !byId("global-emoji-picker").hidden) closeEmojiPicker();
   });
-  byId("add-embed-field").addEventListener("click", () => addField());
+  byId("add-embed-card").addEventListener("click", () => addEmbedCard());
   byId("add-embed-button").addEventListener("click", () => addButton());
   form.addEventListener("input", updatePreview);
   form.addEventListener("change", updatePreview);
-  byId("embed-color").addEventListener("input", (event) => {
-    byId("embed-color-text").value = event.target.value;
-    updatePreview();
-  });
-  byId("embed-color-text").addEventListener("input", (event) => {
-    if (/^#[0-9a-f]{6}$/i.test(event.target.value)) byId("embed-color").value = event.target.value;
-  });
   form.addEventListener("submit", () => {
     byId("embed-payload-json").value = JSON.stringify(collectPayload());
   });

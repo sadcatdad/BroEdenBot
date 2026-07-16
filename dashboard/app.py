@@ -138,6 +138,7 @@ from utils.settings import (
 from utils.display_names import normalize_display_name
 from utils.embed_templates import (
     default_embed_payload,
+    default_message_payload,
     delete_embed_template,
     get_embed_template,
     initialize_embed_templates_schema,
@@ -952,6 +953,11 @@ def render_embed_editor(
     clean_type = str((template or {}).get("asset_type") or asset_type).casefold()
     if clean_type not in {"embed", "message"}:
         clean_type = "embed"
+    default_payload = (
+        default_message_payload()
+        if clean_type == "message"
+        else default_embed_payload()
+    )
     return templates.TemplateResponse(
         request=request,
         name="embed_edit.html",
@@ -963,7 +969,7 @@ def render_embed_editor(
                 else f"Create {clean_type.title()}"
             ),
             embed_template=template,
-            embed_payload=(template or {}).get("payload", default_embed_payload()),
+            embed_payload=(template or {}).get("payload", default_payload),
             asset_type=clean_type,
             discord_metadata=picker_metadata(),
             error=error or request.session.pop("embed_error", None),
@@ -1042,7 +1048,11 @@ async def embed_save(request: Request) -> Response:
         try:
             draft_payload = json.loads(payload_json)
         except json.JSONDecodeError:
-            draft_payload = default_embed_payload()
+            draft_payload = (
+                default_message_payload()
+                if asset_type == "message"
+                else default_embed_payload()
+            )
         draft = {
             "id": template_id,
             "name": name,

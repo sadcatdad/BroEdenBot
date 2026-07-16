@@ -160,10 +160,13 @@ class DashboardNavigationMetadataTests(unittest.TestCase):
         self.assertIn("Search emoji", editor.text)
         self.assertIn("Loading custom server emojis", editor.text)
         self.assertIn("&lt;a:name:id&gt;", editor.text)
-        self.assertIn("embed-editor4", editor.text)
+        self.assertIn("multi-embed1", editor.text)
         self.assertIn("{user.feature}", editor.text)
         self.assertIn("{role.feature}", editor.text)
         self.assertIn("+ Add button", editor.text)
+        self.assertIn("+ Add embed", editor.text)
+        self.assertIn('id="embed-card-template"', editor.text)
+        self.assertIn('id="embed-preview-template"', editor.text)
         self.assertIn("role-single-select", editor.text)
         token = re.search(r'name="csrf" value="([^"]+)"', editor.text).group(1)
         payload = {
@@ -393,6 +396,9 @@ class DashboardNavigationMetadataTests(unittest.TestCase):
         self.assertIn("serverEmojiById", editor_script)
         self.assertIn("insertPlaceholder", editor_script)
         self.assertIn('form.dataset.assetType === "message"', editor_script)
+        self.assertIn("function addEmbedCard", editor_script)
+        self.assertIn("function collectEmbeds", editor_script)
+        self.assertIn("10 embeds", editor_script)
         self.assertNotIn('inserted = `<:emoji:${inserted}>`', editor_script)
 
         settings_message_script = (

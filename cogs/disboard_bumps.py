@@ -23,7 +23,7 @@ from utils.ranked_graphic import (
 )
 from utils.settings import get_int_setting, get_setting
 from utils.embed_templates import (
-    discord_embed_from_payload,
+    discord_embeds_from_payload,
     discord_view_from_payload,
     get_embed_template,
     render_feature_payload,
@@ -239,7 +239,7 @@ class DisboardBumps(commands.Cog):
         if template_payload:
             view_payload = {
                 "content": template_payload.get("content", ""),
-                "embed": template_payload.get("embed", {}),
+                "embeds": list(template_payload.get("embeds") or []),
                 "buttons": list(template_payload.get("buttons") or [])[:4],
             }
             view = discord_view_from_payload(view_payload)
@@ -262,7 +262,7 @@ class DisboardBumps(commands.Cog):
         response_id = str(message.id)
         points = max(1, get_int_setting("BUMP_POINTS_PER_SUCCESS", 1000))
         content = self._success_content(member, points, role_status)
-        embed = None
+        embeds = []
         reward_role = None
         template_payload = await self._configured_success_payload()
         if template_payload:
@@ -286,7 +286,7 @@ class DisboardBumps(commands.Cog):
                     },
                 )
                 content = template_payload["content"]
-                embed = discord_embed_from_payload(template_payload)
+                embeds = discord_embeds_from_payload(template_payload)
                 view = self._prompt_view(
                     response_id,
                     template_payload=template_payload,
@@ -305,8 +305,8 @@ class DisboardBumps(commands.Cog):
                 everyone=False,
             ),
         }
-        if embed is not None:
-            reply_kwargs["embed"] = embed
+        if embeds:
+            reply_kwargs["embeds"] = embeds
         try:
             prompt = await message.reply(
                 content or None,
@@ -1099,7 +1099,7 @@ class DisboardBumps(commands.Cog):
                 )
             payload = await self._configured_reminder_payload()
             content = self._reminder_content(member, role)
-            embed = None
+            embeds = []
             view = None
             if payload:
                 try:
@@ -1113,18 +1113,18 @@ class DisboardBumps(commands.Cog):
                         },
                     )
                     content = payload["content"]
-                    embed = discord_embed_from_payload(payload)
+                    embeds = discord_embeds_from_payload(payload)
                     view = discord_view_from_payload(payload)
                 except ValueError:
                     logger.warning("Configured bump reminder asset payload is invalid")
                     payload = None
             if not payload:
                 content = self._reminder_content(member, role)
-                embed = self._reminder_embed()
+                embeds = [self._reminder_embed()]
             try:
                 reminder_message = await channel.send(
                     content or None,
-                    embed=embed,
+                    embeds=embeds,
                     view=view,
                     allowed_mentions=discord.AllowedMentions(
                         users=[member],

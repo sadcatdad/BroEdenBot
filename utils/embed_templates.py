@@ -17,6 +17,7 @@ from utils.sqlite import configure_sync_connection
 
 
 MAX_EMBED_TOTAL_CHARS = 6000
+MAX_EMBEDS_PER_MESSAGE = 10
 SNOWFLAKE_RE = re.compile(r"^\d{17,20}$")
 BUTTON_STYLES = {"primary", "secondary", "success", "danger"}
 BUTTON_ACTIONS = {"add_role", "remove_role", "url"}
@@ -85,46 +86,110 @@ def _clean_color(value: Any) -> str:
     return text
 
 
-def validate_embed_payload(payload: Any) -> dict[str, Any]:
-    if not isinstance(payload, dict):
-        raise ValueError("Embed data must be a JSON object.")
-    content = _clean_text(payload.get("content"), 2000, "Regular message")
-    raw_embed = payload.get("embed") or {}
+def _default_embed_card() -> dict[str, Any]:
+    return {
+        "author_name": "",
+        "author_url": "",
+        "author_icon_url": "",
+        "title": "",
+        "url": "",
+        "description": "",
+        "color": "#25b8b8",
+        "thumbnail_url": "",
+        "image_url": "",
+        "footer_text": "",
+        "footer_icon_url": "",
+        "fields": [],
+    }
+
+
+def _embed_has_content(embed: dict[str, Any]) -> bool:
+    return bool(
+        embed["author_name"]
+        or embed["title"]
+        or embed["description"]
+        or embed["image_url"]
+        or embed["thumbnail_url"]
+        or embed["footer_text"]
+        or embed["fields"]
+    )
+
+
+def _validate_embed_card(raw_embed: Any, index: int) -> tuple[dict[str, Any], int]:
     if not isinstance(raw_embed, dict):
-        raise ValueError("Embed data is invalid.")
+        raise ValueError(f"Embed {index} data is invalid.")
     fields: list[dict[str, Any]] = []
     raw_fields = raw_embed.get("fields") or []
     if not isinstance(raw_fields, list) or len(raw_fields) > 25:
-        raise ValueError("An embed can contain at most 25 fields.")
-    for index, field in enumerate(raw_fields, start=1):
+        raise ValueError(f"Embed {index} can contain at most 25 fields.")
+    for field_index, field in enumerate(raw_fields, start=1):
         if not isinstance(field, dict):
-            raise ValueError(f"Field {index} is invalid.")
-        name = _clean_text(field.get("name"), 256, f"Field {index} name")
-        value = _clean_text(field.get("value"), 1024, f"Field {index} value")
+            raise ValueError(f"Embed {index} field {field_index} is invalid.")
+        name = _clean_text(
+            field.get("name"),
+            256,
+            f"Embed {index} field {field_index} name",
+        )
+        value = _clean_text(
+            field.get("value"),
+            1024,
+            f"Embed {index} field {field_index} value",
+        )
         if not name or not value:
-            raise ValueError(f"Field {index} needs both a name and value.")
+            raise ValueError(
+                f"Embed {index} field {field_index} needs both a name and value."
+            )
         fields.append({"name": name, "value": value, "inline": bool(field.get("inline"))})
 
     embed = {
-        "author_name": _clean_text(raw_embed.get("author_name"), 256, "Author name"),
-        "author_url": _clean_url(raw_embed.get("author_url"), "Author URL"),
-        "author_icon_url": _clean_url(raw_embed.get("author_icon_url"), "Author icon URL"),
-        "title": _clean_text(raw_embed.get("title"), 256, "Title"),
-        "url": _clean_url(raw_embed.get("url"), "Title URL"),
-        "description": _clean_text(raw_embed.get("description"), 4096, "Description"),
+        "author_name": _clean_text(raw_embed.get("author_name"), 256, f"Embed {index} author name"),
+        "author_url": _clean_url(raw_embed.get("author_url"), f"Embed {index} author URL"),
+        "author_icon_url": _clean_url(raw_embed.get("author_icon_url"), f"Embed {index} author icon URL"),
+        "title": _clean_text(raw_embed.get("title"), 256, f"Embed {index} title"),
+        "url": _clean_url(raw_embed.get("url"), f"Embed {index} title URL"),
+        "description": _clean_text(raw_embed.get("description"), 4096, f"Embed {index} description"),
         "color": _clean_color(raw_embed.get("color")),
-        "thumbnail_url": _clean_url(raw_embed.get("thumbnail_url"), "Thumbnail URL"),
-        "image_url": _clean_url(raw_embed.get("image_url"), "Image URL"),
-        "footer_text": _clean_text(raw_embed.get("footer_text"), 2048, "Footer"),
-        "footer_icon_url": _clean_url(raw_embed.get("footer_icon_url"), "Footer icon URL"),
+        "thumbnail_url": _clean_url(raw_embed.get("thumbnail_url"), f"Embed {index} thumbnail URL"),
+        "image_url": _clean_url(raw_embed.get("image_url"), f"Embed {index} image URL"),
+        "footer_text": _clean_text(raw_embed.get("footer_text"), 2048, f"Embed {index} footer"),
+        "footer_icon_url": _clean_url(raw_embed.get("footer_icon_url"), f"Embed {index} footer icon URL"),
         "fields": fields,
     }
     embed_chars = sum(
         len(embed[key])
         for key in ("author_name", "title", "description", "footer_text")
     ) + sum(len(field["name"]) + len(field["value"]) for field in fields)
-    if embed_chars > MAX_EMBED_TOTAL_CHARS:
-        raise ValueError("Embed text cannot exceed 6,000 total characters.")
+    return embed, embed_chars
+
+
+def validate_embed_payload(payload: Any) -> dict[str, Any]:
+    if not isinstance(payload, dict):
+        raise ValueError("Embed data must be a JSON object.")
+    content = _clean_text(payload.get("content"), 2000, "Regular message")
+
+    if "embeds" in payload:
+        raw_embeds = payload.get("embeds") or []
+        if not isinstance(raw_embeds, list):
+            raise ValueError("Embeds data must be a list.")
+    else:
+        raw_embed = payload.get("embed") or {}
+        if not isinstance(raw_embed, dict):
+            raise ValueError("Embed data is invalid.")
+        raw_embeds = [raw_embed]
+    if len(raw_embeds) > MAX_EMBEDS_PER_MESSAGE:
+        raise ValueError("A message can contain at most 10 embeds.")
+
+    embeds: list[dict[str, Any]] = []
+    total_embed_chars = 0
+    for embed_index, raw_embed in enumerate(raw_embeds, start=1):
+        embed, embed_chars = _validate_embed_card(raw_embed, embed_index)
+        if _embed_has_content(embed):
+            embeds.append(embed)
+            total_embed_chars += embed_chars
+    if total_embed_chars > MAX_EMBED_TOTAL_CHARS:
+        raise ValueError(
+            "Text across all embeds cannot exceed 6,000 total characters."
+        )
 
     buttons: list[dict[str, str]] = []
     raw_buttons = payload.get("buttons") or []
@@ -163,14 +228,9 @@ def validate_embed_payload(payload: Any) -> dict[str, Any]:
             "url": url,
         })
 
-    has_embed_content = bool(
-        embed["author_name"] or embed["title"] or embed["description"]
-        or embed["image_url"] or embed["thumbnail_url"] or embed["footer_text"]
-        or fields
-    )
-    if not content and not has_embed_content:
+    if not content and not embeds:
         raise ValueError("Add a regular message or at least one embed element.")
-    return {"content": content, "embed": embed, "buttons": buttons}
+    return {"content": content, "embeds": embeds, "buttons": buttons}
 
 
 def validate_asset_payload(payload: Any, asset_type: str = "embed") -> dict[str, Any]:
@@ -179,17 +239,7 @@ def validate_asset_payload(payload: Any, asset_type: str = "embed") -> dict[str,
         raise ValueError("Choose either Embed or Message.")
     clean = validate_embed_payload(payload)
     if clean_type == "message":
-        embed = clean["embed"]
-        has_embed_content = bool(
-            embed["author_name"]
-            or embed["title"]
-            or embed["description"]
-            or embed["thumbnail_url"]
-            or embed["image_url"]
-            or embed["footer_text"]
-            or embed["fields"]
-        )
-        if has_embed_content:
+        if clean["embeds"]:
             raise ValueError("Message assets cannot contain embed fields.")
         if not clean["content"]:
             raise ValueError("A Message asset needs message content.")
@@ -199,26 +249,13 @@ def validate_asset_payload(payload: Any, asset_type: str = "embed") -> dict[str,
 def default_embed_payload() -> dict[str, Any]:
     return {
         "content": "",
-        "embed": {
-            "author_name": "",
-            "author_url": "",
-            "author_icon_url": "",
-            "title": "",
-            "url": "",
-            "description": "",
-            "color": "#25b8b8",
-            "thumbnail_url": "",
-            "image_url": "",
-            "footer_text": "",
-            "footer_icon_url": "",
-            "fields": [],
-        },
+        "embeds": [_default_embed_card()],
         "buttons": [],
     }
 
 
 def default_message_payload() -> dict[str, Any]:
-    return default_embed_payload()
+    return {"content": "", "embeds": [], "buttons": []}
 
 
 def render_feature_payload(
@@ -247,11 +284,12 @@ def render_feature_payload(
         return text
 
     clean["content"] = render(clean["content"])
-    for key in ("author_name", "title", "description", "footer_text"):
-        clean["embed"][key] = render(clean["embed"][key])
-    for field in clean["embed"]["fields"]:
-        field["name"] = render(field["name"])
-        field["value"] = render(field["value"])
+    for embed in clean["embeds"]:
+        for key in ("author_name", "title", "description", "footer_text"):
+            embed[key] = render(embed[key])
+        for field in embed["fields"]:
+            field["name"] = render(field["name"])
+            field["value"] = render(field["value"])
     for button in clean["buttons"]:
         button["label"] = render(button["label"])
     return validate_embed_payload(clean)
@@ -398,34 +436,45 @@ def delete_embed_template(template_id: int) -> str:
     return str(row["name"])
 
 
-def discord_embed_from_payload(payload: dict[str, Any]) -> Optional[discord.Embed]:
-    data = validate_embed_payload(payload)["embed"]
-    if not any(
-        data[key]
-        for key in ("author_name", "title", "description", "thumbnail_url", "image_url", "footer_text")
-    ) and not data["fields"]:
-        return None
-    embed = discord.Embed(
-        title=data["title"] or None,
-        url=data["url"] or None,
-        description=data["description"] or None,
-        color=int(data["color"].lstrip("#"), 16),
-    )
-    if data["author_name"]:
-        embed.set_author(
-            name=data["author_name"],
-            url=data["author_url"] or None,
-            icon_url=data["author_icon_url"] or None,
+def discord_embeds_from_payload(payload: dict[str, Any]) -> list[discord.Embed]:
+    results = []
+    for data in validate_embed_payload(payload)["embeds"]:
+        embed = discord.Embed(
+            title=data["title"] or None,
+            url=data["url"] or None,
+            description=data["description"] or None,
+            color=int(data["color"].lstrip("#"), 16),
         )
-    if data["thumbnail_url"]:
-        embed.set_thumbnail(url=data["thumbnail_url"])
-    if data["image_url"]:
-        embed.set_image(url=data["image_url"])
-    if data["footer_text"]:
-        embed.set_footer(text=data["footer_text"], icon_url=data["footer_icon_url"] or None)
-    for field in data["fields"]:
-        embed.add_field(name=field["name"], value=field["value"], inline=field["inline"])
-    return embed
+        if data["author_name"]:
+            embed.set_author(
+                name=data["author_name"],
+                url=data["author_url"] or None,
+                icon_url=data["author_icon_url"] or None,
+            )
+        if data["thumbnail_url"]:
+            embed.set_thumbnail(url=data["thumbnail_url"])
+        if data["image_url"]:
+            embed.set_image(url=data["image_url"])
+        if data["footer_text"]:
+            embed.set_footer(
+                text=data["footer_text"],
+                icon_url=data["footer_icon_url"] or None,
+            )
+        for field in data["fields"]:
+            embed.add_field(
+                name=field["name"],
+                value=field["value"],
+                inline=field["inline"],
+            )
+        results.append(embed)
+    return results
+
+
+def discord_embed_from_payload(payload: dict[str, Any]) -> Optional[discord.Embed]:
+    """Return the first embed for compatibility with single-embed surfaces."""
+
+    embeds = discord_embeds_from_payload(payload)
+    return embeds[0] if embeds else None
 
 
 def _button_emoji(value: str):
