@@ -1,0 +1,34 @@
+{% extends "base.html" %}
+{% block content %}
+{% set s = theme.settings if theme else {'accent_color':'#f0319b','panel_color':'#171820','text_color':'#f4f4f7','muted_text_color':'#a7a8b3'} %}
+<div class="page-heading"><div><p class="eyebrow">Reusable design tokens</p><h1>{{ theme.name if theme else 'Create Theme' }}</h1></div></div>
+{% include "_visual_nav.html" %}
+{% if error %}<div class="alert error">{{ error }}</div>{% endif %}
+<section class="card">
+  <form method="post" action="{{ url_for('visual_theme_save') }}" class="stack">
+    <input type="hidden" name="csrf" value="{{ csrf_token }}">
+    {% if theme %}<input type="hidden" name="theme_id" value="{{ theme.id }}">{% endif %}
+    {% if theme and theme.is_builtin %}<div class="alert warning">The built-in production theme is read-only. Duplicate it from the Themes page to create an editable copy.</div>{% endif %}
+    <fieldset {{ 'disabled' if theme and theme.is_builtin else '' }} class="stack">
+    <label>Name<input name="name" maxlength="80" required value="{{ theme.name if theme else '' }}"></label>
+    <label>Description<textarea name="description" maxlength="300" rows="3">{{ theme.description if theme else '' }}</textarea></label>
+    <div class="form-grid">
+      {% for slot, label, kind in [('background','Default background','background'),('header_graphic','Header graphic','header_graphic'),('logo','Server logo','logo'),('watermark','Watermark','watermark')] %}
+      <label>{{ label }}
+        <select name="theme_asset_{{ slot }}">
+          <option value="">Do not set in this theme</option>
+          {% for asset in assets if not asset.archived_at and asset.asset_type in [kind, 'other'] %}
+          <option value="{{ asset.id }}" {{ 'selected' if s.assets and s.assets.get(slot) == asset.id else '' }}>#{{ asset.id }} · {{ asset.name }} ({{ asset.width }}×{{ asset.height }})</option>
+          {% endfor %}
+        </select>
+      </label>
+      {% endfor %}
+    </div>
+    <p class="muted">Assets are applied only to templates that register the matching slot. Template-specific assets still override theme assets.</p>
+    <label>Theme settings JSON<textarea name="settings_json" rows="20">{{ s|tojson(indent=2) }}</textarea></label>
+    <p class="muted">Supported values include colors, bundled fonts, panel styling, typography sizes, avatar style, background effects, footer settings, and accessibility flags. Invalid or unsupported values are rejected.</p>
+    {% if can_manage_users and not (theme and theme.is_builtin) %}<button class="button" type="submit">Save theme</button>{% endif %}
+    </fieldset>
+  </form>
+</section>
+{% endblock %}

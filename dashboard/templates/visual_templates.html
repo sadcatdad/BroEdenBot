@@ -1,0 +1,40 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="page-heading">
+  <div><p class="eyebrow">Content workspace</p><h1>Visual Content Studio</h1><p class="muted">Customize the assets, branding, layouts, and templates used by BroEdenBot’s generated images.</p></div>
+</div>
+{% include "_visual_nav.html" %}
+{% if message %}<div class="alert success">{{ message }}</div>{% endif %}
+{% if error %}<div class="alert error">{{ error }}</div>{% endif %}
+<form class="toolbar" method="get">
+  <label>Category
+    <select name="category" onchange="this.form.submit()">
+      <option value="">All registered templates</option>
+      {% for category in categories %}<option value="{{ category }}" {{ 'selected' if selected_category == category else '' }}>{{ category|title }}</option>{% endfor %}
+    </select>
+  </label>
+</form>
+<section class="visual-template-grid">
+  {% for item in visual_templates %}
+  <article class="card visual-template-card">
+    <a class="visual-thumbnail" href="{{ url_for('visual_template_edit', template_key=item.template_key) }}">
+      <img src="{{ url_for('visual_template_preview', template_key=item.template_key) }}?edge_case=maximum" alt="{{ item.display_name }} sample preview" loading="lazy">
+    </a>
+    <div class="visual-card-copy">
+      <div class="split-heading"><div><p class="eyebrow">{{ item.category }}</p><h2>{{ item.display_name }}</h2></div><span class="badge status-{{ item.status }}">{{ item.status|replace('_', ' ') }}</span></div>
+      <p>{{ item.description }}</p>
+      <dl class="compact-details">
+        <div><dt>Canvas</dt><dd>{{ item.canvas.width }} × {{ item.canvas.height }} px</dd></div>
+        <div><dt>Ratio</dt><dd>{{ item.aspect_ratio }}</dd></div>
+        <div><dt>Theme</dt><dd>{{ item.theme_name or "Global default" }}</dd></div>
+        <div><dt>Updated</dt><dd>{{ item.updated_at or "Built-in" }}</dd></div>
+      </dl>
+      <div class="action-buttons">
+        <a class="button" href="{{ url_for('visual_template_edit', template_key=item.template_key) }}">Customize</a>
+        <a class="button secondary" href="{{ url_for('visual_template_preview', template_key=item.template_key) }}" target="_blank">Full preview</a>
+      </div>
+    </div>
+  </article>
+  {% else %}<div class="empty-state">No registered templates match this category.</div>{% endfor %}
+</section>
+{% endblock %}

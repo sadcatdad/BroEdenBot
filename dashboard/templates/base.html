@@ -6,7 +6,7 @@
   <meta name="theme-color" content="#0b0b11">
   <title>{{ page_title or "Login" }} · BroEdenBot</title>
   <link rel="icon" type="image/png" href="{{ url_for('static', path='broeden-pride-icon.png') }}">
-  <link rel="stylesheet" href="{{ url_for('static', path='styles.css') }}?v=dashboard-refresh1">
+  <link rel="stylesheet" href="{{ url_for('static', path='styles.css') }}?v=visual-studio1">
   <script src="{{ url_for('static', path='dashboard_nav.js') }}?v=dashboard-refresh1" defer></script>
   <script src="{{ url_for('static', path='discord_pickers.js') }}?v=picker-single-values2" defer></script>
 </head>
@@ -56,6 +56,10 @@
 
         <div class="nav-group">
           <p class="nav-group-label">Content</p>
+          <a class="nav-item {{ 'active' if current_path.startswith('/visual') else '' }}" href="{{ url_for('visual_templates') }}" {% if current_path.startswith('/visual') %}aria-current="page"{% endif %}>
+            <svg class="nav-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 5h16v14H4V5Zm3 10 3-4 3 3 2-2 3 3M8 9h.01"/></svg>
+            <span>Visual Content Studio</span>
+          </a>
           <a class="nav-item {{ 'active' if current_path.startswith('/embeds') else '' }}" href="{{ url_for('embed_templates') }}" {% if current_path.startswith('/embeds') %}aria-current="page"{% endif %}>
             <svg class="nav-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 5h16v12H8l-4 4V5Zm4 4h8m-8 4h5"/></svg>
             <span>Message Studio</span>
