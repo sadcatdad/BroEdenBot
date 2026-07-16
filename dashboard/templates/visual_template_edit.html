@@ -1,0 +1,100 @@
+{% extends "base.html" %}
+{% block content %}
+{% set s = visual_template.draft_settings if visual_template.draft_settings is not none else visual_template.published_settings %}
+<div class="page-heading">
+  <div><p class="eyebrow">{{ visual_template.category }} · {{ visual_template.template_key }}</p><h1>{{ visual_template.display_name }}</h1><p class="muted">{{ visual_template.description }}</p></div>
+  <span class="badge status-{{ visual_template.status }}">{{ visual_template.status|replace('_', ' ') }}</span>
+</div>
+{% include "_visual_nav.html" %}
+{% if message %}<div class="alert success">{{ message }}</div>{% endif %}
+{% if error %}<div class="alert error">{{ error }}</div>{% endif %}
+
+<section class="visual-editor-layout">
+  <div class="stack">
+    <section class="card">
+      <div class="split-heading"><div><p class="eyebrow">Preview</p><h2>Published and draft</h2></div><span>{{ visual_template.canvas.width }} × {{ visual_template.canvas.height }} px · {{ visual_template.aspect_ratio }}</span></div>
+      <div class="visual-preview-compare">
+        <figure><img src="{{ url_for('visual_template_preview', template_key=visual_template.template_key) }}?edge_case=maximum" alt="Current published preview"><figcaption>Published</figcaption></figure>
+        <figure><img src="{{ url_for('visual_template_preview', template_key=visual_template.template_key) }}?draft=true&edge_case=maximum" alt="Current draft preview"><figcaption>Draft{% if visual_template.draft_settings is none %} (same as published){% endif %}</figcaption></figure>
+      </div>
+      <div class="action-buttons">
+        <a class="button secondary small" target="_blank" href="{{ url_for('visual_template_preview', template_key=visual_template.template_key) }}?draft=true&edge_case=empty">Empty state</a>
+        <a class="button secondary small" target="_blank" href="{{ url_for('visual_template_preview', template_key=visual_template.template_key) }}?draft=true&safe_area=true">Safe-area overlay</a>
+        <a class="button secondary small" download href="{{ url_for('visual_template_preview', template_key=visual_template.template_key) }}?draft=true">Download test PNG</a>
+      </div>
+    </section>
+
+    <form method="post" action="{{ url_for('visual_template_save_draft', template_key=visual_template.template_key) }}" class="stack">
+      <input type="hidden" name="csrf" value="{{ csrf_token }}">
+      <section class="card">
+        <p class="eyebrow">Inheritance</p><h2>Theme and content</h2>
+        <label>Theme
+          <select name="theme_id"><option value="">Use global default theme</option>{% for theme in themes %}<option value="{{ theme.id }}" {{ 'selected' if (visual_template.draft_theme_id if visual_template.draft_settings is not none else visual_template.theme_id) == theme.id else '' }}>{{ theme.name }}</option>{% endfor %}</select>
+        </label>
+        {% if 'title' in visual_template.supported_settings %}<label>Custom title <input name="title" maxlength="100" value="{{ s.title or '' }}" placeholder="Inherit renderer title"></label>{% endif %}
+        {% if 'subtitle' in visual_template.supported_settings %}<label>Custom subtitle <textarea name="subtitle" maxlength="300" rows="3" placeholder="Inherit renderer subtitle">{{ s.subtitle or '' }}</textarea></label>{% endif %}
+        {% if 'footer_text' in visual_template.supported_settings %}<label>Custom footer <input name="footer_text" maxlength="300" value="{{ s.footer_text or '' }}" placeholder="Inherit renderer footer"></label>{% endif %}
+      </section>
+
+      <section class="card">
+        <p class="eyebrow">Background</p><h2>Asset slots and focal point</h2>
+        {% for slot in visual_template.asset_slots %}
+        <div class="asset-slot-editor">
+          <div class="upload-guidance-card">
+            <p class="eyebrow">{{ slot.label }}</p><strong class="guidance-size">{{ slot.recommended_width }} × {{ slot.recommended_height }} px</strong>
+            <dl class="compact-details">
+              <div><dt>Aspect ratio</dt><dd>{{ slot.aspect_ratio }}</dd></div><div><dt>Minimum</dt><dd>{{ slot.minimum_width }} × {{ slot.minimum_height }}</dd></div>
+              <div><dt>Maximum</dt><dd>{{ slot.maximum_width }} × {{ slot.maximum_height }}</dd></div><div><dt>Final size</dt><dd>{{ slot.recommended_width }} × {{ slot.recommended_height }}</dd></div>
+              <div><dt>Safe area</dt><dd>{{ slot.safe_area.top }} top · {{ slot.safe_area.right }} right · {{ slot.safe_area.bottom }} bottom · {{ slot.safe_area.left }} left</dd></div><div><dt>Fit</dt><dd>{{ slot.fit }}</dd></div>
+            </dl>
+            <p class="muted">PNG, JPG, or WEBP up to {{ (slot.maximum_bytes / 1000000)|round(0)|int }} MB. Transparency: {{ slot.transparency }}. {{ slot.description }}</p>
+          </div>
+          <label>Select {{ slot.label }}
+            <select name="asset_{{ slot.key }}"><option value="">Inherit or use legacy default</option>{% for asset in assets if not asset.archived_at and asset.asset_type in [slot.asset_type, 'other'] %}<option value="{{ asset.id }}" {{ 'selected' if s.assets and s.assets.get(slot.key) == asset.id else '' }}>#{{ asset.id }} · {{ asset.name }} ({{ asset.width }}×{{ asset.height }})</option>{% endfor %}</select>
+          </label>
+          <a class="button secondary small" href="{{ url_for('visual_asset_upload') }}?template_key={{ visual_template.template_key }}&slot_key={{ slot.key }}">Upload for this slot</a>
+        </div>
+        {% endfor %}
+        {% if 'background_fit' in visual_template.supported_settings %}<label>Fit mode <select name="background_fit">{% for value in ['cover','contain','stretch','tile'] %}<option value="{{ value }}" {{ 'selected' if (s.background_fit or 'cover') == value else '' }}>{{ value|title }}</option>{% endfor %}</select></label>{% endif %}
+        <div class="focal-grid">
+          <label>Horizontal focal point <input type="range" name="focal_x" min="0" max="1" step="0.01" value="{{ s.focal_x if s.focal_x is defined else 0.5 }}"><small>Left 0 · center .5 · right 1</small></label>
+          <label>Vertical focal point <input type="range" name="focal_y" min="0" max="1" step="0.01" value="{{ s.focal_y if s.focal_y is defined else 0.5 }}"><small>Top 0 · center .5 · bottom 1</small></label>
+        </div>
+      </section>
+
+      <section class="card">
+        <p class="eyebrow">Colors, effects, and accessibility</p><h2>Display controls</h2>
+        <div class="form-grid">
+          {% if 'accent_color' in visual_template.supported_settings %}<label>Accent <input type="color" name="accent_color" value="{{ s.accent_color or '#f0319b' }}"></label>{% endif %}
+          {% if 'panel_color' in visual_template.supported_settings %}<label>Panel <input type="color" name="panel_color" value="{{ s.panel_color or '#171820' }}"></label>{% endif %}
+          {% if 'text_color' in visual_template.supported_settings %}<label>Text <input type="color" name="text_color" value="{{ s.text_color or '#f4f4f7' }}"></label>{% endif %}
+          {% if 'muted_text_color' in visual_template.supported_settings %}<label>Muted text <input type="color" name="muted_text_color" value="{{ s.muted_text_color or '#a7a8b3' }}"></label>{% endif %}
+          {% if 'panel_opacity' in visual_template.supported_settings %}<label>Panel opacity <input type="number" name="panel_opacity" min="0" max="1" step="0.05" value="{{ s.panel_opacity if s.panel_opacity is defined else 1 }}"></label>{% endif %}
+          {% if 'density' in visual_template.supported_settings %}<label>Density <select name="density">{% for value in ['compact','balanced','spacious'] %}<option value="{{ value }}" {{ 'selected' if (s.density or 'balanced') == value else '' }}>{{ value|title }}</option>{% endfor %}</select></label>{% endif %}
+          {% if 'maximum_rows' in visual_template.supported_settings %}<label>Maximum rows <input type="number" name="maximum_rows" min="1" max="{{ visual_template.maximum_items }}" value="{{ s.maximum_rows or visual_template.maximum_items }}"></label>{% endif %}
+        </div>
+        <div class="checkbox-grid">
+          {% for key, label in [('show_avatars','Show avatars'),('show_ranks','Show ranks'),('show_timestamp','Show update timestamp'),('high_contrast','High-contrast mode'),('reduced_decoration','Reduce decorative effects')] if key in visual_template.supported_settings %}<label class="checkbox-label"><input type="checkbox" name="{{ key }}" {{ 'checked' if s.get(key, visual_template.defaults.get(key, false)) else '' }}> {{ label }}</label>{% endfor %}
+        </div>
+        <details><summary>Advanced renderer settings JSON</summary><p class="muted">Only registered settings are accepted. Server-side validation rejects unsupported keys and unsafe ranges.</p><textarea name="settings_json" rows="12">{{ s|tojson(indent=2) }}</textarea></details>
+      </section>
+      {% if can_manage_users %}<div class="sticky-actions"><button class="button" type="submit">Save draft</button><span class="muted">Saving never changes live bot output.</span></div>{% endif %}
+    </form>
+  </div>
+
+  <aside class="stack visual-editor-sidebar">
+    <section class="card"><p class="eyebrow">Publishing</p><h2>Live configuration</h2><p>Published version: <strong>{{ visual_template.published_version }}</strong></p><p class="muted">Publishing validates assets and generates a maximum-row test image before updating live output atomically.</p>
+      {% if can_manage_users %}
+      <form method="post" action="{{ url_for('visual_template_publish', template_key=visual_template.template_key) }}" class="stack"><input type="hidden" name="csrf" value="{{ csrf_token }}"><label>Change summary<input name="change_summary" maxlength="300" value="Dashboard visual update"></label><button class="button" type="submit" {{ 'disabled' if visual_template.draft_settings is none else '' }}>Validate and publish</button></form>
+      <form method="post" action="{{ url_for('visual_template_discard', template_key=visual_template.template_key) }}"><input type="hidden" name="csrf" value="{{ csrf_token }}"><button class="button secondary" type="submit" {{ 'disabled' if visual_template.draft_settings is none else '' }}>Discard draft</button></form>
+      <form method="post" action="{{ url_for('visual_template_reset', template_key=visual_template.template_key) }}"><input type="hidden" name="csrf" value="{{ csrf_token }}"><button class="button danger" type="submit">Reset defaults into draft</button></form>
+      {% endif %}
+    </section>
+    <section class="card"><p class="eyebrow">History</p><h2>Published versions</h2>{% for version in visual_template.versions %}<div class="history-row"><div><strong>Version {{ version.version_number }}</strong><small>{{ version.created_at }} · {{ version.created_by or 'system' }}</small><p>{{ version.change_summary }}</p></div>{% if can_manage_users %}<form method="post" action="{{ url_for('visual_template_restore', template_key=visual_template.template_key, version=version.version_number) }}"><input type="hidden" name="csrf" value="{{ csrf_token }}"><button class="button secondary small" type="submit">Restore to draft</button></form>{% endif %}</div>{% else %}<p class="muted">No published custom versions yet.</p>{% endfor %}</section>
+    <section class="card"><p class="eyebrow">Variants</p><h2>Optional designs</h2>{% for variant in visual_template.variants %}<p><strong>{{ variant.name }}</strong> · {{ variant.width or visual_template.canvas.width }}×{{ variant.height or visual_template.canvas.height }}</p>{% else %}<p class="muted">No variants yet. Commands keep using the default design.</p>{% endfor %}
+      {% if can_manage_users %}<details><summary>Create variant</summary><form method="post" action="{{ url_for('visual_variant_save', template_key=visual_template.template_key) }}" class="stack"><input type="hidden" name="csrf" value="{{ csrf_token }}"><label>Name<input name="variant_name" maxlength="80" required></label><label>Description<input name="variant_description" maxlength="300"></label><label>Theme<select name="variant_theme_id"><option value="">Inherit template theme</option>{% for theme in themes %}<option value="{{ theme.id }}">{{ theme.name }}</option>{% endfor %}</select></label>{% if visual_template.template_key != 'queue_next' %}<div class="form-grid"><label>Width<input name="variant_width" type="number" placeholder="{{ visual_template.canvas.width }}"></label><label>Height<input name="variant_height" type="number" placeholder="{{ visual_template.canvas.height }}"></label></div><small class="muted">Optional dimensions must preserve the registered aspect ratio.</small>{% endif %}<label>Settings JSON<textarea name="variant_settings_json" rows="5">{}</textarea></label><button class="button secondary" type="submit">Save variant</button></form></details>{% endif %}</section>
+    <section class="card"><p class="eyebrow">Seasonal schedules</p><h2>Automatic themes</h2><p class="muted">Precedence: template schedule, global schedule, published template theme, global default, built-in default.</p>{% for schedule in visual_template.schedules %}<div class="history-row"><div><strong>{{ schedule.theme_name }}</strong>{% if not schedule.enabled %}<span class="badge">Disabled</span>{% endif %}<br><small>{{ schedule.starts_at }} → {{ schedule.ends_at }} · {{ schedule.timezone }} · priority {{ schedule.priority }}</small></div>{% if can_manage_users %}<div class="action-buttons"><form method="post" action="{{ url_for('visual_schedule_toggle', schedule_id=schedule.id) }}"><input type="hidden" name="csrf" value="{{ csrf_token }}"><input type="hidden" name="template_key" value="{{ visual_template.template_key }}"><input type="hidden" name="enabled" value="{{ 0 if schedule.enabled else 1 }}"><button class="button secondary small">{{ 'Disable' if schedule.enabled else 'Enable' }}</button></form><form method="post" action="{{ url_for('visual_schedule_delete', schedule_id=schedule.id) }}" onsubmit="return confirm('Delete this visual schedule?')"><input type="hidden" name="csrf" value="{{ csrf_token }}"><input type="hidden" name="template_key" value="{{ visual_template.template_key }}"><button class="button danger small">Delete</button></form></div>{% endif %}</div>{% else %}<p class="muted">No schedules.</p>{% endfor %}
+      {% if can_manage_users %}<details><summary>Create schedule</summary><form method="post" action="{{ url_for('visual_schedule_save', template_key=visual_template.template_key) }}" class="stack"><input type="hidden" name="csrf" value="{{ csrf_token }}"><label>Theme<select name="schedule_theme_id" required>{% for theme in themes %}<option value="{{ theme.id }}">{{ theme.name }}</option>{% endfor %}</select></label><label>Variant<select name="schedule_variant_id"><option value="">Default design</option>{% for variant in visual_template.variants %}<option value="{{ variant.id }}">{{ variant.name }}</option>{% endfor %}</select></label><label>Starts<input type="datetime-local" name="starts_at" required></label><label>Ends<input type="datetime-local" name="ends_at" required></label><label>Timezone<input name="timezone" value="America/Chicago"></label><label>Priority<input type="number" name="priority" min="-100" max="100" value="0"></label><button class="button secondary" type="submit">Create schedule</button></form></details>{% endif %}</section>
+  </aside>
+</section>
+{% endblock %}

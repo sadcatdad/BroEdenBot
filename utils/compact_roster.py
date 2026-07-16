@@ -20,6 +20,7 @@ async def render_compact_roster_pngs(
     accent_color: int,
     include_avatars: bool = True,
     banner_bytes: Optional[bytes] = None,
+    template_key: str = "role_roster",
 ) -> list:
     result = await render_compact_roster_result(
         title=title,
@@ -30,6 +31,7 @@ async def render_compact_roster_pngs(
         accent_color=accent_color,
         include_avatars=include_avatars,
         banner_bytes=banner_bytes,
+        template_key=template_key,
     )
     return [page.png for page in result.pages]
 

@@ -380,7 +380,7 @@ class DashboardNavigationMetadataTests(unittest.TestCase):
         self.assertIn(".settings-menu-item", styles)
         self.assertIn("text-decoration: none", styles)
         base_template = (root / "dashboard/templates/base.html").read_text()
-        self.assertIn("styles.css') }}?v=dashboard-refresh1", base_template)
+        self.assertIn("styles.css') }}?v=visual-studio1", base_template)
         self.assertIn("dashboard_nav.js') }}?v=dashboard-refresh1", base_template)
         self.assertIn(".embed-fields-card[hidden]", styles)
         self.assertIn("discord_pickers.js') }}?v=picker-single-values2", base_template)

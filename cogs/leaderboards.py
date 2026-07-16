@@ -1566,15 +1566,13 @@ class Leaderboards(commands.Cog):
             items.append(
                 RankedGraphicItem(
                     label=(
-                        user.display_name
+                        user.name
                         if user is not None
                         else f"User {user_id}"
                     ),
                     value=formatted_points,
                     subtitle=(
-                        f"@{user.name}"
-                        if user is not None
-                        else f"Discord ID {user_id}"
+                        "" if user is not None else f"Discord ID {user_id}"
                     ),
                     avatar_url=(
                         str(user.display_avatar.replace(size=64).url)
@@ -1599,6 +1597,7 @@ class Leaderboards(commands.Cog):
             total_entries=total_entries,
             banner_bytes=banner_bytes,
             layout="leaderboard",
+            template_key="custom_leaderboard",
         )
         file = discord.File(io.BytesIO(png), filename="leaderboard.png")
         token = self._token(leaderboard)

@@ -9,9 +9,25 @@ from .models import RenderState
 from .theme import FALLBACK_FONTS, PRIMARY_FONT, TYPOGRAPHY
 
 
-def load_font(role: str, scale: float = 1.0) -> ImageFont.FreeTypeFont:
-    size = max(10, int(round(TYPOGRAPHY[role] * scale)))
-    for path in (PRIMARY_FONT,) + FALLBACK_FONTS:
+FONT_FAMILIES = {
+    "Open Sans Emoji": PRIMARY_FONT,
+    "Calibri Regular": FALLBACK_FONTS[0],
+    "Calibri": FALLBACK_FONTS[1],
+}
+
+
+def load_font(
+    role: str,
+    scale: float = 1.0,
+    family: Optional[str] = None,
+    *,
+    size_override: Optional[float] = None,
+) -> ImageFont.FreeTypeFont:
+    base_size = float(size_override) if size_override is not None else TYPOGRAPHY[role]
+    size = max(10, int(round(base_size * scale)))
+    preferred = FONT_FAMILIES.get(str(family or ""))
+    paths = ((preferred,) if preferred else ()) + (PRIMARY_FONT,) + FALLBACK_FONTS
+    for path in paths:
         if path.exists():
             try:
                 return ImageFont.truetype(str(path), size)

@@ -687,6 +687,8 @@ class DisboardBumpTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(render.await_args.kwargs["accent_color"], 0x25B8B8)
         self.assertEqual(len(section.items), 10)
         self.assertEqual(section.rank_start, 11)
+        self.assertEqual(section.items[0].label, "bumper")
+        self.assertEqual(section.items[0].subtitle, "")
         self.assertEqual([item.label for item in view.children], [
             "Previous", "Page 2 of 5", "Next",
         ])

@@ -26,6 +26,7 @@ cd "$BOT_DIR"
 mkdir -p "$BACKUP_DIR"
 
 DATABASE_PATH="$($BOT_DIR/.venv/bin/python -c 'from utils.settings import settings_database_path; print(settings_database_path())')"
+VISUAL_ASSET_DIR="$($BOT_DIR/.venv/bin/python -c 'from utils.visual_studio.storage import visual_asset_directory; print(visual_asset_directory())')"
 if [[ ! -f "$DATABASE_PATH" ]]; then
   echo "Database not found: $DATABASE_PATH" >&2
   exit 2
@@ -37,6 +38,10 @@ git diff --binary > "$BACKUP_DIR/pre-deploy-$TIMESTAMP.patch"
 git diff --cached --binary >> "$BACKUP_DIR/pre-deploy-$TIMESTAMP.patch"
 sqlite3 "$DATABASE_PATH" ".backup '$BACKUP_DIR/pre-deploy-$TIMESTAMP.sqlite'"
 sqlite3 "$BACKUP_DIR/pre-deploy-$TIMESTAMP.sqlite" "PRAGMA quick_check;"
+if [[ -d "$VISUAL_ASSET_DIR" ]]; then
+  tar -czf "$BACKUP_DIR/pre-deploy-$TIMESTAMP.visual-assets.tar.gz" \
+    -C "$(dirname "$VISUAL_ASSET_DIR")" "$(basename "$VISUAL_ASSET_DIR")"
+fi
 
 echo "Fetching and fast-forwarding the current branch..."
 git fetch --prune origin
@@ -48,11 +53,19 @@ echo "Installing and validating dependencies..."
 PYTHONPYCACHEPREFIX=/tmp/broeden-deploy-pycache \
   .venv/bin/python -m compileall -q main.py cogs utils dashboard scripts
 
-echo "Stopping services for the reminder migration..."
+echo "Stopping services for database migrations..."
 sudo systemctl stop "${SERVICES[@]}"
 SERVICES_STOPPED=true
 .venv/bin/python scripts/migrate_reminders.py --database "$DATABASE_PATH"
 .venv/bin/python scripts/migrate_reminders.py --database "$DATABASE_PATH" --validate-only
+.venv/bin/python scripts/migrate_visual_content_studio.py \
+  --database "$DATABASE_PATH" \
+  --asset-dir "$VISUAL_ASSET_DIR" \
+  --backup-dir "$BACKUP_DIR"
+.venv/bin/python scripts/migrate_visual_content_studio.py \
+  --database "$DATABASE_PATH" \
+  --asset-dir "$VISUAL_ASSET_DIR" \
+  --validate-only
 
 echo "Restarting BroEdenBot and its dashboard..."
 sudo systemctl reset-failed "${SERVICES[@]}"

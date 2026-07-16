@@ -675,6 +675,8 @@ class StreakTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(current_call["footer_text"], STREAK_FOOTER)
         self.assertIsNotNone(current_call["background_bytes"])
         self.assertEqual(len(current_call["sections"][0].items), 10)
+        self.assertEqual(current_call["sections"][0].items[0].label, "member42")
+        self.assertEqual(current_call["sections"][0].items[0].subtitle, "")
         self.assertTrue(current_call["sections"][0].items[0].value.endswith(" days"))
         self.assertEqual(current_view.children[1].label, "Page 1 of 3")
 

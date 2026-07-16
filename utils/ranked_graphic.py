@@ -24,6 +24,7 @@ async def render_ranked_graphic(
     layout: str = "default",
     footer_text: Optional[str] = None,
     force_columns: Optional[int] = None,
+    template_key: Optional[str] = None,
 ) -> bytes:
     """Return the first page for legacy callers.
 
@@ -40,6 +41,7 @@ async def render_ranked_graphic(
         banner_bytes=banner_bytes,
         background_bytes=background_bytes,
         footer_text=footer_text,
+        template_key=template_key,
     )
     return result.pages[0].png
 

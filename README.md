@@ -1593,6 +1593,8 @@ updated from the authenticated local dashboard without rewriting `.env`.
 | `BANK_ALLOWED_ROLE_IDS` | Comma-separated Discord role IDs allowed to use bank commands. |
 | `STATS_ALLOWED_ROLE_IDS` | Comma-separated Discord role IDs allowed to create and refresh stats pages. |
 | `STATS_IMAGE_TARGET_BYTES` | Maximum accepted size for each generated stats PNG. Defaults to `8000000` (8 MB); oversized pages are optimized or re-rendered within the documented minimum dimensions, and are never silently uploaded above the target. |
+| `VISUAL_ASSET_DIR` | Persistent normalized uploads for Visual Content Studio. Defaults to `data/visual-assets`; the bot and dashboard must use the same path. |
+| `VISUAL_RENDER_CONCURRENCY` | Maximum concurrent centralized ranked/roster renders, clamped from `1` to `4`. Defaults to `2` for Raspberry Pi stability. |
 | `DASHBOARD_ENABLED` | Enables the local dashboard when `true`. |
 | `DASHBOARD_HOST` | Dashboard bind address. Use `0.0.0.0` for access from the local network. |
 | `DASHBOARD_PORT` | Dashboard port. Defaults to `3000`. |
@@ -1655,7 +1657,8 @@ public hosting.
 
 The responsive dashboard navigation uses grouped sections: **Monitor**
 (Overview and Analytics), **Manage** (Operations, Streaks, and Bank),
-**Content** (Message Studio, Knowledge, and AI), and **System** (Settings).
+**Content** (Visual Content Studio, Message Studio, Knowledge, and AI), and
+**System** (Settings).
 It uses the Bro Eden pride icon in the desktop sidebar and mobile header. On
 smaller screens the complete navigation moves into a labeled menu instead of
 hiding destinations in a horizontal strip. `AI_DASHBOARD_VISIBLE=true` shows
@@ -1975,6 +1978,49 @@ The Stats Graphics Manager requires dashboard login.
 Every edit, refresh, and archive POST requires the existing session CSRF token.
 It adds no bank manager, checklist manager, terminal, or arbitrary command/SQL
 surface.
+
+### Visual Content Studio
+
+The authenticated **Content → Visual Content Studio** workspace manages the
+appearance of every runtime-generated Bro Eden PNG without changing Discord
+commands, ranking calculations, query logic, or existing permission checks. Its
+registry currently covers activity, voice, custom, bump, and streak
+leaderboards; role rosters; role-comparison, missing-role, and stats-error
+cards; and the queue up-next banner.
+
+The workspace includes registered templates, a reusable Asset Library, themes,
+global defaults, draft/publish previews, the last 20 published versions,
+restore-to-draft, optional variants, seasonal schedules, audit history, and
+versioned JSON import/export. Authenticated viewers can inspect the workspace;
+only dashboard owners and admins can upload, edit, publish, archive, restore,
+delete, import, or schedule changes. Every mutation uses the existing CSRF
+protection.
+
+Each upload screen shows the exact recommended, minimum, maximum, aspect-ratio,
+transparency, file-size, fit, focal-point, and safe-area guidance for its
+destination before the file is saved. Still PNG, JPG, and WEBP uploads are
+content-validated, normalized once, stripped of metadata, and stored under
+generated keys in `VISUAL_ASSET_DIR`; SQLite contains metadata and dependency
+records rather than image BLOBs. Wrong-ratio crops and undersized uploads
+require explicit acknowledgement. Referenced assets cannot be archived or
+deleted.
+
+Live resolution follows built-in defaults → published global defaults → theme
+→ published template overrides → variant → active schedule. Broken or missing
+custom data falls back to the legacy renderer and bundled/BLOB assets instead
+of breaking the Discord command. Existing per-image Discord byte-limit
+enforcement remains authoritative.
+
+Member-list graphics use Discord account usernames rather than server
+nicknames or global display names. This keeps decorated nickname text, symbols,
+and emoji from turning into missing-glyph boxes in Pillow-rendered images.
+Unsupported glyphs in historical labels are normalized or removed before
+drawing as an additional fallback.
+
+See [the complete admin, developer, migration, backup, rollback, and
+troubleshooting guide](docs/visual-content-studio.md), the
+[registry-generated upload-size table](docs/visual-content-studio-size-reference.md),
+and the [source audit and PNG inventory](docs/visual-content-studio-implementation-map.md).
 
 ### Unified Knowledge Manager
 

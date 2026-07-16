@@ -1,0 +1,7 @@
+<nav class="subnav" aria-label="Visual Content Studio sections">
+  <a class="{{ 'active' if current_path in ['/visual', '/visual/templates'] or current_path.startswith('/visual/templates/') else '' }}" href="{{ url_for('visual_templates') }}">Templates</a>
+  <a class="{{ 'active' if current_path.startswith('/visual/assets') else '' }}" href="{{ url_for('visual_assets') }}">Asset Library</a>
+  <a class="{{ 'active' if current_path.startswith('/visual/themes') else '' }}" href="{{ url_for('visual_themes') }}">Themes</a>
+  <a class="{{ 'active' if current_path == '/visual/global' else '' }}" href="{{ url_for('visual_globals') }}">Global Settings</a>
+  <a class="{{ 'active' if current_path == '/visual/reference' else '' }}" href="{{ url_for('visual_size_reference') }}">Upload Sizes</a>
+</nav>
