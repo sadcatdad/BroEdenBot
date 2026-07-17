@@ -167,6 +167,14 @@ SETTING_DEFINITIONS = (
         default="true",
     ),
     SettingDefinition(
+        "EVENTS_HEADER_ASSET_ID",
+        "reminders",
+        "asset_id",
+        "Saved Embed/Message Editor asset shown as the header for /events. Leave blank to use the "
+        "built-in Upcoming Events card. Supports {count} (upcoming event count) and {next_event} placeholders.",
+        picker="asset",
+    ),
+    SettingDefinition(
         "MESSAGE_CONTEXT_ALLOWED_ROLE_IDS",
         "permissions",
         "csv_ids",

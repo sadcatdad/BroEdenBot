@@ -271,6 +271,30 @@ class ReminderServiceTests(unittest.IsolatedAsyncioTestCase):
             count = await self.service.fetch_one("SELECT COUNT(*) AS total FROM reminder_occurrences WHERE reminder_id = ?", (row["id"],))
             self.assertEqual(count["total"], 4)
 
+    async def test_list_public_events_returns_future_upcoming_only(self):
+        soon = await self.create_event(title="Soon", scheduled_at_utc=FUTURE)
+        later = await self.create_event(title="Later", scheduled_at_utc=FUTURE + timedelta(days=2))
+        # A past event, a cancelled event, and a personal reminder must all be excluded.
+        past = await self.create_event(title="Past")
+        await self.database.execute(
+            "UPDATE reminder_items SET scheduled_at_utc = ? WHERE id = ?",
+            ("2000-01-01T00:00:00+00:00", int(past["id"])),
+        )
+        await self.database.commit()
+        cancelled = await self.create_event(title="Cancelled")
+        await self.service.cancel_reminder(int(cancelled["id"]), 10, staff=True)
+        await self.service.create_reminder(
+            reminder_type="personal", guild_id=123, creator_user_id=10, target_user_id=10,
+            title="Personal", description="", scheduled_at_utc=FUTURE, interpretation_timezone="UTC",
+        )
+        await self.service.subscribe(int(soon["id"]), 42)
+
+        rows = await self.service.list_public_events(123)
+        self.assertEqual([row["title"] for row in rows], ["Soon", "Later"])
+        self.assertEqual(int(rows[0]["id"]), int(soon["id"]))
+        self.assertEqual(rows[0]["subscriber_count"], 1)
+        self.assertEqual(int(rows[1]["id"]), int(later["id"]))
+
     async def test_subscribe_is_idempotent_and_delivery_unique(self):
         event = await self.create_event()
         first, first_created = await self.service.subscribe(int(event["id"]), 42)
@@ -625,7 +649,7 @@ class ReminderCommandAndRenderingTests(unittest.IsolatedAsyncioTestCase):
         await self.cog.preview_personal(interaction, title="Test", details="", when="2020-01-01 9am", recurrence="none", count="", destination=None, target=interaction.user)
         self.assertIn("future", interaction.followup.sent_messages[0][0][0])
 
-    async def test_event_card_uses_event_title_labeled_button_and_count(self):
+    async def test_event_card_uses_static_banner_and_name_subheader(self):
         event = await self.cog.service.create_reminder(
             reminder_type="event", guild_id=123, creator_user_id=10,
             title="Movie Night", description="Bottoms", scheduled_at_utc=FUTURE,
@@ -634,9 +658,105 @@ class ReminderCommandAndRenderingTests(unittest.IsolatedAsyncioTestCase):
         )
         embed = self.cog.event_embed(event)
         view = self.cog.event_view(event)
-        self.assertEqual(embed.title, "🔔 Movie Night")
-        self.assertEqual([field.name for field in embed.fields], ["When", "Where", "Hosted by", "Reminders", "Subscribers"])
+        self.assertEqual(embed.title, "🎉 EVENT REMINDER")
+        self.assertTrue(embed.description.startswith("## Movie Night"))
+        self.assertIn("Bottoms", embed.description)
+        self.assertEqual(
+            [field.name for field in embed.fields],
+            ["🗓️ When", "📍 Where", "🎙️ Hosted by", "⏰ Reminders", "👥 Subscribers"],
+        )
         self.assertEqual(view.children[0].label, "Remind Me")
+
+    async def test_event_card_title_reflects_status(self):
+        event = await self.cog.service.create_reminder(
+            reminder_type="event", guild_id=123, creator_user_id=10,
+            title="Trivia Night", description="", scheduled_at_utc=FUTURE,
+            interpretation_timezone="UTC", destination_channel_id=456,
+            default_offsets=(15, 0),
+        )
+        self.assertEqual(self.cog.event_embed(event).title, "🎉 EVENT REMINDER")
+        self.assertEqual(self.cog.event_embed({**event, "status": "cancelled"}).title, "❌ EVENT CANCELLED")
+        self.assertEqual(self.cog.event_embed({**event, "status": "completed"}).title, "✅ EVENT COMPLETE")
+        # Details are optional: the name subheader still renders on its own.
+        self.assertEqual(self.cog.event_embed(event).description, "## Trivia Night")
+
+    async def test_preview_timezone_reinterprets_and_persists(self):
+        when_text = "2035-07-20 8:00 PM"
+        base_tz = ZoneInfo("America/Chicago")
+        draft = {
+            "reminder_type": "event",
+            "guild_id": 123,
+            "creator_user_id": 10,
+            "host_user_id": 10,
+            "title": "Movie Night",
+            "description": "Bottoms",
+            "scheduled_at_utc": parse_local_datetime(when_text, base_tz),
+            "interpretation_timezone": "America/Chicago",
+            "when_text": when_text,
+            "recurrence_text": "",
+            "destination": None,
+            "public_channel": None,
+            "default_offsets": (15, 0),
+            "allow_custom_timing": True,
+            "close_subscriptions_at_start": True,
+            "keep_public_card": True,
+            "auto_subscribe_creator": True,
+            "recurrence_type": "none",
+            "recurrence_interval": 1,
+            "recurrence_end_count": None,
+            "recurrence_end_at_utc": None,
+        }
+        view = reminder.EventCreationPreviewView(self.cog, 10, draft)
+        await self.cog.apply_preview_timezone(FakeInteraction(FakeMember(10)), view, "America/New_York")
+        self.assertEqual(draft["interpretation_timezone"], "America/New_York")
+        self.assertEqual(draft["scheduled_at_utc"], parse_local_datetime(when_text, ZoneInfo("America/New_York")))
+        self.assertNotEqual(draft["scheduled_at_utc"], parse_local_datetime(when_text, base_tz))
+        self.assertEqual(await self.cog.user_timezone_name(123, 10), "America/New_York")
+
+    async def test_events_command_lists_events_and_flags_subscribed(self):
+        first = await self.cog.service.create_reminder(
+            reminder_type="event", guild_id=123, creator_user_id=10,
+            title="Movie Night", description="", scheduled_at_utc=FUTURE,
+            interpretation_timezone="UTC", destination_channel_id=456, default_offsets=(15, 0),
+        )
+        second = await self.cog.service.create_reminder(
+            reminder_type="event", guild_id=123, creator_user_id=10,
+            title="Trivia", description="", scheduled_at_utc=FUTURE + timedelta(days=1),
+            interpretation_timezone="UTC", destination_channel_id=456, default_offsets=(15, 0),
+        )
+        await self.cog.service.subscribe(int(first["id"]), 42)
+        interaction = FakeInteraction(FakeMember(42))
+        with patch("cogs.reminder.get_setting", return_value=""):
+            await ReminderCog.events_command.callback(self.cog, interaction)
+        _args, kwargs = interaction.followup.sent_messages[0]
+        select = next(child for child in kwargs["view"].children if isinstance(child, reminder.EventBrowseSelect))
+        self.assertEqual({option.value for option in select.options}, {str(first["id"]), str(second["id"])})
+        flagged = next(option for option in select.options if option.value == str(first["id"]))
+        self.assertEqual(str(flagged.emoji), "✅")
+
+    async def test_bulk_subscribe_reports_created_and_existing(self):
+        first = await self.cog.service.create_reminder(
+            reminder_type="event", guild_id=123, creator_user_id=10,
+            title="Movie Night", description="", scheduled_at_utc=FUTURE,
+            interpretation_timezone="UTC", destination_channel_id=456, default_offsets=(15, 0),
+        )
+        second = await self.cog.service.create_reminder(
+            reminder_type="event", guild_id=123, creator_user_id=10,
+            title="Trivia", description="", scheduled_at_utc=FUTURE + timedelta(days=1),
+            interpretation_timezone="UTC", destination_channel_id=456, default_offsets=(15, 0),
+        )
+        member = FakeMember(42)
+        await self.cog.service.subscribe(int(first["id"]), 42)
+        interaction = FakeInteraction(member)
+        await self.cog.handle_events_subscribe(interaction, [int(first["id"]), int(second["id"])])
+        total = await self.cog.service.fetch_one(
+            "SELECT COUNT(*) AS total FROM reminder_subscriptions WHERE user_id = '42' AND status = 'active'"
+        )
+        self.assertEqual(total["total"], 2)
+        self.assertEqual(len(member.dm_messages), 1)  # only the newly-created subscription is DMed
+        summary = interaction.followup.sent_messages[0][0][0]
+        self.assertIn("Subscribed to **Trivia**", summary)
+        self.assertIn("Already subscribed to **Movie Night**", summary)
 
     async def test_duplicate_join_does_not_send_duplicate_confirmation(self):
         event = await self.cog.service.create_reminder(

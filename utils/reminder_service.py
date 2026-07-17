@@ -673,6 +673,29 @@ class ReminderService:
             parameters,
         )
 
+    async def list_public_events(
+        self,
+        guild_id: int,
+        *,
+        limit: int = 25,
+    ) -> list[dict[str, Any]]:
+        """Upcoming, still-future events in a guild, soonest first, for the /events browser."""
+        return await self.fetch_all(
+            """
+            SELECT r.*,
+                   (SELECT COUNT(*) FROM reminder_subscriptions s
+                    WHERE s.reminder_id = r.id AND s.status = 'active') AS subscriber_count
+            FROM reminder_items r
+            WHERE r.guild_id = ?
+              AND r.reminder_type = 'event'
+              AND r.status = 'upcoming'
+              AND r.scheduled_at_utc > ?
+            ORDER BY r.scheduled_at_utc ASC
+            LIMIT ?
+            """,
+            (str(guild_id), utc_text(), max(1, min(25, limit))),
+        )
+
     async def set_public_message(
         self,
         reminder_id: int,

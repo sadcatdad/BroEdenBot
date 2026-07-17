@@ -6,6 +6,7 @@ import asyncio
 import logging
 import os
 import re
+import sqlite3
 from datetime import datetime, timedelta, timezone
 from typing import Any, Optional, Sequence
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError, available_timezones
@@ -28,6 +29,11 @@ from utils.reminder_service import (
     timing_summary,
     utc_now,
     utc_text,
+)
+from utils.embed_templates import (
+    discord_embeds_from_payload,
+    get_embed_template,
+    render_feature_payload,
 )
 from utils.settings import get_csv_ids_setting, get_setting
 from utils.ui import SUCCESS_COLOR, branded_embed, error_embed, truncate
@@ -67,6 +73,35 @@ RELATIVE_UNITS = {
     "h": "hours", "hr": "hours", "hrs": "hours", "hour": "hours", "hours": "hours",
     "m": "minutes", "min": "minutes", "mins": "minutes", "minute": "minutes", "minutes": "minutes",
 }
+# Curated shortlist for the event preview timezone selector. Discord selects allow at most 25
+# options, so this stays under that limit; the poster's current zone is added when missing, and
+# /timezone still accepts any IANA zone for full coverage.
+COMMON_TIMEZONES = (
+    "UTC",
+    "America/New_York",
+    "America/Chicago",
+    "America/Denver",
+    "America/Phoenix",
+    "America/Los_Angeles",
+    "America/Anchorage",
+    "Pacific/Honolulu",
+    "America/Toronto",
+    "America/Mexico_City",
+    "America/Sao_Paulo",
+    "Europe/London",
+    "Europe/Paris",
+    "Europe/Berlin",
+    "Europe/Madrid",
+    "Europe/Athens",
+    "Europe/Moscow",
+    "Africa/Johannesburg",
+    "Asia/Dubai",
+    "Asia/Kolkata",
+    "Asia/Singapore",
+    "Asia/Tokyo",
+    "Australia/Sydney",
+    "Pacific/Auckland",
+)
 
 
 def parse_id_set(value: Optional[str]) -> set[int]:
@@ -355,9 +390,30 @@ class CreationPreviewView(discord.ui.View):
         self.stop()
 
 
+class EventTimezoneSelect(discord.ui.Select):
+    """Re-interpret the event's "When" text in a poster-chosen timezone on the preview card."""
+
+    def __init__(self, current_zone: str) -> None:
+        zones = list(COMMON_TIMEZONES)
+        if current_zone not in zones:
+            zones.insert(0, current_zone)
+        options = [
+            discord.SelectOption(label=zone, value=zone, default=zone == current_zone)
+            for zone in zones[:25]
+        ]
+        super().__init__(placeholder="Interpret the time in this timezone", options=options)
+
+    async def callback(self, interaction: discord.Interaction) -> None:
+        view = self.view
+        if not isinstance(view, EventCreationPreviewView):
+            return
+        await view.cog.apply_preview_timezone(interaction, view, self.values[0])
+
+
 class EventCreationPreviewView(CreationPreviewView):
     def __init__(self, cog: "ReminderCog", owner_id: int, draft: dict[str, Any]) -> None:
         super().__init__(cog, owner_id, draft)
+        self.add_item(EventTimezoneSelect(str(draft.get("interpretation_timezone") or DEFAULT_TIMEZONE)))
         states = {
             "Auto-subscribe": draft["auto_subscribe_creator"],
             "Custom timing": draft["allow_custom_timing"],
@@ -546,6 +602,53 @@ class SubscriptionListView(discord.ui.View):
             await interaction.response.send_message("That active subscription was not found.", ephemeral=True)
             return
         await interaction.response.send_message(embed=self.cog.subscription_embed(row), view=SubscriptionControlsView(self.cog, self.owner_id, self.selected_id, row), ephemeral=True)
+
+
+class EventBrowseSelect(discord.ui.Select):
+    """Multi-select of upcoming events used by /events to subscribe in bulk."""
+
+    def __init__(self, rows: list[dict[str, Any]], subscribed_ids: set[int]) -> None:
+        options = []
+        for row in rows[:25]:
+            event_id = int(row["id"])
+            name = re.sub(r"^#{1,6}\s*", "", str(row["title"]).strip()) or "Untitled event"
+            subscribed = event_id in subscribed_ids
+            when = parse_utc(row["scheduled_at_utc"]).strftime("%b %d, %Y · %I:%M %p UTC")
+            options.append(discord.SelectOption(
+                label=truncate(name, 100),
+                value=str(event_id),
+                description=truncate(("Subscribed · " if subscribed else "") + when, 100),
+                emoji="✅" if subscribed else "🔔",
+            ))
+        super().__init__(
+            placeholder="Select events to subscribe to",
+            min_values=1,
+            max_values=max(1, len(options)),
+            options=options,
+            row=0,
+        )
+
+    async def callback(self, interaction: discord.Interaction) -> None:
+        if isinstance(self.view, EventsBrowseView):
+            await self.view.cog.handle_events_subscribe(interaction, [int(value) for value in self.values])
+
+
+class EventsBrowseView(discord.ui.View):
+    def __init__(self, cog: "ReminderCog", owner_id: int, rows: list[dict[str, Any]], subscribed_ids: set[int]) -> None:
+        super().__init__(timeout=300)
+        self.cog, self.owner_id = cog, owner_id
+        if rows:
+            self.add_item(EventBrowseSelect(rows, subscribed_ids))
+
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        if interaction.user.id == self.owner_id:
+            return True
+        await interaction.response.send_message("This event browser belongs to another member.", ephemeral=True)
+        return False
+
+    @discord.ui.button(label="Manage Event Subscriptions", emoji="🗂️", style=discord.ButtonStyle.secondary, row=1)
+    async def manage(self, interaction: discord.Interaction, _button: discord.ui.Button) -> None:
+        await self.cog.open_subscription_manager(interaction)
 
 
 class ReminderEditModal(discord.ui.Modal):
@@ -1119,27 +1222,89 @@ class ReminderCog(commands.Cog):
         await self.bot.db.commit()
 
     def event_embed(self, row: dict[str, Any]) -> discord.Embed:
-        status_prefix = "❌ " if row["status"] == "cancelled" else "✅ " if row["status"] == "completed" else "🔔 "
+        status = row["status"]
+        if status == "cancelled":
+            title, footer = "❌ EVENT CANCELLED", "This event was cancelled."
+        elif status == "completed":
+            title, footer = "✅ EVENT COMPLETE", "This event is complete."
+        else:
+            title, footer = "🎉 EVENT REMINDER", "Select Remind Me to receive private event reminders."
+        # The event name is promoted from the embed title into a Markdown subheader so the
+        # branded "EVENT REMINDER" banner stays constant across every event card.
+        event_name = re.sub(r"^#{1,6}\s*", "", str(row["title"]).strip())
+        details = str(row.get("description") or "").strip()
+        description = f"## {event_name}" + (f"\n\n{details}" if details else "")
         embed = branded_embed(
-            status_prefix + row["title"],
-            description=truncate(row.get("description") or "", 4096) or None,
+            title,
+            description=truncate(description, 4096),
             color=discord.Color(COLOR),
-            footer=(
-                "This event was cancelled."
-                if row["status"] == "cancelled"
-                else "This event is complete."
-                if row["status"] == "completed"
-                else "Select Remind Me to receive private event reminders."
-            ),
+            footer=footer,
         )
-        embed.add_field(name="When", value=f"{discord_timestamp(row['scheduled_at_utc'], 'F')}\n{discord_timestamp(row['scheduled_at_utc'], 'R')}", inline=False)
-        embed.add_field(name="Where", value=channel_mention(row.get("destination_channel_id")), inline=True)
-        embed.add_field(name="Hosted by", value=f"<@{row.get('host_user_id') or row['creator_user_id']}>", inline=True)
-        embed.add_field(name="Reminders", value=timing_summary(parse_offsets(row["default_offsets_json"])), inline=False)
-        embed.add_field(name="Subscribers", value=str(row.get("subscriber_count", 0)), inline=True)
+        host_id = row.get("host_user_id") or row["creator_user_id"]
+        host_user = self.bot.get_user(int(host_id)) if str(host_id or "").isdigit() else None
+        if host_user is not None:
+            embed.set_thumbnail(url=host_user.display_avatar.url)
+        embed.add_field(name="🗓️ When", value=f"{discord_timestamp(row['scheduled_at_utc'], 'F')}\n{discord_timestamp(row['scheduled_at_utc'], 'R')}", inline=False)
+        embed.add_field(name="📍 Where", value=channel_mention(row.get("destination_channel_id")), inline=True)
+        embed.add_field(name="🎙️ Hosted by", value=f"<@{host_id}>", inline=True)
+        embed.add_field(name="⏰ Reminders", value=timing_summary(parse_offsets(row["default_offsets_json"])), inline=False)
+        embed.add_field(name="👥 Subscribers", value=str(row.get("subscriber_count", 0)), inline=True)
         if row["recurrence_type"] != "none":
-            embed.add_field(name="Recurrence", value=row["recurrence_type"].title(), inline=True)
+            embed.add_field(name="🔁 Recurrence", value=row["recurrence_type"].title(), inline=True)
         return embed
+
+    def events_default_embed(self, rows: list[dict[str, Any]]) -> discord.Embed:
+        """Built-in /events header used when no Message Studio asset is configured."""
+        if not rows:
+            return branded_embed(
+                "🗓️ Upcoming Events",
+                description="There are no upcoming events right now. Check back soon!",
+                color=discord.Color(COLOR),
+                footer="Event reminders are delivered privately by DM.",
+            )
+        soonest_name = re.sub(r"^#{1,6}\s*", "", str(rows[0]["title"]).strip())
+        embed = branded_embed(
+            "🗓️ Upcoming Events",
+            description=(
+                f"**{len(rows)}** upcoming event{'s' if len(rows) != 1 else ''} in this server.\n"
+                f"Next up: **{truncate(soonest_name, 100)}** {discord_timestamp(rows[0]['scheduled_at_utc'], 'R')}\n\n"
+                "Select events below to receive private DM reminders, or use "
+                "**Manage Event Subscriptions** to adjust the ones you already follow."
+            ),
+            color=discord.Color(COLOR),
+            footer="Select one or more events to subscribe.",
+        )
+        for row in rows[:10]:
+            name = truncate(re.sub(r"^#{1,6}\s*", "", str(row["title"]).strip()) or "Untitled event", 256)
+            value = (
+                f"{discord_timestamp(row['scheduled_at_utc'], 'F')} · {discord_timestamp(row['scheduled_at_utc'], 'R')}\n"
+                f"📍 {channel_mention(row.get('destination_channel_id'))} · "
+                f"🎙️ <@{row.get('host_user_id') or row['creator_user_id']}> · "
+                f"👥 {row.get('subscriber_count', 0)}"
+            )
+            embed.add_field(name=name, value=truncate(value, 1024), inline=False)
+        return embed
+
+    async def _configured_events_payload(self, count: int, next_event: str) -> Optional[dict[str, Any]]:
+        template_id = str(get_setting("EVENTS_HEADER_ASSET_ID", "") or "").strip()
+        if not template_id.isdigit():
+            return None
+        try:
+            template = await asyncio.to_thread(get_embed_template, int(template_id))
+        except (OSError, sqlite3.Error):
+            logger.exception("Could not load configured /events header asset id=%s", template_id)
+            return None
+        if template is None:
+            logger.warning("Configured /events header asset was not found id=%s", template_id)
+            return None
+        try:
+            return render_feature_payload(
+                template["payload"],
+                placeholders={"count": str(count), "next_event": next_event},
+            )
+        except ValueError:
+            logger.warning("Configured /events header asset payload is invalid id=%s", template_id)
+            return None
 
     def preview_embed(self, draft: dict[str, Any]) -> discord.Embed:
         embed = branded_embed(
@@ -1388,6 +1553,9 @@ class ReminderCog(commands.Cog):
             "description": sanitize_text(details),
             "scheduled_at_utc": scheduled,
             "interpretation_timezone": user_tz.key,
+            # Raw inputs are retained so the preview timezone selector can re-parse them.
+            "when_text": when,
+            "recurrence_text": recurrence,
             "destination": destination,
             "public_channel": public_channel,
             "default_offsets": offsets,
@@ -1404,6 +1572,51 @@ class ReminderCog(commands.Cog):
             interaction,
             embed=self.preview_embed(draft),
             view=EventCreationPreviewView(self, interaction.user.id, draft),
+        )
+
+    async def apply_preview_timezone(
+        self,
+        interaction: discord.Interaction,
+        view: "EventCreationPreviewView",
+        zone_name: str,
+    ) -> None:
+        if interaction.user.id != view.owner_id:
+            await interaction.response.send_message(
+                "Only the person creating this event can change its timezone.", ephemeral=True
+            )
+            return
+        draft = view.draft
+        try:
+            tz = ZoneInfo(zone_name)
+        except (ValueError, ZoneInfoNotFoundError):
+            await interaction.response.send_message("That timezone is not recognized.", ephemeral=True)
+            return
+        try:
+            scheduled = parse_local_datetime(draft["when_text"], tz)
+            if scheduled <= utc_now():
+                raise ValueError("Event date/time must be in the future in that timezone.")
+            recurrence_type, interval, recurrence_count, recurrence_end_at = parse_recurrence(
+                draft.get("recurrence_text", ""), None, tz
+            )
+            recurrence_dates(scheduled, recurrence_type, interval=interval, count=recurrence_count)
+        except ValueError as exc:
+            await interaction.response.send_message(f"⚠️ {exc}", ephemeral=True)
+            return
+        draft.update(
+            scheduled_at_utc=scheduled,
+            interpretation_timezone=tz.key,
+            recurrence_type=recurrence_type,
+            recurrence_interval=interval,
+            recurrence_end_count=recurrence_count,
+            recurrence_end_at_utc=recurrence_end_at,
+        )
+        # Persist the choice so the poster's future reminders default to the same zone.
+        await self.save_user_timezone(
+            int(interaction.guild_id or draft.get("guild_id") or 0), interaction.user.id, tz.key
+        )
+        await interaction.response.edit_message(
+            embed=self.preview_embed(draft),
+            view=EventCreationPreviewView(self, view.owner_id, draft),
         )
 
     async def confirm_creation(self, interaction: discord.Interaction, draft: dict[str, Any]) -> None:
@@ -1595,6 +1808,105 @@ class ReminderCog(commands.Cog):
             interaction,
             embed=self.subscription_embed(rows[0]),
             view=SubscriptionListView(self, interaction.user.id, rows),
+        )
+
+    @app_commands.command(name="events", description="Browse upcoming server events and subscribe to reminders")
+    @app_commands.guild_only()
+    async def events_command(self, interaction: discord.Interaction) -> None:
+        await self.defer_private(interaction, thinking=True)
+        if not await self.ensure_remind_command_access(interaction, "subscriptions"):
+            return
+        guild_id = int(interaction.guild_id or 0)
+        rows = await self.service.list_public_events(guild_id, limit=25)
+        subscriptions = await self.service.list_subscriptions(guild_id, interaction.user.id)
+        subscribed_ids = {int(item["reminder_id"]) for item in subscriptions}
+        next_event = re.sub(r"^#{1,6}\s*", "", str(rows[0]["title"]).strip()) if rows else ""
+        content: Optional[str] = None
+        embeds: list[discord.Embed] = []
+        payload = await self._configured_events_payload(len(rows), next_event)
+        if payload:
+            content = payload["content"] or None
+            embeds = discord_embeds_from_payload(payload)
+        if not embeds:
+            embeds = [self.events_default_embed(rows)]
+        await self.send_private(
+            interaction,
+            content,
+            embeds=embeds,
+            view=EventsBrowseView(self, interaction.user.id, rows, subscribed_ids),
+        )
+
+    async def handle_events_subscribe(self, interaction: discord.Interaction, reminder_ids: Sequence[int]) -> None:
+        await interaction.response.defer(ephemeral=True, thinking=True)
+        if not await self.ensure_remind_command_access(interaction, "subscriptions"):
+            return
+        subscribed: list[str] = []
+        already: list[str] = []
+        unavailable: list[str] = []
+        dm_blocked: list[str] = []
+        missing = 0
+        for reminder_id in reminder_ids:
+            event = await self.service.get_reminder(reminder_id)
+            if event is None or str(event["guild_id"]) != str(interaction.guild_id):
+                missing += 1
+                continue
+            try:
+                subscription, created = await self.service.subscribe(reminder_id, interaction.user.id)
+            except ValueError:
+                unavailable.append(event["title"])
+                continue
+            if not created:
+                already.append(event["title"])
+                self.schedule_public_refresh(reminder_id)
+                continue
+            row = await self.subscription_detail(int(subscription["id"]), interaction.user.id)
+            dm_ok = await self.send_subscription_confirmation(interaction.user, row, send_dm=True) if row else False
+            if dm_ok:
+                subscribed.append(event["title"])
+            else:
+                dm_blocked.append(event["title"])
+                await self.bot.db.execute(
+                    "UPDATE reminder_subscriptions SET status = 'delivery_unavailable', failure_reason = 'dm_privacy', updated_at_utc = ? WHERE id = ?",
+                    (utc_text(), subscription["id"]),
+                )
+                await self.bot.db.execute(
+                    "UPDATE reminder_deliveries SET status = 'cancelled', updated_at_utc = ? WHERE subscription_id = ? AND status IN ('pending', 'retry')",
+                    (utc_text(), subscription["id"]),
+                )
+                await self.bot.db.commit()
+            self.schedule_public_refresh(reminder_id)
+
+        def _names(titles: list[str]) -> str:
+            return ", ".join(f"**{truncate(title, 80)}**" for title in titles)
+
+        lines: list[str] = []
+        if subscribed:
+            lines.append(f"✅ Subscribed to {_names(subscribed)}. Check your DMs for confirmation.")
+        if already:
+            lines.append(f"🔔 Already subscribed to {_names(already)}.")
+        if unavailable:
+            lines.append(f"🚫 No longer accepting subscriptions: {_names(unavailable)}.")
+        if dm_blocked:
+            lines.append(
+                f"⚠️ I could not DM you for {_names(dm_blocked)}, so reminders are unavailable. "
+                "Enable direct messages from server members and try again."
+            )
+        if missing:
+            lines.append(f"❓ {missing} selected event{'s' if missing != 1 else ''} could not be found.")
+        await interaction.followup.send("\n".join(lines) or "No changes were made.", ephemeral=True)
+
+    async def open_subscription_manager(self, interaction: discord.Interaction) -> None:
+        await interaction.response.defer(ephemeral=True, thinking=True)
+        if not await self.ensure_remind_command_access(interaction, "subscriptions"):
+            return
+        rows = await self.service.list_subscriptions(int(interaction.guild_id or 0), interaction.user.id)
+        if not rows:
+            await interaction.followup.send("You have no active event subscriptions yet.", ephemeral=True)
+            return
+        await interaction.followup.send(
+            embed=self.subscription_embed(rows[0]),
+            view=SubscriptionListView(self, interaction.user.id, rows),
+            ephemeral=True,
         )
 
     @remind.command(name="help", description="Explain personal reminders, events, and subscriptions")

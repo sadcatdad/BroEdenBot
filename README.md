@@ -33,7 +33,7 @@ For a module-by-module architecture and reliability map, see
 | `/remind personal` | Roles in `REMINDER_PERSONAL_ALLOWED_ROLE_IDS`; blank allows all members. Staff-only targeting and channel delivery remain separately protected. |
 | `/remind event` | Roles in `REMINDER_EVENT_ALLOWED_ROLE_IDS`; blank falls back to `REMINDER_ALLOWED_ROLE_IDS` and configured staff/admin roles. |
 | `/remind manage` | Roles in `REMINDER_MANAGE_ALLOWED_ROLE_IDS`; blank allows all members to manage their own reminders. `REMINDER_MANAGE_ALL_ROLE_IDS` controls guild-wide management. |
-| `/remind subscriptions` and event **Remind Me** buttons | Roles in `REMINDER_SUBSCRIPTIONS_ALLOWED_ROLE_IDS`; blank allows all members. |
+| `/remind subscriptions`, `/events`, and event **Remind Me** buttons | Roles in `REMINDER_SUBSCRIPTIONS_ALLOWED_ROLE_IDS`; blank allows all members. |
 | `/remind help`, `/timezone`, `/time` | All server members. |
 | ModAI commands and context menus | Administrators or roles listed in `MODAI_ALLOWED_ROLE_IDS` |
 | Staff-note commands | Administrators or roles listed in `STAFF_NOTES_ALLOWED_ROLE_IDS` |
@@ -71,10 +71,19 @@ and suppresses stale deliveries outside the configured grace window.
 - `/remind personal [destination] [who]` — Create a private one-time or
   recurring reminder. Members default to their own DMs. Server-channel delivery
   and targeting another member retain the existing staff permission check.
-- `/remind event` — Configured staff create a public event card with labeled
+- `/remind event` — Configured staff create a public event card titled
+  **🎉 EVENT REMINDER** (the event name appears as a subheader) with labeled
   **Remind Me** and **Open Channel** controls. Events support multiple advance
   timings, recurrence, subscriber timing customization, live subscriber counts,
-  edits, and cancellation notices.
+  edits, and cancellation notices. The confirmation preview includes a timezone
+  selector so the poster can interpret the **When** text in their own timezone;
+  the choice is saved as their `/timezone` for future reminders.
+- `/events` — Ephemeral browser of upcoming events for any member (gated by
+  `REMINDER_SUBSCRIPTIONS_ALLOWED_ROLE_IDS`). Multi-select to subscribe to
+  several events at once (already-subscribed events are flagged), plus a
+  **Manage Event Subscriptions** button to change timing or unsubscribe. The
+  header uses a built-in card, or a saved Message Studio asset when
+  `EVENTS_HEADER_ASSET_ID` is configured (supports `{count}` and `{next_event}`).
 - `/remind manage [status] [reminder_type] [recurrence]` — Manage reminders you
   created. Configured staff can manage matching reminders across the guild.
 - `/remind subscriptions` — Change timing, restore event defaults, open the
@@ -1513,6 +1522,7 @@ updated from the authenticated local dashboard without rewriting `.env`.
 | `ENABLE_LEGACY_REMINDER_COMMANDS` | Keeps `/reminder add`, `/reminder manage`, and `/remind subscribe` transition routes available. Defaults to `true`. |
 | `REMINDER_DELIVERY_GRACE_MINUTES` | Maximum age of a missed delivery that may be caught up after downtime. Defaults to `120`; valid runtime range is 1–1440 minutes. |
 | `REMINDER_EVENT_AUTO_SUBSCRIBE_CREATOR` | Automatically subscribes an event creator to the event defaults. Defaults to `true`. |
+| `EVENTS_HEADER_ASSET_ID` | Saved Embed/Message Editor asset used as the `/events` header. Blank uses the built-in Upcoming Events card. Supports `{count}` and `{next_event}` placeholders. |
 | `DISBOARD_BOT_USER_ID` | Official DISBOARD bot user ID trusted for verified success responses. |
 | `BUMP_REWARD_ROLE_ID` | Role granted after a verified bump for the external XP/reward handoff. |
 | `BUMP_SUCCESS_ASSET_ID` | Optional Embed/Message Editor asset sent after a verified bump. Supports `{user.feature}`, `{role.feature}`, `{member}`, `{points}`, and `{reward_status}`. |
