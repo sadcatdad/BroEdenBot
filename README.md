@@ -1620,7 +1620,7 @@ updated from the authenticated local dashboard without rewriting `.env`.
 | `DASHBOARD_DISCORD_ALLOWED_ROLE_IDS` | Reserved for future guild-role approval; not used by this first implementation. |
 | `DASHBOARD_DISCORD_DEFAULT_ROLE` | Role assigned to new approved Discord users: `admin` or `viewer`. |
 | `DATABASE_PATH` | Optional shared SQLite path for the dashboard. Defaults to the existing `data.db`, then common local database names. |
-| `BANK_DATABASE_PATH` | Optional bank SQLite path for the dashboard. Defaults to `brobank.db`. |
+| `BANK_DATABASE_PATH` | Optional shared bank SQLite path for the bot and dashboard. Defaults to `brobank.db`. Use an absolute path on persistent-volume deployments. |
 
 ## Run locally
 
@@ -2182,6 +2182,42 @@ failed integrity check prevents the service from starting, and systemd limits
 repeated restart attempts. Keep runtime databases on a filesystem that has been
 verified healthy; do not point either service at a mount reporting USB resets,
 I/O errors, an aborted journal, or a read-only remount.
+
+## Deploy on Railway
+
+Railway runs the Discord bot and FastAPI dashboard together as one service so
+they can safely share a single persistent SQLite volume. The repository
+includes `Dockerfile`, `railway.toml`, and `scripts/railway_start.sh` for this
+layout. Mount a Railway volume at `/data`, upload the four existing databases,
+and configure these absolute paths:
+
+```env
+DATABASE_PATH=/data/data.db
+MESSAGE_CONTEXT_DB_PATH=/data/message_context.db
+STAFF_CONTEXT_DB_PATH=/data/staff_context.db
+BANK_DATABASE_PATH=/data/brobank.db
+VISUAL_ASSET_DIR=/data/visual-assets
+DASHBOARD_HOST=0.0.0.0
+DASHBOARD_COOKIE_SECURE=true
+```
+
+Railway supplies `PORT`; the startup script binds the dashboard to that port,
+runs read-only SQLite quick checks, applies and validates the additive reminder
+and Visual Content Studio migrations, then supervises both long-running
+processes. A missing or malformed database prevents the deployment from
+starting. Configure `/health` as the service health check and keep the replica
+count at one because SQLite volumes cannot be shared safely across replicas.
+For a brand-new empty volume, temporarily set `BROEDEN_SEED_MODE=true`; this
+serves only `/health` so Railway can mount the volume for direct file upload.
+Set it back to `false` before the production deployment.
+
+Store `.env` values in Railway service variables, never in Git or the Docker
+image. The live bot only requires the four databases and the Visual Content
+Studio asset directory. Raw import exports are not runtime dependencies after
+their rows and import ledgers have been verified in SQLite; archive only the
+source files needed for a future re-import and remove redundant copies instead
+of placing them on the Railway volume. Enable scheduled Railway volume backups
+after the first verified deployment.
 
 After the owner IDs and Pi permissions are configured, `/bot deploy` provides
 the confirmation-gated Discord shortcut. Historical imports are never launched
