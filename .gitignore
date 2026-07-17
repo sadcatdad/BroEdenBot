@@ -40,3 +40,7 @@ message_context.db
 
 # Deterministic local visual-review artifacts (generated, never committed).
 /dev-output/
+
+# Visual Content Studio runtime uploads, derivatives, previews, and caches.
+/data/visual-assets/
+/backups/visual-content-studio/

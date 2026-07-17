@@ -25,6 +25,11 @@ maintenance.
   role/channel/custom-emoji pickers read a live-guild metadata snapshot written
   by the bot, not historical import tables. Manual metadata refreshes explicitly
   fetch guild emojis from Discord and fall back to the enabled expression cache.
+- `dashboard/templates/visual_*.html`, `dashboard/static/visual_studio.js`, and
+  the `/visual` routes in `dashboard/app.py` — Authenticated Visual Content
+  Studio templates, deterministic previews, upload sizing/cropping guidance,
+  Asset Library, themes, global defaults, versions, variants, schedules,
+  import/export, audit history, and admin/owner-only mutation controls.
 - `dashboard/templates/base.html`, `dashboard/static/styles.css`,
   `dashboard/static/dashboard_nav.js`, and
   `dashboard/static/broeden-pride-icon.png` — Responsive grouped application
@@ -121,12 +126,25 @@ maintenance.
   reusable Pillow components, avatar cache/fallbacks, deterministic pagination,
   uploaded banner/background support, structured render results, diagnostics,
   and per-PNG byte-limit enforcement.
+- `utils/visual_studio/` — Immutable PNG/template registry, additive schema,
+  inheritance resolver, published/draft configuration, normalized filesystem
+  assets, exact dependency tracking, bounded caches, private-safe previews,
+  versions, themes, variants, schedules, and runtime legacy fallback bridge.
 - `utils/compact_roster.py`, `utils/ranked_graphic.py`, and
   `utils/stats_reports.py` — Compatibility adapters into the centralized stats
   visual system.
 - `scripts/generate_stats_visual_samples.py` — Deterministic ignored visual
   review set for overview, activity, role, leaderboard, empty, and stress
   states.
+- `scripts/generate_visual_studio_samples.py` — Generates ignored minimum,
+  maximum/safe-area, and empty previews for every registered template plus a
+  byte/timing manifest.
+- `scripts/generate_visual_size_reference.py` — Regenerates the exact
+  template-slot and generic Asset Library upload-size reference from runtime
+  metadata.
+- `scripts/migrate_visual_content_studio.py` — Explicit idempotent schema and
+  asset-directory migration, copied-database validation, backup, quick-check,
+  and deployment verification command.
 - `scripts/import_discord_history.py` — Streaming metadata-only history import,
   dedupe, batching, and optional archiving.
 - `scripts/import_staff_context.py` — Separate streaming CSV importer for

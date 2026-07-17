@@ -10,8 +10,11 @@ User=sadcatdad
 WorkingDirectory=/home/sadcatdad/BroEdenBot
 ExecStartPre=/usr/bin/test -x /home/sadcatdad/BroEdenBot/.venv/bin/python
 ExecStartPre=/usr/bin/test -r /home/sadcatdad/BroEdenBot/data.db
+ExecStartPre=/usr/bin/test -r /home/sadcatdad/BroEdenBot/data/visual-assets
 ExecStartPre=/usr/bin/sqlite3 -readonly /home/sadcatdad/BroEdenBot/data.db "PRAGMA quick_check(1);"
 ExecStart=/home/sadcatdad/BroEdenBot/.venv/bin/python /home/sadcatdad/BroEdenBot/main.py
+Environment=VISUAL_ASSET_DIR=/home/sadcatdad/BroEdenBot/data/visual-assets
+Environment=VISUAL_RENDER_CONCURRENCY=2
 TimeoutStartSec=120
 TimeoutStopSec=30
 Restart=on-failure

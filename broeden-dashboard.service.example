@@ -14,6 +14,7 @@ EnvironmentFile=/home/sadcatdad/BroEdenBot/.env
 ExecStartPre=/usr/bin/test -x /home/sadcatdad/BroEdenBot/.venv/bin/uvicorn
 ExecStartPre=/usr/bin/test -r /home/sadcatdad/BroEdenBot/data.db
 ExecStartPre=/usr/bin/test -r /home/sadcatdad/BroEdenBot/message_context.db
+ExecStartPre=/usr/bin/test -w /home/sadcatdad/BroEdenBot/data/visual-assets
 ExecStartPre=/usr/bin/sqlite3 -readonly /home/sadcatdad/BroEdenBot/data.db "PRAGMA quick_check(1);"
 ExecStartPre=/usr/bin/sqlite3 -readonly /home/sadcatdad/BroEdenBot/message_context.db "PRAGMA quick_check(1);"
 ExecStart=/home/sadcatdad/BroEdenBot/.venv/bin/uvicorn dashboard.app:app --host 0.0.0.0 --port 3000
@@ -22,6 +23,7 @@ TimeoutStopSec=30
 Restart=on-failure
 RestartSec=10
 Environment=PYTHONUNBUFFERED=1
+Environment=VISUAL_ASSET_DIR=/home/sadcatdad/BroEdenBot/data/visual-assets
 
 [Install]
 WantedBy=multi-user.target

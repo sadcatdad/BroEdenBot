@@ -154,6 +154,49 @@ from utils.stats_manager import (
     queue_stat_refresh,
     update_stat,
 )
+from utils.visual_studio import initialize_visual_studio_schema
+from utils.visual_studio.preview import render_preview, validate_preview
+from utils.visual_studio.registry import REGISTRY, asset_type_guidance
+from utils.visual_studio.repository import (
+    archive_theme,
+    delete_schedule,
+    delete_theme,
+    discard_template_draft,
+    duplicate_theme,
+    export_configuration,
+    get_global_settings,
+    get_theme,
+    get_visual_template,
+    import_configuration_as_drafts,
+    list_global_schedules,
+    list_recent_audit,
+    list_themes,
+    list_visual_templates,
+    publish_template,
+    publish_global_settings,
+    reset_template_to_defaults,
+    restore_template_version,
+    restore_theme,
+    save_global_settings_draft,
+    save_schedule,
+    save_template_draft,
+    save_theme,
+    save_variant,
+    set_schedule_enabled,
+    set_default_theme,
+)
+from utils.visual_studio.storage import (
+    ASSET_TYPES,
+    archive_asset,
+    asset_bytes,
+    asset_path,
+    delete_asset,
+    get_asset,
+    inspect_upload,
+    list_assets,
+    rename_asset,
+    save_asset,
+)
 
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
@@ -209,6 +252,7 @@ if dashboard_enabled():
     initialize_dashboard_users()
     initialize_streak_dashboard_schema()
     initialize_embed_templates_schema()
+    initialize_visual_studio_schema()
 
 app = FastAPI(
     title="BroEdenBot Local Dashboard",
@@ -1088,6 +1132,831 @@ async def embed_delete(request: Request, template_id: int) -> RedirectResponse:
         url=request.url_for("embed_templates"),
         status_code=status.HTTP_303_SEE_OTHER,
     )
+
+
+def visual_redirect(request: Request, route: str, **parameters: Any) -> RedirectResponse:
+    return RedirectResponse(
+        url=request.url_for(route, **parameters),
+        status_code=status.HTTP_303_SEE_OTHER,
+    )
+
+
+def visual_actor(request: Request) -> str:
+    user = current_user(request)
+    return str((user or {}).get("username") or "dashboard")
+
+
+async def require_visual_admin(request: Request) -> Any:
+    await require_action_csrf(request)
+    if not is_admin(request):
+        raise HTTPException(
+            status_code=403,
+            detail="Visual Content Studio changes require dashboard admin access.",
+        )
+    return await request.form()
+
+
+def visual_settings_from_form(form: Any, template_key: str) -> dict[str, Any]:
+    definition = REGISTRY.get(template_key)
+    raw_json = str(form.get("settings_json", "")).strip()
+    if raw_json:
+        try:
+            settings = json.loads(raw_json)
+        except json.JSONDecodeError as exc:
+            raise ValueError("Advanced settings must be valid JSON.") from exc
+        if not isinstance(settings, dict):
+            raise ValueError("Advanced settings must be a JSON object.")
+    else:
+        settings = {}
+    text_fields = {
+        "title",
+        "subtitle",
+        "footer_text",
+        "accent_color",
+        "panel_color",
+        "text_color",
+        "muted_text_color",
+        "density",
+        "avatar_shape",
+        "background_fit",
+    }
+    numeric_fields = {
+        "panel_opacity",
+        "focal_x",
+        "focal_y",
+        "background_brightness",
+        "background_blur",
+        "background_saturation",
+        "background_contrast",
+        "background_overlay_opacity",
+        "maximum_rows",
+        "title_size",
+        "subtitle_size",
+        "body_size",
+        "footer_size",
+    }
+    for key in definition.supported_settings:
+        if key in text_fields and key in form:
+            value = str(form.get(key, "")).strip()
+            if value:
+                settings[key] = value
+            else:
+                settings.pop(key, None)
+        elif key in numeric_fields and str(form.get(key, "")).strip():
+            settings[key] = str(form.get(key)).strip()
+    for key in ("show_avatars", "show_ranks", "show_timestamp", "high_contrast", "reduced_decoration"):
+        if key in definition.supported_settings:
+            settings[key] = str(form.get(key, "")).casefold() in {"1", "true", "on", "yes"}
+    assets = dict(settings.get("assets") or {})
+    for slot in definition.asset_slots:
+        field = "asset_{}".format(slot.key)
+        if field in form:
+            value = str(form.get(field, "")).strip()
+            if value.isdigit() and int(value) > 0:
+                assets[slot.key] = int(value)
+            else:
+                assets.pop(slot.key, None)
+    settings["assets"] = assets
+    return settings
+
+
+def visual_template_response(
+    request: Request,
+    template_key: str,
+    *,
+    error: Optional[str] = None,
+) -> HTMLResponse:
+    visual_template = get_visual_template(template_key)
+    return templates.TemplateResponse(
+        request=request,
+        name="visual_template_edit.html",
+        context=template_context(
+            request,
+            page_title="Customize {}".format(visual_template["display_name"]),
+            visual_template=visual_template,
+            themes=list_themes(),
+            assets=list_assets(limit=200),
+            message=request.session.pop("visual_message", None),
+            error=error or request.session.pop("visual_error", None),
+        ),
+    )
+
+
+@app.get("/visual", response_class=HTMLResponse, name="visual_templates")
+@app.get("/visual/templates", response_class=HTMLResponse)
+async def visual_templates_page(request: Request, category: str = "") -> HTMLResponse:
+    if redirect := login_redirect(request):
+        return redirect
+    registered = list_visual_templates()
+    categories = sorted({item["category"] for item in registered})
+    if category:
+        registered = [item for item in registered if item["category"] == category]
+    return templates.TemplateResponse(
+        request=request,
+        name="visual_templates.html",
+        context=template_context(
+            request,
+            page_title="Visual Content Studio",
+            visual_templates=registered,
+            categories=categories,
+            selected_category=category,
+            message=request.session.pop("visual_message", None),
+            error=request.session.pop("visual_error", None),
+        ),
+    )
+
+
+@app.get("/visual/templates/{template_key}", response_class=HTMLResponse, name="visual_template_edit")
+async def visual_template_edit(request: Request, template_key: str) -> HTMLResponse:
+    if redirect := login_redirect(request):
+        return redirect
+    try:
+        return visual_template_response(request, template_key)
+    except KeyError:
+        raise HTTPException(status_code=404, detail="Visual template was not found.")
+
+
+@app.get("/visual/templates/{template_key}/preview", name="visual_template_preview")
+async def visual_template_preview(
+    request: Request,
+    template_key: str,
+    draft: bool = False,
+    edge_case: str = "maximum",
+    safe_area: bool = False,
+) -> Response:
+    if redirect := login_redirect(request):
+        return redirect
+    if edge_case not in {"maximum", "minimum", "empty"}:
+        raise HTTPException(status_code=400, detail="Unknown preview data set.")
+    try:
+        png = await __import__("asyncio").to_thread(
+            render_preview,
+            template_key,
+            draft=draft,
+            edge_case=edge_case,
+            safe_area=safe_area,
+        )
+    except (KeyError, ValueError) as exc:
+        raise HTTPException(status_code=422, detail=str(exc))
+    return Response(
+        png,
+        media_type="image/png",
+        headers={
+            "Cache-Control": "private, no-store",
+            "Content-Disposition": 'inline; filename="{}-preview.png"'.format(template_key),
+        },
+    )
+
+
+@app.post("/visual/templates/{template_key}/draft", name="visual_template_save_draft")
+async def visual_template_save_draft(request: Request, template_key: str) -> Response:
+    if redirect := login_redirect(request):
+        return redirect
+    form = await require_visual_admin(request)
+    try:
+        settings = visual_settings_from_form(form, template_key)
+        raw_theme = str(form.get("theme_id", "")).strip()
+        theme_id = int(raw_theme) if raw_theme.isdigit() and int(raw_theme) > 0 else None
+        save_template_draft(
+            template_key,
+            settings,
+            theme_id=theme_id,
+            actor=visual_actor(request),
+        )
+    except (KeyError, sqlite3.Error, ValueError) as exc:
+        return visual_template_response(request, template_key, error=str(exc))
+    request.session["visual_message"] = "Draft saved. Live bot output is unchanged."
+    return visual_redirect(request, "visual_template_edit", template_key=template_key)
+
+
+@app.post("/visual/templates/{template_key}/publish", name="visual_template_publish")
+async def visual_template_publish(request: Request, template_key: str) -> RedirectResponse:
+    if redirect := login_redirect(request):
+        return redirect
+    form = await require_visual_admin(request)
+    try:
+        await __import__("asyncio").to_thread(
+            validate_preview,
+            template_key,
+            draft=True,
+        )
+        version = publish_template(
+            template_key,
+            actor=visual_actor(request),
+            change_summary=str(form.get("change_summary", "Published from dashboard")),
+        )
+    except (KeyError, sqlite3.Error, ValueError, OSError) as exc:
+        request.session["visual_error"] = "Published configuration failed validation: {}".format(exc)
+    else:
+        request.session["visual_message"] = "Published version {}. New bot renders now use it.".format(version)
+    return visual_redirect(request, "visual_template_edit", template_key=template_key)
+
+
+@app.post("/visual/templates/{template_key}/discard", name="visual_template_discard")
+async def visual_template_discard(request: Request, template_key: str) -> RedirectResponse:
+    if redirect := login_redirect(request):
+        return redirect
+    await require_visual_admin(request)
+    discard_template_draft(template_key, visual_actor(request))
+    request.session["visual_message"] = "Draft discarded."
+    return visual_redirect(request, "visual_template_edit", template_key=template_key)
+
+
+@app.post("/visual/templates/{template_key}/reset", name="visual_template_reset")
+async def visual_template_reset(request: Request, template_key: str) -> RedirectResponse:
+    if redirect := login_redirect(request):
+        return redirect
+    await require_visual_admin(request)
+    reset_template_to_defaults(template_key, visual_actor(request))
+    request.session["visual_message"] = "Built-in defaults were loaded into a draft. Publish to make them live."
+    return visual_redirect(request, "visual_template_edit", template_key=template_key)
+
+
+@app.post("/visual/templates/{template_key}/restore/{version}", name="visual_template_restore")
+async def visual_template_restore(request: Request, template_key: str, version: int) -> RedirectResponse:
+    if redirect := login_redirect(request):
+        return redirect
+    await require_visual_admin(request)
+    try:
+        restore_template_version(template_key, version, visual_actor(request))
+    except ValueError as exc:
+        request.session["visual_error"] = str(exc)
+    else:
+        request.session["visual_message"] = "Version {} restored as a draft. Review and publish it when ready.".format(version)
+    return visual_redirect(request, "visual_template_edit", template_key=template_key)
+
+
+@app.post("/visual/templates/{template_key}/variants", name="visual_variant_save")
+async def visual_variant_save(request: Request, template_key: str) -> RedirectResponse:
+    if redirect := login_redirect(request):
+        return redirect
+    form = await require_visual_admin(request)
+    try:
+        raw_settings = json.loads(str(form.get("variant_settings_json", "{}")) or "{}")
+        raw_theme = str(form.get("variant_theme_id", "")).strip()
+        raw_width = str(form.get("variant_width", "")).strip()
+        raw_height = str(form.get("variant_height", "")).strip()
+        variant_id = save_variant(
+            template_key,
+            name=str(form.get("variant_name", "")),
+            description=str(form.get("variant_description", "")),
+            settings=raw_settings,
+            width=int(raw_width) if raw_width.isdigit() else None,
+            height=int(raw_height) if raw_height.isdigit() else None,
+            theme_id=int(raw_theme) if raw_theme.isdigit() else None,
+            actor=visual_actor(request),
+        )
+    except (json.JSONDecodeError, ValueError, sqlite3.Error) as exc:
+        request.session["visual_error"] = str(exc)
+    else:
+        request.session["visual_message"] = "Variant #{} saved. Commands continue using their default variant.".format(variant_id)
+    return visual_redirect(request, "visual_template_edit", template_key=template_key)
+
+
+@app.post("/visual/templates/{template_key}/schedules", name="visual_schedule_save")
+async def visual_schedule_save(request: Request, template_key: str) -> RedirectResponse:
+    if redirect := login_redirect(request):
+        return redirect
+    form = await require_visual_admin(request)
+    try:
+        schedule_id = save_schedule(
+            template_key=template_key,
+            theme_id=int(str(form.get("schedule_theme_id", "0"))),
+            variant_id=(int(str(form.get("schedule_variant_id"))) if str(form.get("schedule_variant_id", "")).isdigit() else None),
+            starts_at=str(form.get("starts_at", "")),
+            ends_at=str(form.get("ends_at", "")),
+            timezone_name=str(form.get("timezone", "America/Chicago")),
+            priority=int(str(form.get("priority", "0")) or "0"),
+            actor=visual_actor(request),
+        )
+    except (ValueError, sqlite3.Error) as exc:
+        request.session["visual_error"] = str(exc)
+    else:
+        request.session["visual_message"] = "Seasonal schedule #{} created.".format(schedule_id)
+    return visual_redirect(request, "visual_template_edit", template_key=template_key)
+
+
+@app.post("/visual/schedules", name="visual_global_schedule_save")
+async def visual_global_schedule_save(request: Request) -> RedirectResponse:
+    if redirect := login_redirect(request):
+        return redirect
+    form = await require_visual_admin(request)
+    try:
+        schedule_id = save_schedule(
+            template_key=None,
+            theme_id=int(str(form.get("schedule_theme_id", "0"))),
+            variant_id=None,
+            starts_at=str(form.get("starts_at", "")),
+            ends_at=str(form.get("ends_at", "")),
+            timezone_name=str(form.get("timezone", "America/Chicago")),
+            priority=int(str(form.get("priority", "0")) or "0"),
+            actor=visual_actor(request),
+        )
+    except (ValueError, sqlite3.Error) as exc:
+        request.session["visual_error"] = str(exc)
+    else:
+        request.session["visual_message"] = "Global seasonal schedule #{} created.".format(schedule_id)
+    return visual_redirect(request, "visual_globals")
+
+
+@app.post("/visual/schedules/{schedule_id}/toggle", name="visual_schedule_toggle")
+async def visual_schedule_toggle(request: Request, schedule_id: int) -> RedirectResponse:
+    if redirect := login_redirect(request):
+        return redirect
+    form = await require_visual_admin(request)
+    enabled = str(form.get("enabled", "")).casefold() in {"1", "true", "on", "yes"}
+    try:
+        template_key = set_schedule_enabled(
+            schedule_id,
+            enabled,
+            visual_actor(request),
+        )
+    except (sqlite3.Error, ValueError) as exc:
+        request.session["visual_error"] = str(exc)
+        template_key = str(form.get("template_key", "")).strip() or None
+    else:
+        request.session["visual_message"] = "Schedule {}.".format(
+            "enabled" if enabled else "disabled"
+        )
+    return (
+        visual_redirect(request, "visual_template_edit", template_key=template_key)
+        if template_key
+        else visual_redirect(request, "visual_globals")
+    )
+
+
+@app.post("/visual/schedules/{schedule_id}/delete", name="visual_schedule_delete")
+async def visual_schedule_delete(request: Request, schedule_id: int) -> RedirectResponse:
+    if redirect := login_redirect(request):
+        return redirect
+    form = await require_visual_admin(request)
+    try:
+        template_key = delete_schedule(schedule_id, visual_actor(request))
+    except (sqlite3.Error, ValueError) as exc:
+        request.session["visual_error"] = str(exc)
+        template_key = str(form.get("template_key", "")).strip() or None
+    else:
+        request.session["visual_message"] = "Schedule deleted."
+    return (
+        visual_redirect(request, "visual_template_edit", template_key=template_key)
+        if template_key
+        else visual_redirect(request, "visual_globals")
+    )
+
+
+@app.get("/visual/assets", response_class=HTMLResponse, name="visual_assets")
+async def visual_assets_page(request: Request, asset_type: str = "", archived: bool = False) -> HTMLResponse:
+    if redirect := login_redirect(request):
+        return redirect
+    return templates.TemplateResponse(
+        request=request,
+        name="visual_assets.html",
+        context=template_context(
+            request,
+            page_title="Visual Asset Library",
+            assets=list_assets(asset_type=asset_type or None, include_archived=archived),
+            asset_types=ASSET_TYPES,
+            selected_asset_type=asset_type,
+            include_archived=archived,
+            message=request.session.pop("visual_message", None),
+            error=request.session.pop("visual_error", None),
+        ),
+    )
+
+
+@app.get("/visual/assets/upload", response_class=HTMLResponse, name="visual_asset_upload")
+async def visual_asset_upload_page(
+    request: Request,
+    template_key: str = "",
+    slot_key: str = "",
+    replace_asset_id: int = 0,
+) -> HTMLResponse:
+    if redirect := login_redirect(request):
+        return redirect
+    guidance = None
+    replace_asset = get_asset(replace_asset_id) if replace_asset_id else None
+    if replace_asset is not None:
+        metadata = replace_asset.get("metadata") or {}
+        template_key = template_key or str(metadata.get("template_key") or "")
+        slot_key = slot_key or str(metadata.get("slot_key") or "")
+    if template_key and slot_key:
+        try:
+            guidance = REGISTRY.get(template_key).slot(slot_key).as_dict()
+        except KeyError:
+            raise HTTPException(status_code=404, detail="Asset slot was not found.")
+    return templates.TemplateResponse(
+        request=request,
+        name="visual_asset_upload.html",
+        context=template_context(
+            request,
+            page_title="Upload Visual Asset",
+            registry=REGISTRY.as_dicts(),
+            generic_guidance={
+                kind: asset_type_guidance(kind) for kind in ASSET_TYPES
+            },
+            asset_types=ASSET_TYPES,
+            selected_template_key=template_key,
+            selected_slot_key=slot_key,
+            guidance=guidance or asset_type_guidance("other"),
+            replace_asset=replace_asset,
+            error=request.session.pop("visual_error", None),
+        ),
+    )
+
+
+@app.post("/visual/assets/upload", name="visual_asset_upload_save")
+async def visual_asset_upload_save(request: Request) -> Response:
+    if redirect := login_redirect(request):
+        return redirect
+    form = await require_visual_admin(request)
+    upload = form.get("file")
+    if upload is None or not hasattr(upload, "read"):
+        request.session["visual_error"] = "Choose a PNG, JPG, or WEBP file."
+        return visual_redirect(request, "visual_asset_upload")
+    data = await upload.read()
+    template_key = str(form.get("template_key", "")).strip() or None
+    slot_key = str(form.get("slot_key", "")).strip() or None
+    raw_replace_id = str(form.get("replace_asset_id", "")).strip()
+    replace_asset_id = int(raw_replace_id) if raw_replace_id.isdigit() else None
+    try:
+        asset_id, inspection = await __import__("asyncio").to_thread(
+            save_asset,
+            data,
+            filename=str(getattr(upload, "filename", "upload")),
+            name=str(form.get("name", "")),
+            asset_type=str(form.get("asset_type", "other")),
+            actor=visual_actor(request),
+            template_key=template_key,
+            slot_key=slot_key,
+            focal_x=float(str(form.get("focal_x", "0.5")) or "0.5"),
+            focal_y=float(str(form.get("focal_y", "0.5")) or "0.5"),
+            acknowledge_quality=str(form.get("acknowledge_quality", "")).casefold() in {"1", "on", "true"},
+            allow_crop=str(form.get("allow_crop", "")).casefold() in {"1", "on", "true"},
+            replace_asset_id=replace_asset_id,
+        )
+    except (OSError, sqlite3.Error, ValueError) as exc:
+        request.session["visual_error"] = str(exc)
+        query = "?template_key={}&slot_key={}".format(
+            template_key or "",
+            slot_key or "",
+        )
+        if replace_asset_id is not None:
+            query += "&replace_asset_id={}".format(replace_asset_id)
+        return RedirectResponse(
+            url="{}{}".format(request.url_for("visual_asset_upload"), query),
+            status_code=status.HTTP_303_SEE_OTHER,
+        )
+    request.session["visual_message"] = "Asset #{} uploaded and normalized to {} x {} px.".format(
+        asset_id,
+        inspection["normalized_width"],
+        inspection["normalized_height"],
+    )
+    return visual_redirect(request, "visual_assets")
+
+
+@app.get("/visual/assets/{asset_id}", response_class=HTMLResponse, name="visual_asset_detail")
+async def visual_asset_detail(request: Request, asset_id: int) -> HTMLResponse:
+    if redirect := login_redirect(request):
+        return redirect
+    asset = get_asset(asset_id)
+    if asset is None:
+        raise HTTPException(status_code=404, detail="Asset was not found.")
+    return templates.TemplateResponse(
+        request=request,
+        name="visual_asset_detail.html",
+        context=template_context(
+            request,
+            page_title=asset["name"],
+            asset=asset,
+            message=request.session.pop("visual_message", None),
+            error=request.session.pop("visual_error", None),
+        ),
+    )
+
+
+@app.get("/visual/assets/{asset_id}/image", name="visual_asset_image")
+async def visual_asset_image(request: Request, asset_id: int, thumbnail: bool = False, download: bool = False) -> Response:
+    if redirect := login_redirect(request):
+        return redirect
+    asset = get_asset(asset_id)
+    if asset is None:
+        raise HTTPException(status_code=404, detail="Asset was not found.")
+    storage_key = asset["metadata"].get("thumbnail_key") if thumbnail else asset["storage_key"]
+    if not storage_key:
+        raise HTTPException(status_code=404, detail="Asset preview is unavailable.")
+    try:
+        data = asset_bytes(storage_key)
+    except (OSError, ValueError):
+        raise HTTPException(status_code=404, detail="Asset file is unavailable.")
+    disposition = "attachment" if download else "inline"
+    return Response(
+        data,
+        media_type="image/png",
+        headers={
+            "Cache-Control": "private, max-age=300",
+            "Content-Disposition": '{}; filename="asset-{}.png"'.format(disposition, asset_id),
+        },
+    )
+
+
+@app.post("/visual/assets/{asset_id}/rename", name="visual_asset_rename")
+async def visual_asset_rename(request: Request, asset_id: int) -> RedirectResponse:
+    if redirect := login_redirect(request):
+        return redirect
+    form = await require_visual_admin(request)
+    try:
+        rename_asset(asset_id, str(form.get("name", "")), visual_actor(request))
+    except ValueError as exc:
+        request.session["visual_error"] = str(exc)
+    return visual_redirect(request, "visual_assets")
+
+
+@app.post("/visual/assets/{asset_id}/archive", name="visual_asset_archive")
+async def visual_asset_archive(request: Request, asset_id: int) -> RedirectResponse:
+    if redirect := login_redirect(request):
+        return redirect
+    await require_visual_admin(request)
+    try:
+        archive_asset(asset_id, visual_actor(request))
+    except ValueError as exc:
+        request.session["visual_error"] = str(exc)
+    else:
+        request.session["visual_message"] = "Asset archived."
+    return visual_redirect(request, "visual_assets")
+
+
+@app.post("/visual/assets/{asset_id}/restore", name="visual_asset_restore")
+async def visual_asset_restore(request: Request, asset_id: int) -> RedirectResponse:
+    if redirect := login_redirect(request):
+        return redirect
+    await require_visual_admin(request)
+    archive_asset(asset_id, visual_actor(request), restore=True)
+    request.session["visual_message"] = "Asset restored."
+    return visual_redirect(request, "visual_assets")
+
+
+@app.post("/visual/assets/{asset_id}/delete", name="visual_asset_delete")
+async def visual_asset_delete(request: Request, asset_id: int) -> RedirectResponse:
+    if redirect := login_redirect(request):
+        return redirect
+    await require_visual_admin(request)
+    try:
+        delete_asset(asset_id, visual_actor(request))
+    except ValueError as exc:
+        request.session["visual_error"] = str(exc)
+    else:
+        request.session["visual_message"] = "Archived asset permanently deleted."
+    return visual_redirect(request, "visual_assets")
+
+
+@app.get("/visual/themes", response_class=HTMLResponse, name="visual_themes")
+async def visual_themes_page(request: Request, archived: bool = False) -> HTMLResponse:
+    if redirect := login_redirect(request):
+        return redirect
+    return templates.TemplateResponse(
+        request=request,
+        name="visual_themes.html",
+        context=template_context(
+            request,
+            page_title="Visual Themes",
+            themes=list_themes(include_archived=archived),
+            assets=list_assets(limit=200),
+            message=request.session.pop("visual_message", None),
+            error=request.session.pop("visual_error", None),
+        ),
+    )
+
+
+@app.get("/visual/themes/new", response_class=HTMLResponse, name="visual_theme_new")
+async def visual_theme_new(request: Request) -> HTMLResponse:
+    if redirect := login_redirect(request):
+        return redirect
+    return templates.TemplateResponse(
+        request=request,
+        name="visual_theme_edit.html",
+        context=template_context(request, page_title="Create Visual Theme", theme=None, assets=list_assets(limit=200)),
+    )
+
+
+@app.get("/visual/themes/{theme_id}", response_class=HTMLResponse, name="visual_theme_edit")
+async def visual_theme_edit(request: Request, theme_id: int) -> HTMLResponse:
+    if redirect := login_redirect(request):
+        return redirect
+    theme = get_theme(theme_id)
+    if theme is None:
+        raise HTTPException(status_code=404, detail="Theme was not found.")
+    return templates.TemplateResponse(
+        request=request,
+        name="visual_theme_edit.html",
+        context=template_context(request, page_title="Edit {}".format(theme["name"]), theme=theme, assets=list_assets(limit=200), error=request.session.pop("visual_error", None)),
+    )
+
+
+@app.post("/visual/themes/save", name="visual_theme_save")
+async def visual_theme_save(request: Request) -> Response:
+    if redirect := login_redirect(request):
+        return redirect
+    form = await require_visual_admin(request)
+    raw_id = str(form.get("theme_id", "")).strip()
+    try:
+        settings = json.loads(str(form.get("settings_json", "{}")) or "{}")
+        if not isinstance(settings, dict):
+            raise ValueError("Theme settings must be a JSON object.")
+        assets = dict(settings.get("assets") or {})
+        for slot in ("background", "header_graphic", "logo", "watermark"):
+            raw_asset = str(form.get("theme_asset_{}".format(slot), "")).strip()
+            if raw_asset.isdigit() and int(raw_asset) > 0:
+                assets[slot] = int(raw_asset)
+            elif "theme_asset_{}".format(slot) in form:
+                assets.pop(slot, None)
+        settings["assets"] = assets
+        theme_id = save_theme(
+            name=str(form.get("name", "")),
+            description=str(form.get("description", "")),
+            settings=settings,
+            actor=visual_actor(request),
+            theme_id=int(raw_id) if raw_id.isdigit() else None,
+        )
+    except (json.JSONDecodeError, sqlite3.Error, ValueError) as exc:
+        request.session["visual_error"] = str(exc)
+        return visual_redirect(request, "visual_theme_edit", theme_id=int(raw_id)) if raw_id.isdigit() else visual_redirect(request, "visual_theme_new")
+    request.session["visual_message"] = "Theme saved."
+    return visual_redirect(request, "visual_theme_edit", theme_id=theme_id)
+
+
+@app.post("/visual/themes/{theme_id}/default", name="visual_theme_default")
+async def visual_theme_default(request: Request, theme_id: int) -> RedirectResponse:
+    if redirect := login_redirect(request):
+        return redirect
+    await require_visual_admin(request)
+    try:
+        set_default_theme(theme_id, visual_actor(request))
+    except ValueError as exc:
+        request.session["visual_error"] = str(exc)
+    else:
+        request.session["visual_message"] = "Default theme updated."
+    return visual_redirect(request, "visual_themes")
+
+
+@app.post("/visual/themes/{theme_id}/duplicate", name="visual_theme_duplicate")
+async def visual_theme_duplicate(request: Request, theme_id: int) -> RedirectResponse:
+    if redirect := login_redirect(request):
+        return redirect
+    await require_visual_admin(request)
+    try:
+        duplicate_id = duplicate_theme(theme_id, visual_actor(request))
+    except (sqlite3.Error, ValueError) as exc:
+        request.session["visual_error"] = str(exc)
+        return visual_redirect(request, "visual_themes")
+    request.session["visual_message"] = "Theme duplicated. Customize the copy before assigning it."
+    return visual_redirect(request, "visual_theme_edit", theme_id=duplicate_id)
+
+
+@app.post("/visual/themes/{theme_id}/archive", name="visual_theme_archive")
+async def visual_theme_archive(request: Request, theme_id: int) -> RedirectResponse:
+    if redirect := login_redirect(request):
+        return redirect
+    await require_visual_admin(request)
+    try:
+        archive_theme(theme_id, visual_actor(request))
+    except ValueError as exc:
+        request.session["visual_error"] = str(exc)
+    else:
+        request.session["visual_message"] = "Theme archived."
+    return visual_redirect(request, "visual_themes")
+
+
+@app.post("/visual/themes/{theme_id}/restore", name="visual_theme_restore")
+async def visual_theme_restore(request: Request, theme_id: int) -> RedirectResponse:
+    if redirect := login_redirect(request):
+        return redirect
+    await require_visual_admin(request)
+    try:
+        restore_theme(theme_id, visual_actor(request))
+    except ValueError as exc:
+        request.session["visual_error"] = str(exc)
+    else:
+        request.session["visual_message"] = "Theme restored."
+    return visual_redirect(request, "visual_themes")
+
+
+@app.post("/visual/themes/{theme_id}/delete", name="visual_theme_delete")
+async def visual_theme_delete(request: Request, theme_id: int) -> RedirectResponse:
+    if redirect := login_redirect(request):
+        return redirect
+    await require_visual_admin(request)
+    try:
+        delete_theme(theme_id, visual_actor(request))
+    except ValueError as exc:
+        request.session["visual_error"] = str(exc)
+    else:
+        request.session["visual_message"] = "Archived theme permanently deleted."
+    return visual_redirect(request, "visual_themes")
+
+
+@app.get("/visual/global", response_class=HTMLResponse, name="visual_globals")
+async def visual_globals_page(request: Request) -> HTMLResponse:
+    if redirect := login_redirect(request):
+        return redirect
+    return templates.TemplateResponse(
+        request=request,
+        name="visual_globals.html",
+        context=template_context(
+            request,
+            page_title="Global Visual Settings",
+            global_settings=get_global_settings(),
+            schedules=list_global_schedules(),
+            themes=list_themes(),
+            assets=list_assets(limit=200),
+            audits=list_recent_audit(40),
+            message=request.session.pop("visual_message", None),
+            error=request.session.pop("visual_error", None),
+        ),
+    )
+
+
+@app.post("/visual/global", name="visual_globals_save")
+async def visual_globals_save(request: Request) -> RedirectResponse:
+    if redirect := login_redirect(request):
+        return redirect
+    form = await require_visual_admin(request)
+    try:
+        settings = json.loads(str(form.get("settings_json", "{}")) or "{}")
+        if not isinstance(settings, dict):
+            raise ValueError("Global settings must be a JSON object.")
+        assets = dict(settings.get("assets") or {})
+        for slot in ("background", "header_graphic", "logo", "watermark"):
+            field = "global_asset_{}".format(slot)
+            raw_asset = str(form.get(field, "")).strip()
+            if raw_asset.isdigit() and int(raw_asset) > 0:
+                assets[slot] = int(raw_asset)
+            elif field in form:
+                assets.pop(slot, None)
+        settings["assets"] = assets
+        save_global_settings_draft(settings, visual_actor(request))
+    except (json.JSONDecodeError, sqlite3.Error, ValueError) as exc:
+        request.session["visual_error"] = str(exc)
+    else:
+        request.session["visual_message"] = "Global visual defaults saved as a draft. Live renderers are unchanged."
+    return visual_redirect(request, "visual_globals")
+
+
+@app.post("/visual/global/publish", name="visual_globals_publish")
+async def visual_globals_publish(request: Request) -> RedirectResponse:
+    if redirect := login_redirect(request):
+        return redirect
+    await require_visual_admin(request)
+    try:
+        publish_global_settings(visual_actor(request))
+    except (sqlite3.Error, ValueError) as exc:
+        request.session["visual_error"] = str(exc)
+    else:
+        request.session["visual_message"] = "Global visual defaults published."
+    return visual_redirect(request, "visual_globals")
+
+
+@app.get("/visual/reference", response_class=HTMLResponse, name="visual_size_reference")
+async def visual_size_reference(request: Request) -> HTMLResponse:
+    if redirect := login_redirect(request):
+        return redirect
+    return templates.TemplateResponse(
+        request=request,
+        name="visual_reference.html",
+        context=template_context(request, page_title="Visual Upload Size Reference", registry=REGISTRY.as_dicts()),
+    )
+
+
+@app.get("/visual/export", name="visual_export")
+async def visual_export(request: Request, template_key: str = "") -> JSONResponse:
+    if redirect := login_redirect(request):
+        return redirect
+    document = export_configuration(template_key or None)
+    return JSONResponse(
+        document,
+        headers={"Content-Disposition": 'attachment; filename="broeden-visual-content.json"'},
+    )
+
+
+@app.post("/visual/import", name="visual_import")
+async def visual_import(request: Request) -> RedirectResponse:
+    if redirect := login_redirect(request):
+        return redirect
+    form = await require_visual_admin(request)
+    try:
+        document = json.loads(str(form.get("configuration_json", "")))
+        imported = import_configuration_as_drafts(document, visual_actor(request))
+    except (json.JSONDecodeError, sqlite3.Error, ValueError) as exc:
+        request.session["visual_error"] = str(exc)
+    else:
+        request.session["visual_message"] = "Imported {} template configuration(s) as drafts. Nothing was published.".format(len(imported))
+    return visual_redirect(request, "visual_globals")
+
+
+@app.get("/api/visual/templates", response_class=JSONResponse, name="api_visual_templates")
+async def api_visual_templates(request: Request) -> JSONResponse:
+    if not dashboard_enabled() or not is_authenticated(request):
+        raise HTTPException(status_code=401, detail="Authentication required.")
+    return JSONResponse({"templates": list(REGISTRY.as_dicts())})
 
 
 @app.get("/settings", response_class=HTMLResponse, name="settings")
@@ -2201,3 +3070,5 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
+    duplicate_theme,
+    list_global_schedules,

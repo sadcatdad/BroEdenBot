@@ -64,7 +64,11 @@ async def fetch_avatars(urls: Iterable[Optional[str]]) -> AvatarFetchResult:
     return AvatarFetchResult(data=data, failed_urls=tuple(sorted(failed)))
 
 
-def prepare_avatar(data: Optional[bytes], size: int) -> Optional[Image.Image]:
+def prepare_avatar(
+    data: Optional[bytes],
+    size: int,
+    shape: str = "circle",
+) -> Optional[Image.Image]:
     if not data:
         return None
     try:
@@ -76,9 +80,17 @@ def prepare_avatar(data: Optional[bytes], size: int) -> Optional[Image.Image]:
                 (size, size),
                 method=Image.Resampling.LANCZOS,
             )
-        mask = Image.new("L", (size, size), 0)
-        ImageDraw.Draw(mask).ellipse((0, 0, size - 1, size - 1), fill=255)
-        avatar.putalpha(mask)
+        if shape != "square":
+            mask = Image.new("L", (size, size), 0)
+            if shape == "rounded":
+                ImageDraw.Draw(mask).rounded_rectangle(
+                    (0, 0, size - 1, size - 1),
+                    radius=max(2, size // 5),
+                    fill=255,
+                )
+            else:
+                ImageDraw.Draw(mask).ellipse((0, 0, size - 1, size - 1), fill=255)
+            avatar.putalpha(mask)
         return avatar
     except (EOFError, OSError, ValueError):
         return None

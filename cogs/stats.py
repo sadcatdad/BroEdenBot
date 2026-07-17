@@ -3410,15 +3410,15 @@ class Stats(commands.Cog):
                 items.append(
                     RankedGraphicItem(
                         label=(
-                            member.display_name
+                            member.name
                             if member
-                            else display_name or username or str(user_id)
+                            else username or display_name or str(user_id)
                         ),
                         value=f"{total:,}",
                         subtitle=(
-                            f"@{member.name}"
+                            ""
                             if member
-                            else f"@{username or user_id} • Left server"
+                            else "Left server"
                         ),
                         avatar_url=(
                             str(
@@ -3504,15 +3504,15 @@ class Stats(commands.Cog):
                     member_items.append(
                         RankedGraphicItem(
                             label=(
-                                member.display_name
+                                member.name
                                 if member
-                                else display_name or username or str(user_id)
+                                else username or display_name or str(user_id)
                             ),
                             value=format_duration(seconds),
                             subtitle=(
-                                f"@{member.name}"
+                                ""
                                 if member
-                                else f"@{username or user_id} • Left server"
+                                else "Left server"
                             ),
                             avatar_url=(
                                 str(
@@ -3542,6 +3542,7 @@ class Stats(commands.Cog):
             sections=sections,
             updated_at=self._utcnow(),
             accent_color=COLOR,
+            template_key="activity_leaderboard",
         )
         return result.attachments(f"stats_{report_type}_leaderboard.png")
 

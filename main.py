@@ -17,6 +17,7 @@ from utils.live_knowledge import initialize_live_knowledge_schema
 from utils.settings import initialize_settings_from_env, settings_database_path
 from utils.sqlite import configure_connection
 from utils.ui import error_embed
+from utils.visual_studio import initialize_visual_studio_schema
 
 
 PROJECT_ROOT = Path(__file__).resolve().parent
@@ -176,6 +177,7 @@ class BotClient(commands.Bot):
 
     async def load_data(self):
         initialize_settings_from_env()
+        initialize_visual_studio_schema()
         self.db = await aiosqlite.connect(settings_database_path())
         self.db.row_factory = aiosqlite.Row
         journal_mode = await configure_connection(

@@ -1742,15 +1742,15 @@ class VCStats(commands.Cog):
             )
             items.append(
                 RankedGraphicItem(
-                    label=display_name or username or str(user_id or "Unknown"),
+                    label=username or display_name or str(user_id or "Unknown"),
                     value=format_duration(ranked_seconds),
                     subtitle=(
-                        f"@{username}"
+                        ""
                         if is_current
                         else (
-                            f"@{username or user_id} • Left server"
+                            "Left server"
                             if user_id is not None
-                            else f"{username or 'Name only'} • Historical name-only"
+                            else "Historical name-only"
                         )
                     ),
                     avatar_url=(
@@ -1775,6 +1775,7 @@ class VCStats(commands.Cog):
                 sections=[RankedGraphicSection("Member leaderboard", items)],
                 updated_at=utc_now(),
                 accent_color=COLOR,
+                template_key="vc_leaderboard",
             )
         except Exception:
             logger.exception(

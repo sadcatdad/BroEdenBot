@@ -1,9 +1,14 @@
+import asyncio
+import logging
 import math
+import os
 from dataclasses import dataclass
 from datetime import datetime
-from typing import Dict, Iterable, List, Optional, Sequence, Tuple
+from typing import Dict, Iterable, List, Mapping, Optional, Sequence, Tuple
 
 from PIL import Image, ImageDraw, ImageOps
+
+from utils.display_names import normalize_for_font
 
 from .avatars import fetch_avatars, prepare_avatar
 from .components import (
@@ -29,13 +34,52 @@ from .text import (
 from .theme import (
     COLORS,
     LEADERBOARD_ROWS_PER_PAGE,
+    LayoutProfile,
     PORTRAIT_LEADERBOARD,
     ROSTER_ROWS_PER_PAGE,
     WIDE_OVERVIEW,
 )
+from utils.visual_studio.runtime import (
+    load_runtime_customization,
+    load_runtime_customization_sync,
+    prepare_background,
+    runtime_accent,
+    runtime_text,
+)
 
 
 Color = Tuple[int, int, int]
+logger = logging.getLogger(__name__)
+
+
+def _render_concurrency() -> int:
+    try:
+        return max(1, min(int(os.getenv("VISUAL_RENDER_CONCURRENCY", "2") or "2"), 4))
+    except ValueError:
+        logger.warning("Invalid VISUAL_RENDER_CONCURRENCY; using 2")
+        return 2
+
+
+_RENDER_CONCURRENCY = _render_concurrency()
+_RENDER_SEMAPHORE = asyncio.Semaphore(_RENDER_CONCURRENCY)
+
+
+def _variant_profile(base: LayoutProfile, customization: object) -> LayoutProfile:
+    width = int(getattr(customization, "canvas_width", base.width))
+    height = int(getattr(customization, "canvas_height", base.height))
+    if (width, height) == (base.width, base.height):
+        return base
+    scale = min(width / base.width, height / base.height)
+    return LayoutProfile(
+        name="{}_variant".format(base.name),
+        width=width,
+        height=height,
+        minimum_width=max(1, int(round(base.minimum_width * scale))),
+        minimum_height=max(1, int(round(base.minimum_height * scale))),
+        max_primary_metrics=base.max_primary_metrics,
+        max_major_charts=base.max_major_charts,
+        max_rows=base.max_rows,
+    )
 
 
 @dataclass(frozen=True)
@@ -66,6 +110,7 @@ def rgb_from_int(color: int) -> Color:
 
 def _ranked_pages(
     sections: Sequence[RankedGraphicSection],
+    rows_per_page: int = LEADERBOARD_ROWS_PER_PAGE,
 ) -> List[RankedGraphicSection]:
     pages = []
     for section in sections:
@@ -73,18 +118,18 @@ def _ranked_pages(
         if not items:
             pages.append(section)
             continue
-        for offset in range(0, len(items), LEADERBOARD_ROWS_PER_PAGE):
+        for offset in range(0, len(items), rows_per_page):
             pages.append(
                 RankedGraphicSection(
                     title=section.title,
-                    items=items[offset : offset + LEADERBOARD_ROWS_PER_PAGE],
+                    items=items[offset : offset + rows_per_page],
                     rank_start=section.rank_start + offset,
                 )
             )
     return pages or [RankedGraphicSection("Leaderboard", [])]
 
 
-async def render_ranked_graphic_result(
+async def _render_ranked_graphic_result(
     *,
     title: str,
     subtitle: str,
@@ -98,11 +143,60 @@ async def render_ranked_graphic_result(
     banner_bytes: Optional[bytes] = None,
     background_bytes: Optional[bytes] = None,
     footer_text: Optional[str] = None,
+    template_key: Optional[str] = None,
 ) -> RenderResult:
+    visual_style: Mapping[str, object] = {}
+    logo_bytes = None
+    watermark_bytes = None
+    if template_key:
+        customization = await load_runtime_customization(
+            template_key,
+            legacy_background=background_bytes,
+            legacy_header=banner_bytes,
+        )
+        title = runtime_text(customization.settings, "title", title)
+        subtitle = runtime_text(customization.settings, "subtitle", subtitle)
+        footer_text = runtime_text(
+            customization.settings,
+            "footer_text",
+            footer_text or "BRO EDEN • COMMUNITY STATS",
+        )
+        accent_color = runtime_accent(customization.settings, accent_color)
+        background_bytes = prepare_background(
+            customization.background_bytes,
+            (customization.canvas_width, customization.canvas_height),
+            customization.settings,
+        )
+        banner_bytes = customization.header_bytes
+        visual_style = customization.settings
+        logo_bytes = customization.logo_bytes
+        watermark_bytes = customization.watermark_bytes
+        if customization.warnings:
+            logger.warning(
+                "Visual renderer warnings template=%s warnings=%s",
+                template_key,
+                "; ".join(customization.warnings),
+            )
+    output_profile = (
+        _variant_profile(PORTRAIT_LEADERBOARD, customization)
+        if template_key
+        else PORTRAIT_LEADERBOARD
+    )
     sections = list(sections)
-    display_pages = _ranked_pages(sections)
+    rows_per_page = max(
+        1,
+        min(
+            int(visual_style.get("maximum_rows", LEADERBOARD_ROWS_PER_PAGE)),
+            LEADERBOARD_ROWS_PER_PAGE,
+        ),
+    )
+    display_pages = _ranked_pages(sections, rows_per_page)
     all_items = [item for section in sections for item in section.items]
-    avatars = await fetch_avatars(item.avatar_url for item in all_items)
+    show_avatars = bool(visual_style.get("show_avatars", True))
+    show_ranks = bool(visual_style.get("show_ranks", True))
+    avatars = await fetch_avatars(
+        item.avatar_url for item in all_items if show_avatars
+    )
     state = RenderState()
     accent = rgb_from_int(accent_color) if accent_color else COLORS.accent
     total = total_entries
@@ -138,6 +232,9 @@ async def render_ranked_graphic_result(
                 accent,
                 background_bytes=background_bytes,
                 banner_bytes=banner_bytes,
+                logo_bytes=logo_bytes,
+                watermark_bytes=watermark_bytes,
+                style=visual_style,
             )
             draw_header(
                 canvas,
@@ -160,8 +257,8 @@ async def render_ranked_graphic_result(
                     )
                 ),
                 radius=canvas.s(22),
-                fill=COLORS.surface_alt,
-                outline=COLORS.border,
+                fill=canvas.colors.surface_alt,
+                outline=canvas.colors.border,
                 width=max(1, canvas.s(2)),
             )
             draw_section_heading(
@@ -179,8 +276,17 @@ async def render_ranked_graphic_result(
                 )
             else:
                 maximum = max((max(0.0, item.score) for item in section.items), default=0) or 1
-                row_height = 96
-                row_gap = 10
+                density_height = {
+                    "compact": 82,
+                    "balanced": 96,
+                    "spacious": 106,
+                }.get(str(visual_style.get("density", "balanced")), 96)
+                row_gap = 8 if visual_style.get("density") == "compact" else 10
+                available_height = panel_height - 104
+                row_height = min(
+                    density_height,
+                    max(64, (available_height - row_gap * (len(section.items) - 1)) // max(1, len(section.items))),
+                )
                 row_y = panel_y + 78
                 for offset, item in enumerate(section.items):
                     draw_leaderboard_row(
@@ -189,18 +295,24 @@ async def render_ranked_graphic_result(
                         label=item.label,
                         value=item.value,
                         subtitle=item.subtitle,
-                        avatar_data=avatars.data.get(item.avatar_url or ""),
-                        avatar_expected=bool(item.avatar_url),
+                        avatar_data=(avatars.data.get(item.avatar_url or "") if show_avatars else None),
+                        avatar_expected=bool(item.avatar_url) and show_avatars,
                         x=panel_x + 18,
                         y=row_y + offset * (row_height + row_gap),
                         width=panel_width - 36,
                         height=row_height,
                         progress=max(0.0, item.score) / maximum,
+                        show_avatar=show_avatars,
+                        show_rank=show_ranks,
                     )
             draw_footer(
                 canvas,
                 left_text=footer_text or "BRO EDEN • COMMUNITY STATS",
-                right_text="Updated {}".format(format_timestamp(updated_at)),
+                right_text=(
+                    "Updated {}".format(format_timestamp(updated_at))
+                    if visual_style.get("show_timestamp", True)
+                    else ""
+                ),
             )
             return canvas.image
 
@@ -208,7 +320,7 @@ async def render_ranked_graphic_result(
 
     return build_render_result(
         graphic_type="ranked_graphic",
-        profile=PORTRAIT_LEADERBOARD,
+        profile=output_profile,
         factories=factories,
         state=state,
         target_bytes=target_bytes,
@@ -231,12 +343,36 @@ def render_rolecompare_result(
     updated_at: datetime,
     accent_color: int,
     target_bytes: Optional[int] = None,
+    template_key: str = "role_comparison",
 ) -> RenderResult:
+    customization = load_runtime_customization_sync(template_key)
+    title = runtime_text(customization.settings, "title", title)
+    body = runtime_text(customization.settings, "subtitle", body)
+    accent_color = runtime_accent(customization.settings, accent_color)
+    background_bytes = prepare_background(
+        customization.background_bytes,
+        (customization.canvas_width, customization.canvas_height),
+        customization.settings,
+    )
+    output_profile = _variant_profile(WIDE_OVERVIEW, customization)
+    visual_style = customization.settings
+    logo_bytes = customization.logo_bytes
+    watermark_bytes = customization.watermark_bytes
     state = RenderState()
     accent = rgb_from_int(accent_color) if accent_color else COLORS.accent
 
     def factory(width: int, height: int) -> Image.Image:
-        canvas = base_canvas(width, height, WIDE_OVERVIEW, state, accent)
+        canvas = base_canvas(
+            width,
+            height,
+            WIDE_OVERVIEW,
+            state,
+            accent,
+            background_bytes=background_bytes,
+            logo_bytes=logo_bytes,
+            watermark_bytes=watermark_bytes,
+            style=visual_style,
+        )
         draw_header(
             canvas,
             title=title,
@@ -245,10 +381,10 @@ def render_rolecompare_result(
         )
         cards = [
             (role_1_name, counts["role_1_total"], accent),
-            (role_2_name, counts["role_2_total"], COLORS.chart[2]),
-            ("In both", counts["both"], COLORS.positive),
+            (role_2_name, counts["role_2_total"], canvas.colors.chart[2]),
+            ("In both", counts["both"], canvas.colors.positive),
             ("Only {}".format(role_1_name), counts["role_1_only"], accent),
-            ("Only {}".format(role_2_name), counts["role_2_only"], COLORS.chart[2]),
+            ("Only {}".format(role_2_name), counts["role_2_only"], canvas.colors.chart[2]),
         ]
         start_x, card_width, gap = _metric_layout(len(cards))
         for index, (label, value, color) in enumerate(cards):
@@ -278,8 +414,8 @@ def render_rolecompare_result(
         )
         overlay_draw.ellipse(
             (right - radius_px, center_y - radius_px, right + radius_px, center_y + radius_px),
-            fill=(*COLORS.chart[2], 105),
-            outline=(*COLORS.chart[2], 230),
+            fill=(*canvas.colors.chart[2], 105),
+            outline=(*canvas.colors.chart[2], 230),
             width=max(2, canvas.s(4)),
         )
         canvas.image.paste(overlay, (0, 0), overlay)
@@ -296,25 +432,25 @@ def render_rolecompare_result(
                 (canvas.s(center_x) - value_width / 2, canvas.s(venn_y - 34)),
                 value_text,
                 font=canvas.fonts["primary_metric"],
-                fill=COLORS.text,
+                fill=canvas.colors.text,
             )
             label_width = canvas.draw.textlength(label, font=canvas.fonts["supporting_stat"])
             canvas.draw.text(
                 (canvas.s(center_x) - label_width / 2, canvas.s(venn_y + 30)),
                 label,
                 font=canvas.fonts["supporting_stat"],
-                fill=COLORS.secondary_text,
+                fill=canvas.colors.secondary_text,
             )
         draw_footer(
             canvas,
             left_text="BRO EDEN • ROLE STATS",
-            right_text="Updated {}".format(format_timestamp(updated_at)),
+            right_text=("Updated {}".format(format_timestamp(updated_at)) if visual_style.get("show_timestamp", True) else ""),
         )
         return canvas.image
 
     return build_render_result(
         graphic_type="role_comparison",
-        profile=WIDE_OVERVIEW,
+        profile=output_profile,
         factories=[factory],
         state=state,
         target_bytes=target_bytes,
@@ -334,12 +470,36 @@ def render_missingrole_result(
     updated_at: datetime,
     accent_color: int,
     target_bytes: Optional[int] = None,
+    template_key: str = "missing_role",
 ) -> RenderResult:
+    customization = load_runtime_customization_sync(template_key)
+    title = runtime_text(customization.settings, "title", title)
+    body = runtime_text(customization.settings, "subtitle", body)
+    accent_color = runtime_accent(customization.settings, accent_color)
+    background_bytes = prepare_background(
+        customization.background_bytes,
+        (customization.canvas_width, customization.canvas_height),
+        customization.settings,
+    )
+    output_profile = _variant_profile(WIDE_OVERVIEW, customization)
+    visual_style = customization.settings
+    logo_bytes = customization.logo_bytes
+    watermark_bytes = customization.watermark_bytes
     state = RenderState()
     accent = rgb_from_int(accent_color) if accent_color else COLORS.accent
 
     def factory(width: int, height: int) -> Image.Image:
-        canvas = base_canvas(width, height, WIDE_OVERVIEW, state, accent)
+        canvas = base_canvas(
+            width,
+            height,
+            WIDE_OVERVIEW,
+            state,
+            accent,
+            background_bytes=background_bytes,
+            logo_bytes=logo_bytes,
+            watermark_bytes=watermark_bytes,
+            style=visual_style,
+        )
         draw_header(
             canvas,
             title=title,
@@ -348,8 +508,8 @@ def render_missingrole_result(
         )
         cards = [
             ("With {}".format(has_role_name), has_role_total, accent),
-            ("With {}".format(missing_role_name), missing_role_total, COLORS.positive),
-            ("Missing required role", missing_count, COLORS.negative),
+            ("With {}".format(missing_role_name), missing_role_total, canvas.colors.positive),
+            ("Missing required role", missing_count, canvas.colors.negative),
         ]
         start_x, card_width, gap = _metric_layout(len(cards))
         for index, (label, value, color) in enumerate(cards):
@@ -367,8 +527,8 @@ def render_missingrole_result(
         canvas.draw.rounded_rectangle(
             panel,
             radius=canvas.s(22),
-            fill=COLORS.card,
-            outline=COLORS.border,
+            fill=canvas.colors.card,
+            outline=canvas.colors.border,
             width=max(1, canvas.s(2)),
         )
         label = "{} missing {}".format(
@@ -384,31 +544,31 @@ def render_missingrole_result(
                 state,
             ),
             font=canvas.fonts["section_heading"],
-            fill=COLORS.text,
+            fill=canvas.colors.text,
         )
         bar_x, bar_y, bar_width = 78, 690, 1444
         canvas.draw.rounded_rectangle(
             canvas.box((bar_x, bar_y, bar_x + bar_width, bar_y + 26)),
             radius=canvas.s(13),
-            fill=COLORS.surface,
+            fill=canvas.colors.surface,
         )
         filled = bar_width * min(max(missing_percent, 0), 100) / 100
         if filled:
             canvas.draw.rounded_rectangle(
                 canvas.box((bar_x, bar_y, bar_x + filled, bar_y + 26)),
                 radius=canvas.s(13),
-                fill=COLORS.negative,
+                fill=canvas.colors.negative,
             )
         draw_footer(
             canvas,
             left_text="BRO EDEN • ROLE STATS",
-            right_text="Updated {}".format(format_timestamp(updated_at)),
+            right_text=("Updated {}".format(format_timestamp(updated_at)) if visual_style.get("show_timestamp", True) else ""),
         )
         return canvas.image
 
     return build_render_result(
         graphic_type="missing_role",
-        profile=WIDE_OVERVIEW,
+        profile=output_profile,
         factories=[factory],
         state=state,
         target_bytes=target_bytes,
@@ -422,12 +582,35 @@ def render_error_result(
     updated_at: datetime,
     accent_color: int,
     target_bytes: Optional[int] = None,
+    template_key: str = "stats_error",
 ) -> RenderResult:
+    customization = load_runtime_customization_sync(template_key)
+    title = runtime_text(customization.settings, "title", title)
+    accent_color = runtime_accent(customization.settings, accent_color)
+    background_bytes = prepare_background(
+        customization.background_bytes,
+        (customization.canvas_width, customization.canvas_height),
+        customization.settings,
+    )
+    output_profile = _variant_profile(WIDE_OVERVIEW, customization)
+    visual_style = customization.settings
+    logo_bytes = customization.logo_bytes
+    watermark_bytes = customization.watermark_bytes
     state = RenderState()
     accent = rgb_from_int(accent_color) if accent_color else COLORS.accent
 
     def factory(width: int, height: int) -> Image.Image:
-        canvas = base_canvas(width, height, WIDE_OVERVIEW, state, accent)
+        canvas = base_canvas(
+            width,
+            height,
+            WIDE_OVERVIEW,
+            state,
+            accent,
+            background_bytes=background_bytes,
+            logo_bytes=logo_bytes,
+            watermark_bytes=watermark_bytes,
+            style=visual_style,
+        )
         draw_header(
             canvas,
             title=title,
@@ -444,13 +627,13 @@ def render_error_result(
         draw_footer(
             canvas,
             left_text="BRO EDEN • STATS",
-            right_text="Updated {}".format(format_timestamp(updated_at)),
+            right_text=("Updated {}".format(format_timestamp(updated_at)) if visual_style.get("show_timestamp", True) else ""),
         )
         return canvas.image
 
     return build_render_result(
         graphic_type="stats_error",
-        profile=WIDE_OVERVIEW,
+        profile=output_profile,
         factories=[factory],
         state=state,
         target_bytes=target_bytes,
@@ -474,7 +657,7 @@ def _prepare_banner(data: Optional[bytes], width: int, height: int) -> Optional[
         return None
 
 
-async def render_compact_roster_result(
+async def _render_compact_roster_result(
     *,
     title: str,
     body: str,
@@ -485,11 +668,37 @@ async def render_compact_roster_result(
     include_avatars: bool = True,
     banner_bytes: Optional[bytes] = None,
     target_bytes: Optional[int] = None,
+    template_key: str = "role_roster",
 ) -> RenderResult:
+    customization = await load_runtime_customization(
+        template_key,
+        legacy_header=banner_bytes,
+    )
+    title = runtime_text(customization.settings, "title", title)
+    body = runtime_text(customization.settings, "subtitle", body)
+    accent_color = runtime_accent(customization.settings, accent_color)
+    background_bytes = prepare_background(
+        customization.background_bytes,
+        (customization.canvas_width, customization.canvas_height),
+        customization.settings,
+    )
+    output_profile = _variant_profile(PORTRAIT_LEADERBOARD, customization)
+    banner_bytes = customization.header_bytes
+    visual_style = customization.settings
+    logo_bytes = customization.logo_bytes
+    watermark_bytes = customization.watermark_bytes
     items = list(items)
+    include_avatars = include_avatars and bool(visual_style.get("show_avatars", True))
+    rows_per_page = max(
+        1,
+        min(
+            int(visual_style.get("maximum_rows", ROSTER_ROWS_PER_PAGE)),
+            ROSTER_ROWS_PER_PAGE,
+        ),
+    )
     pages = [
-        items[index : index + ROSTER_ROWS_PER_PAGE]
-        for index in range(0, len(items), ROSTER_ROWS_PER_PAGE)
+        items[index : index + rows_per_page]
+        for index in range(0, len(items), rows_per_page)
     ] or [[]]
     avatars = await fetch_avatars(
         item.avatar_url for item in items if include_avatars
@@ -507,7 +716,15 @@ async def render_compact_roster_result(
             page_number: int = page_number,
         ) -> Image.Image:
             canvas = base_canvas(
-                width, height, PORTRAIT_LEADERBOARD, state, accent
+                width,
+                height,
+                PORTRAIT_LEADERBOARD,
+                state,
+                accent,
+                background_bytes=background_bytes,
+                logo_bytes=logo_bytes,
+                watermark_bytes=watermark_bytes,
+                style=visual_style,
             )
             banner = _prepare_banner(
                 banner_bytes, canvas.s(1104), canvas.s(208)
@@ -536,8 +753,8 @@ async def render_compact_roster_result(
                     (panel_x, panel_y, panel_x + panel_width, panel_y + panel_height)
                 ),
                 radius=canvas.s(22),
-                fill=COLORS.surface_alt,
-                outline=COLORS.border,
+                fill=canvas.colors.surface_alt,
+                outline=canvas.colors.border,
                 width=max(1, canvas.s(2)),
             )
             draw_section_heading(
@@ -560,13 +777,17 @@ async def render_compact_roster_result(
                     canvas.draw.rounded_rectangle(
                         canvas.box((x, y, x + panel_width - 36, y + row_height)),
                         radius=canvas.s(14),
-                        fill=COLORS.surface if index % 2 else COLORS.card,
-                        outline=COLORS.border,
+                        fill=canvas.colors.surface if index % 2 else canvas.colors.card,
+                        outline=canvas.colors.border,
                         width=max(1, canvas.s(1)),
                     )
                     avatar_size = 48
+                    label_font = canvas.fonts["username"]
+                    renderable_label = normalize_for_font(item.label, label_font)
                     avatar = prepare_avatar(
-                        avatars.data.get(item.avatar_url or ""), canvas.s(avatar_size)
+                        avatars.data.get(item.avatar_url or ""),
+                        canvas.s(avatar_size),
+                        canvas.avatar_shape,
                     )
                     text_x = x + 22
                     if include_avatars:
@@ -581,11 +802,11 @@ async def render_compact_roster_result(
                                 state.avatar_fallback_count += 1
                             canvas.draw.ellipse(
                                 canvas.box((text_x, y + 15, text_x + avatar_size, y + 63)),
-                                fill=COLORS.accent_soft,
+                                fill=canvas.colors.accent_soft,
                                 outline=accent,
                                 width=max(1, canvas.s(2)),
                             )
-                            initial = (item.label[:1] or "?").upper()
+                            initial = (renderable_label[:1] or "?").upper()
                             font = canvas.fonts["ranking_number"]
                             bbox = canvas.draw.textbbox((0, 0), initial, font=font)
                             canvas.draw.text(
@@ -595,30 +816,30 @@ async def render_compact_roster_result(
                                 ),
                                 initial,
                                 font=font,
-                                fill=COLORS.text,
+                                fill=canvas.colors.text,
                             )
                         text_x += avatar_size + 16
                     safe = truncate_text(
                         canvas.draw,
-                        item.label,
-                        canvas.fonts["username"],
+                        renderable_label,
+                        label_font,
                         canvas.s(panel_width - (text_x - panel_x) - 58),
                         state,
                     )
-                    bbox = canvas.draw.textbbox((0, 0), safe, font=canvas.fonts["username"])
+                    bbox = canvas.draw.textbbox((0, 0), safe, font=label_font)
                     canvas.draw.text(
                         (
                             canvas.s(text_x),
                             canvas.s(y + row_height / 2) - (bbox[3] - bbox[1]) / 2 - bbox[1],
                         ),
                         safe,
-                        font=canvas.fonts["username"],
-                        fill=COLORS.text,
+                        font=label_font,
+                        fill=canvas.colors.text,
                     )
             draw_footer(
                 canvas,
                 left_text="BRO EDEN • ROLE ROSTER",
-                right_text="Updated {}".format(format_timestamp(updated_at)),
+                right_text=("Updated {}".format(format_timestamp(updated_at)) if visual_style.get("show_timestamp", True) else ""),
             )
             return canvas.image
 
@@ -626,8 +847,20 @@ async def render_compact_roster_result(
 
     return build_render_result(
         graphic_type="role_roster",
-        profile=PORTRAIT_LEADERBOARD,
+        profile=output_profile,
         factories=factories,
         state=state,
         target_bytes=target_bytes,
     )
+
+
+async def render_ranked_graphic_result(**kwargs) -> RenderResult:
+    """Bound concurrent Pillow work for Raspberry Pi deployments."""
+    async with _RENDER_SEMAPHORE:
+        return await _render_ranked_graphic_result(**kwargs)
+
+
+async def render_compact_roster_result(**kwargs) -> RenderResult:
+    """Bound concurrent roster rendering and avatar processing."""
+    async with _RENDER_SEMAPHORE:
+        return await _render_compact_roster_result(**kwargs)

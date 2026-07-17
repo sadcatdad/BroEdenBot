@@ -1,0 +1,28 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="page-heading"><div><p class="eyebrow">Shared visual identity</p><h1>Themes</h1></div>{% if can_manage_users %}<a class="button" href="{{ url_for('visual_theme_new') }}">Create theme</a>{% endif %}</div>
+{% include "_visual_nav.html" %}
+{% if message %}<div class="alert success">{{ message }}</div>{% endif %}
+{% if error %}<div class="alert error">{{ error }}</div>{% endif %}
+<div class="toolbar"><a class="button secondary small" href="{{ url_for('visual_themes') }}">Active</a><a class="button secondary small" href="{{ url_for('visual_themes') }}?archived=true">Include archived</a></div>
+<section class="visual-theme-grid">
+  {% for theme in themes %}
+  <article class="card {{ 'archived' if theme.archived_at else '' }}">
+    <div class="theme-swatch" style="--theme-accent: {{ theme.settings.accent_color or '#f0319b' }}; --theme-panel: {{ theme.settings.panel_color or '#171820' }}"></div>
+    <div class="split-heading"><h2>{{ theme.name }}</h2>{% if theme.is_default %}<span class="badge">Default</span>{% elif theme.archived_at %}<span class="badge">Archived</span>{% endif %}</div>
+    <p>{{ theme.description }}</p><p class="muted">{{ theme.template_count }} templates · {{ theme.asset_count }} assets{% if theme.is_builtin %} · Built in/read-only{% endif %}</p>
+    <div class="action-buttons">
+      <a class="button secondary" href="{{ url_for('visual_theme_edit', theme_id=theme.id) }}">{{ 'View' if theme.is_builtin else 'Edit' }}</a>
+      {% if can_manage_users and not theme.archived_at %}<form method="post" action="{{ url_for('visual_theme_duplicate', theme_id=theme.id) }}"><input type="hidden" name="csrf" value="{{ csrf_token }}"><button class="button secondary">Duplicate</button></form>{% endif %}
+      {% if can_manage_users and theme.archived_at %}
+      <form method="post" action="{{ url_for('visual_theme_restore', theme_id=theme.id) }}"><input type="hidden" name="csrf" value="{{ csrf_token }}"><button class="button secondary">Restore</button></form>
+      <form method="post" action="{{ url_for('visual_theme_delete', theme_id=theme.id) }}" onsubmit="return confirm('Permanently delete this unused archived theme?')"><input type="hidden" name="csrf" value="{{ csrf_token }}"><button class="button danger">Delete</button></form>
+      {% elif can_manage_users and not theme.is_default %}
+      <form method="post" action="{{ url_for('visual_theme_default', theme_id=theme.id) }}"><input type="hidden" name="csrf" value="{{ csrf_token }}"><button class="button secondary">Set default</button></form>
+      {% if not theme.is_builtin %}<form method="post" action="{{ url_for('visual_theme_archive', theme_id=theme.id) }}"><input type="hidden" name="csrf" value="{{ csrf_token }}"><button class="button danger">Archive</button></form>{% endif %}
+      {% endif %}
+    </div>
+  </article>
+  {% endfor %}
+</section>
+{% endblock %}

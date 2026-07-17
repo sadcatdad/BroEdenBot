@@ -758,8 +758,8 @@ class Streaks(commands.Cog):
             days = int(streak)
             items.append(
                 RankedGraphicItem(
-                    label=member.display_name,
-                    subtitle=f"@{member.name}",
+                    label=member.name,
+                    subtitle="",
                     value=f"{days:,} day{'s' if days != 1 else ''}",
                     avatar_url=avatar_url,
                     score=float(days),
@@ -791,6 +791,7 @@ class Streaks(commands.Cog):
             layout="leaderboard",
             footer_text=STREAK_FOOTER,
             force_columns=2,
+            template_key="streak_leaderboard",
         )
         view = discord.ui.View(timeout=None)
         view.add_item(discord.ui.Button(
