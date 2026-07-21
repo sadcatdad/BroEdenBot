@@ -1,0 +1,40 @@
+# Bot feature inventory
+
+Status is conservative. `ACTIVE` means registered, reachable, tested, and supported by current code; it does not claim recent production use unless runtime evidence exists. `UNKNOWN` means code is valid but this checkout contained no trustworthy production-use evidence. No `UNKNOWN` feature was deleted.
+
+## Community and automation
+
+| Feature | Code and Discord entry points | Dashboard/API | Jobs and persistence | Configuration and dependencies | Status / evidence |
+|---|---|---|---|---|---|
+| Activity Streaks | `cogs/streaks.py`; `!streak`, `/streak leaderboard` | `/streaks`, `/features/streaks` | 20-second restore worker, 1-minute heartbeat, 30-minute leaderboard; `streak_days`, `member_streaks`, `streak_milestones`, `streak_weekly_posts`, `streak_runtime_state`, `streak_restore_requests`, `streak_adjustments` | `STREAK_*`; message history, eligible channels/roles, optional announcement/leaderboard channels | **ACTIVE**: registered, dashboard recovery workflow and targeted tests |
+| DISBOARD Bumps | `cogs/disboard_bumps.py`; verified DISBOARD response listener, `!bumpleaderboard` | `/features/bumps`; Message Studio asset links | 1-minute reminder worker, 5-minute leaderboard worker; `leaderboards`, `points`, `disboard_bump_events`, `disboard_bump_reminders`, `bump_leaderboard_post_state` | `DISBOARD_BOT_USER_ID`, `BUMP_*`; DISBOARD bot, reward/ping roles, delivery channels | **ACTIVE but configuration may be incomplete**: registered and tested; local configured bot ID absent |
+| Reminders | `cogs/reminder.py`; `/remind personal|event|manage|subscriptions|help`, `/events`, `/timezone`, `/time`; legacy aliases gated | `/operations/reminders/*`, `/features/reminders` | scheduler loop; `reminders`, reminder occurrences/subscriptions/posts, `user_timezones`, dashboard action state | `REMINDER_*`, `ENABLE_LEGACY_REMINDER_COMMANDS`; role permissions and destination channels | **ACTIVE**: registered, scheduler/migration/dashboard tests |
+| Events | Event mode within `cogs/reminder.py`; `/remind event`, `/events` | `/features/events`; no event-authoring dashboard yet | Reminder scheduler and subscription tables | `EVENTS_HEADER_ASSET_ID`, reminder permissions/resources | **ACTIVE / experimental dashboard**: Discord flow is live; Party Captain capabilities are reserved for future dashboard authoring |
+| Polls | `cogs/poll.py`; `/poll` | `/features/polls` (status only) | `poll`, `poll_votes`; persistent button views | Discord message/channel permissions | **ACTIVE**, recent-use **UNKNOWN**: registered and tested, no local usage rows inspected |
+| Karaoke Queue | `cogs/queue.py`; `/queue dashboard|lock|unlock|move|remove`, prefix `!q|qj|ql|qd|qn` | `/features/queue` (status only) | `queue`, `queue_lock`, `queue_dashboard`; persistent interactions | Voice channel and staff permissions | **ACTIVE**, recent-use **UNKNOWN** |
+
+## Moderation, AI, and knowledge
+
+| Feature | Code and Discord entry points | Dashboard/API | Jobs and persistence | Configuration and dependencies | Status / evidence |
+|---|---|---|---|---|---|
+| Ask | `cogs/ask.py`; `/ask` | `/features/ask`; usage/feedback on `/ai` | AI usage/feedback and public knowledge chunks | `ASK_*`, `ask_command_allowed_*`, model env values; public knowledge only | **ACTIVE**: registered, privacy/feedback tests; staff context remains separated |
+| Knowledge | `cogs/knowledge_sources.py`, `utils/knowledge_manager.py`, `utils/live_knowledge.py`; `/sources add|list|remove|sync` | `/knowledge/*`; local Discord metadata APIs | knowledge documents/chunks, live source and sync/action tables | `knowledge_allowed_*`, `message_context_excluded_*`; channel/category permissions | **ACTIVE**: registered, dashboard create/edit/sync/reindex tests |
+| Staff & Moderation Tools | `cogs/mod_ai.py`, `staff_ai.py`, `staff_notes.py`, `message_context.py`; `/modai *`, `/staffai *`, `/staffnote *`, `/context *`; Mod Review/Draft Response context menus | `/features/staff_tools`, `/ai`, `/knowledge` | `modai_reviews`, `staff_notes`, private message/staff context databases | `MODAI_*`, `STAFF_*`, `MESSAGE_CONTEXT_*`, `BOT_OWNER_*`, `AUDIT_LOG_THREAD_ID`; staff roles and private sources | **ACTIVE**: registered and tested. Private/public context boundary preserved |
+| Staff Checklists | `cogs/checklist.py`; `/checklist create|view|list|post|delete|rename|archive|restore|export` | `/features/checklists` (status only) | `checklists`, `checklist_items`, `checklist_posts`; persistent views | Discord staff permissions and posting channel | **ACTIVE**, recent-use **UNKNOWN** |
+| Rule Cards | `cogs/rulecard.py`; `/rulecard draft`, message context menu | `/features/rulecards` (status only) | No dedicated table; generated draft interaction | Gemini/provider env and staff permission | **ACTIVE**, recent-use **UNKNOWN** |
+
+## Analytics, finance, and content
+
+| Feature | Code and Discord entry points | Dashboard/API | Jobs and persistence | Configuration and dependencies | Status / evidence |
+|---|---|---|---|---|---|
+| Analytics & Stats | `cogs/stats.py`, `leaderboards.py`; `/stats *`, `/activity *`, `/leaderboard *`, `/points` | `/analytics/*`, `/analytics/stats/*`, CSV exports, `/features/analytics`; legacy `/stats*` redirects | daily and queued refresh workers; `role_stat_embeds`, tracked reports, activity/join/leave/import tables, leaderboard tables | `STATS_*`, `ACTIVITY_*`, `LEADERBOARD_*`, `analytics_excluded_*`; role/channel/category resources | **ACTIVE**: extensive dashboards and tests |
+| Voice Stats & XP | `cogs/vc_stats.py`; `/vcstats *`, `/vcrewards *` | `/analytics/voice`, Overview readiness, `/features/voice`, failed-pulse cleanup | heartbeat and XP pulse loops; `vc_sessions`, `vc_active_sessions`, `vc_settings`, reward snapshots, `vc_xp_pulses`, `vc_xp_user_state` | `VC*`, `EXCLUDED_VOICE_CHANNEL_IDS`; trigger role and voice exclusions | **ACTIVE**: runtime workflow and dashboard tests. Four obsolete cap/removal settings hidden |
+| Bro Eden Bank | `cogs/bank.py`; `/bank add|expense|balance|history|setchannel|embed|clear` | read-only `/bank`, `/features/bank` | `brobank.db`: `bank_transactions`, `bank_settings` | `BANK_ALLOWED_ROLE_IDS`; administrator or mapped bot role | **ACTIVE**: registered and dashboard-tested. `BANK_LOG_CHANNEL_ID` is not consumed and is hidden |
+| Message Studio | `utils/embed_templates.py`, dashboard editor; consumed by bump/streak/events | `/embeds/*`, `/features/message_studio` | `embed_templates`; no background job | Feature asset IDs; live emoji/role metadata | **ACTIVE**: multi-embed and message migrations/tests. Feature-owned selection moved out of global Settings |
+| Visual Content Studio | `utils/visual_studio/*`; presentation integrations in bot renderers | `/visual/*`, `/api/visual/templates`, `/features/visual` | visual assets/themes/templates/versions/variants/schedules/usage/global/audit/migration tables | `VISUAL_ASSET_DIR`, allowlisted studio data; persistent asset storage | **ACTIVE**: versioned migration, renderer and dashboard tests |
+
+## Registration and reachability
+
+`main.py` loads cogs through the configured module list; the feature registry evaluates the same `ENABLED_MODULES` value. A registry card is `disabled` only when its module keys are excluded by that runtime setting. Internal dashboard studios do not receive decorative toggles because no bot runtime toggle exists.
+
+No confirmed replacement implementation was found for the features above. Compatibility commands and settings are enumerated in [dashboard-owner-confirmation.md](dashboard-owner-confirmation.md); they remain hidden or gated rather than deleted.

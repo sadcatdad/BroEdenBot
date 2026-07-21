@@ -4,12 +4,11 @@
     <strong>Sections</strong>
   </div>
   <nav class="settings-menu">
-    <a class="settings-menu-item {{ 'active' if current_path == '/settings' else '' }}" href="{{ url_for('settings') }}" {% if current_path == '/settings' %}aria-current="page"{% endif %}>Bot Configuration</a>
-    <a class="settings-menu-item {{ 'active' if current_path == '/settings/permissions' else '' }}" href="{{ url_for('settings_permissions') }}" {% if current_path == '/settings/permissions' %}aria-current="page"{% endif %}>Permissions &amp; Access</a>
-    <a class="settings-menu-item {{ 'active' if current_path == '/settings/discord' else '' }}" href="{{ url_for('settings_discord') }}" {% if current_path == '/settings/discord' %}aria-current="page"{% endif %}>Discord Roles &amp; Channels</a>
-    <a class="settings-menu-item {{ 'active' if current_path == '/settings/features' else '' }}" href="{{ url_for('settings_features') }}" {% if current_path == '/settings/features' %}aria-current="page"{% endif %}>Feature Settings</a>
-    <a class="settings-menu-item {{ 'active' if current_path == '/settings/imports' else '' }}" href="{{ url_for('imports') }}" {% if current_path == '/settings/imports' %}aria-current="page"{% endif %}>Imports</a>
-    {% if can_manage_users %}<a class="settings-menu-item {{ 'active' if current_path == '/settings/users' else '' }}" href="{{ url_for('users_page') }}" {% if current_path == '/settings/users' %}aria-current="page"{% endif %}>Dashboard Users</a>{% endif %}
-    <a class="settings-menu-item {{ 'active' if current_path == '/settings/advanced' else '' }}" href="{{ url_for('settings_advanced') }}" {% if current_path == '/settings/advanced' %}aria-current="page"{% endif %}>Advanced</a>
+    {% if can('settings.view') %}<a class="settings-menu-item {{ 'active' if current_path == '/settings' else '' }}" href="{{ url_for('settings') }}" {% if current_path == '/settings' %}aria-current="page"{% endif %}>General</a>{% endif %}
+    {% if can('access.manage') %}<a class="settings-menu-item {{ 'active' if current_path.startswith('/settings/access') else '' }}" href="{{ url_for('settings_access') }}" {% if current_path.startswith('/settings/access') %}aria-current="page"{% endif %}>Dashboard Access</a>{% endif %}
+    {% if can('discord_metadata.view') %}<a class="settings-menu-item {{ 'active' if current_path == '/settings/discord' else '' }}" href="{{ url_for('settings_discord') }}" {% if current_path == '/settings/discord' %}aria-current="page"{% endif %}>Discord Connection</a>{% endif %}
+    {% if can('imports.view') %}<a class="settings-menu-item {{ 'active' if current_path == '/settings/imports' else '' }}" href="{{ url_for('imports') }}" {% if current_path == '/settings/imports' %}aria-current="page"{% endif %}>Data &amp; Storage</a>{% endif %}
+    {% if can('settings.view') %}<a class="settings-menu-item {{ 'active' if current_path == '/settings/advanced' else '' }}" href="{{ url_for('settings_advanced') }}" {% if current_path == '/settings/advanced' %}aria-current="page"{% endif %}>Advanced</a>{% endif %}
+    {% if can('audit_log.view') %}<a class="settings-menu-item {{ 'active' if current_path == '/settings/audit' else '' }}" href="{{ url_for('settings_audit') }}" {% if current_path == '/settings/audit' %}aria-current="page"{% endif %}>Audit Log</a>{% endif %}
   </nav>
 </aside>

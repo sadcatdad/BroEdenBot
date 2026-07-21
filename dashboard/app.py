@@ -5,7 +5,7 @@ import os
 import re
 import secrets
 import sqlite3
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Optional
 
@@ -16,6 +16,7 @@ from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, Resp
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from starlette.middleware.sessions import SessionMiddleware
+from starlette.middleware.base import BaseHTTPMiddleware
 
 from dashboard.auth import (
     OAUTH_STATE_KEY,
@@ -23,6 +24,7 @@ from dashboard.auth import (
     csrf_token,
     current_user,
     has_write_access,
+    has_permission,
     is_admin,
     is_authenticated,
     login_user,
@@ -81,6 +83,27 @@ from dashboard.users import (
     list_dashboard_users,
     upsert_discord_user,
 )
+from dashboard.rbac import (
+    access_overview,
+    assign_direct_role,
+    initialize_rbac_schema,
+    list_audit_events,
+    list_roles,
+    permission_catalog,
+    record_audit,
+    remove_direct_role,
+    remove_discord_role_mapping,
+    replace_discord_role_mappings,
+    save_custom_role,
+    set_user_permission_override,
+    set_user_status,
+)
+from dashboard.features import (
+    FEATURES_BY_KEY,
+    feature_inventory,
+    feature_key_for_setting,
+    feature_snapshot,
+)
 from utils.knowledge_manager import (
     document_details,
     initialize_knowledge_schema,
@@ -133,7 +156,10 @@ from utils.settings import (
     is_forbidden_key,
     recent_setting_changes,
     set_setting,
+    set_settings,
+    settings_database_path,
     settings_for_dashboard,
+    settings_for_feature,
 )
 from utils.display_names import normalize_display_name
 from utils.embed_templates import (
@@ -250,6 +276,7 @@ if dashboard_enabled():
     initialize_ai_kb_schema()
     initialize_live_knowledge_schema_sync()
     initialize_dashboard_users()
+    initialize_rbac_schema()
     initialize_streak_dashboard_schema()
     initialize_embed_templates_schema()
     initialize_visual_studio_schema()
@@ -260,6 +287,107 @@ app = FastAPI(
     redoc_url=None,
     openapi_url=None,
 )
+
+
+def required_permission(path: str, method: str) -> str | None:
+    """Resolve the stable server-side capability for a dashboard request."""
+    normalized_method = method.upper()
+    if path in {"/health", "/login", "/logout"} or path.startswith("/auth/discord/") or path.startswith("/static/"):
+        return None
+    if path in {"/users", "/settings/users"} or path.startswith("/settings/access"):
+        return "access.manage"
+    if path.startswith("/settings/audit"):
+        return "audit_log.view"
+    if path.startswith("/settings/discord") or path.startswith("/api/discord/"):
+        return "discord_metadata.refresh" if normalized_method != "GET" else "discord_metadata.view"
+    if path in {"/imports", "/settings/imports"}:
+        return "imports.manage" if normalized_method != "GET" else "imports.view"
+    if path.startswith("/settings"):
+        return "settings.manage" if normalized_method != "GET" else "settings.view"
+    if path.startswith("/features"):
+        if normalized_method != "GET":
+            return "features.manage"
+        parts = [part for part in path.split("/") if part]
+        feature = FEATURES_BY_KEY.get(parts[1]) if len(parts) > 1 else None
+        return feature.permission if feature else "features.view"
+    if path.startswith("/analytics") or path.startswith("/stats"):
+        return "analytics.manage" if normalized_method != "GET" else "analytics.view"
+    if path.startswith("/operations/reminders"):
+        return "reminders.manage" if normalized_method != "GET" else "reminders.view"
+    if path.startswith("/operations/restart"):
+        return "bot.restart"
+    if path.startswith("/operations"):
+        return "operations.manage" if normalized_method != "GET" else "operations.view"
+    if path.startswith("/streaks"):
+        return "streaks.manage" if normalized_method != "GET" else "streaks.view"
+    if path.startswith("/vcxp/"):
+        return "operations.manage"
+    if path.startswith("/bank"):
+        return "bank.manage" if normalized_method != "GET" else "bank.view"
+    if path.startswith("/embeds"):
+        return "message_studio.manage" if normalized_method != "GET" else "message_studio.view"
+    if path.startswith("/visual") or path.startswith("/api/visual"):
+        return "visual.manage" if normalized_method != "GET" else "visual.view"
+    if path.startswith("/knowledge"):
+        return "knowledge.manage" if normalized_method != "GET" or path.endswith("/edit") else "knowledge.view"
+    if path.startswith("/ai/kb/new") or (path.startswith("/ai/kb/") and path.endswith("/edit")):
+        return "ai.manage"
+    if path.startswith("/ai"):
+        return "ai.manage" if normalized_method != "GET" else "ai.view"
+    return "dashboard.view" if normalized_method == "GET" else "dashboard.unmapped"
+
+
+class DashboardPermissionMiddleware(BaseHTTPMiddleware):
+    async def dispatch(self, request: Request, call_next):
+        permission = required_permission(request.url.path, request.method)
+        if permission:
+            if not dashboard_enabled() or not is_authenticated(request):
+                return RedirectResponse(
+                    url=request.url_for("login_page"),
+                    status_code=status.HTTP_303_SEE_OTHER,
+                )
+            if not has_permission(request, permission):
+                user = current_user(request)
+                record_audit(
+                    actor_user_id=user.get("id"),
+                    actor_label=user.get("username") or "anonymous",
+                    action="access.denied",
+                    target_type="route",
+                    target_id=request.url.path,
+                    success=False,
+                    error=f"Missing permission: {permission}",
+                )
+                if request.url.path.startswith("/api/"):
+                    return JSONResponse(
+                        {"detail": "You do not have permission to access this resource."},
+                        status_code=status.HTTP_403_FORBIDDEN,
+                    )
+                return templates.TemplateResponse(
+                    request=request,
+                    name="403.html",
+                    context=template_context(
+                        request,
+                        page_title="Access denied",
+                        required_permission=permission,
+                    ),
+                    status_code=status.HTTP_403_FORBIDDEN,
+                )
+        response = await call_next(request)
+        if request.method.upper() in {"POST", "PUT", "PATCH", "DELETE"} and request.url.path not in {"/login", "/logout"}:
+            user = current_user(request) if is_authenticated(request) else {}
+            record_audit(
+                actor_user_id=user.get("id"),
+                actor_label=user.get("username") or "anonymous",
+                action="request." + request.method.lower(),
+                target_type="route",
+                target_id=request.url.path,
+                success=response.status_code < 400,
+                error=None if response.status_code < 400 else f"HTTP {response.status_code}",
+            )
+        return response
+
+
+app.add_middleware(DashboardPermissionMiddleware)
 app.add_middleware(
     SessionMiddleware,
     secret_key=os.getenv("DASHBOARD_SECRET_KEY", "").strip()
@@ -277,7 +405,32 @@ templates = Jinja2Templates(directory=DASHBOARD_DIR / "templates")
 templates.env.filters["display_name"] = normalize_display_name
 
 
+def friendly_datetime(value: Any) -> str:
+    text = str(value or "").strip()
+    if not text:
+        return "Never"
+    try:
+        parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
+    except ValueError:
+        return text
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    local = parsed.astimezone()
+    return "{} {}, {} at {}".format(
+        local.strftime("%B"), local.day, local.year,
+        local.strftime("%I:%M %p %Z").lstrip("0"),
+    )
+
+
+templates.env.filters["friendly_datetime"] = friendly_datetime
+
+
 def template_context(request: Request, **values: Any) -> dict[str, Any]:
+    permissions = sorted(
+        permission for permission in (
+            str(item["key"]) for item in permission_catalog()
+        ) if has_permission(request, permission)
+    ) if is_authenticated(request) else []
     return {
         "request": request,
         "current_path": request.url.path,
@@ -285,44 +438,18 @@ def template_context(request: Request, **values: Any) -> dict[str, Any]:
         "current_user": current_user(request) if is_authenticated(request) else None,
         "can_write": has_write_access(request),
         "can_manage_users": is_admin(request),
+        "permissions": permissions,
+        "can": lambda permission: permission in permissions,
         "ai_dashboard_visible": ai_dashboard_visible(),
         "csrf_token": csrf_token(request),
         **values,
     }
 
 
-def render_settings_page(
-    request: Request,
-    *,
-    page_title: str = "Settings",
-    visible_sections: tuple[str, ...] = (
-        "ask",
-        "permissions",
-        "vcxp",
-        "models",
-        "dashboard_json",
-    ),
-    **values: Any,
-) -> HTMLResponse:
-    message = request.session.pop("settings_message", None)
-    error = request.session.pop("settings_error", None)
-    return templates.TemplateResponse(
-        request=request,
-        name="settings.html",
-        context=template_context(
-            request,
-            page_title=page_title,
-            sections=settings_for_dashboard(),
-            visible_sections=visible_sections,
-            recent_changes=recent_setting_changes(),
-            message=message,
-            error=error,
-            **values,
-        ),
-    )
-
-
 def settings_redirect_for_key(request: Request, key: str) -> str:
+    feature_key = feature_key_for_setting(key)
+    if feature_key in FEATURES_BY_KEY:
+        return str(request.url_for("feature_detail", feature_key=feature_key))
     definition = DEFINITIONS_BY_KEY.get(key)
     if definition and definition.section in {
         "bumps",
@@ -353,11 +480,6 @@ async def require_action_csrf(request: Request) -> None:
     form = await request.form()
     if not csrf_is_valid(request, str(form.get("csrf", ""))):
         raise HTTPException(status_code=400, detail="Invalid CSRF token.")
-    if not has_write_access(request):
-        raise HTTPException(
-            status_code=403,
-            detail="Viewer accounts cannot perform dashboard actions.",
-        )
 
 
 def login_response(
@@ -404,11 +526,26 @@ async def login(
         user = authenticate_password(username, password)
         if user is not None:
             login_user(request, user, auth_provider="password")
+            record_audit(
+                actor_user_id=int(user["id"]),
+                actor_label=str(user.get("username") or "owner"),
+                action="auth.login.succeeded",
+                target_type="auth_provider",
+                target_id="password",
+            )
             return RedirectResponse(
                 url=request.url_for("home"),
                 status_code=status.HTTP_303_SEE_OTHER,
             )
         error = "Invalid username or password."
+        record_audit(
+            actor_label=str(username or "anonymous")[:120],
+            action="auth.login.failed",
+            target_type="auth_provider",
+            target_id="password",
+            success=False,
+            error="Invalid credentials",
+        )
     return login_response(
         request,
         error=error,
@@ -446,24 +583,44 @@ async def discord_callback(
 ) -> Response:
     expected_state = str(request.session.pop(OAUTH_STATE_KEY, ""))
     if error:
+        record_audit(
+            actor_label="anonymous", action="auth.login.failed",
+            target_type="auth_provider", target_id="discord",
+            success=False, error="OAuth canceled",
+        )
         return login_response(
             request,
             error="Discord login was canceled.",
             status_code=status.HTTP_401_UNAUTHORIZED,
         )
     if not expected_state or not state:
+        record_audit(
+            actor_label="anonymous", action="auth.login.failed",
+            target_type="auth_provider", target_id="discord",
+            success=False, error="OAuth state missing or expired",
+        )
         return login_response(
             request,
             error="Discord login session is missing or expired.",
             status_code=status.HTTP_400_BAD_REQUEST,
         )
     if not secrets.compare_digest(expected_state, state):
+        record_audit(
+            actor_label="anonymous", action="auth.login.failed",
+            target_type="auth_provider", target_id="discord",
+            success=False, error="OAuth state mismatch",
+        )
         return login_response(
             request,
             error="Discord login session could not be verified.",
             status_code=status.HTTP_400_BAD_REQUEST,
         )
     if not code:
+        record_audit(
+            actor_label="anonymous", action="auth.login.failed",
+            target_type="auth_provider", target_id="discord",
+            success=False, error="Authorization code missing",
+        )
         return login_response(
             request,
             error="Discord did not return an authorization code.",
@@ -473,24 +630,52 @@ async def discord_callback(
         identity = await fetch_discord_identity(code)
         user = upsert_discord_user(identity)
     except DiscordOAuthError:
+        record_audit(
+            actor_label="anonymous", action="auth.login.failed",
+            target_type="auth_provider", target_id="discord",
+            success=False, error="Discord exchange or membership lookup failed",
+        )
         return login_response(
             request,
             error="Discord login could not be completed. Please try again.",
             status_code=status.HTTP_502_BAD_GATEWAY,
         )
     except PermissionError as exc:
+        record_audit(
+            actor_label=str(identity.get("username") or "discord")[:120],
+            action="auth.login.failed", target_type="auth_provider",
+            target_id="discord", success=False, error=str(exc)[:300],
+        )
         return login_response(
             request,
             error=str(exc),
             status_code=status.HTTP_403_FORBIDDEN,
         )
     except ValueError:
+        record_audit(
+            actor_label="anonymous", action="auth.login.failed",
+            target_type="auth_provider", target_id="discord",
+            success=False, error="Discord identity validation failed",
+        )
         return login_response(
             request,
             error="Discord identity could not be verified.",
             status_code=status.HTTP_502_BAD_GATEWAY,
         )
     login_user(request, user, auth_provider="discord")
+    record_audit(
+        actor_user_id=int(user["id"]),
+        actor_label=str(
+            user.get("discord_global_name")
+            or user.get("discord_username")
+            or user.get("username")
+            or "discord"
+        ),
+        action="auth.login.succeeded",
+        target_type="auth_provider",
+        target_id="discord",
+        after={"access_source": user.get("access_source")},
+    )
     return RedirectResponse(
         url=request.url_for("home"),
         status_code=status.HTTP_303_SEE_OTHER,
@@ -517,21 +702,9 @@ async def users_redirect(request: Request) -> RedirectResponse:
 
 @app.get("/settings/users", response_class=HTMLResponse, name="users_page")
 async def users_page(request: Request) -> HTMLResponse:
-    if redirect := login_redirect(request):
-        return redirect
-    if not is_admin(request):
-        raise HTTPException(
-            status_code=403,
-            detail="Admin or owner access is required.",
-        )
-    return templates.TemplateResponse(
-        request=request,
-        name="users.html",
-        context=template_context(
-            request,
-            page_title="Dashboard Users",
-            users=list_dashboard_users(),
-        ),
+    return RedirectResponse(
+        url=request.url_for("settings_access"),
+        status_code=status.HTTP_303_SEE_OTHER,
     )
 
 
@@ -582,7 +755,7 @@ async def clear_failed_vcxp_pulses(request: Request) -> RedirectResponse:
     if redirect := login_redirect(request):
         return redirect
     await require_action_csrf(request)
-    if not is_admin(request):
+    if not has_permission(request, "operations.manage"):
         raise HTTPException(status_code=403, detail="Admin access is required.")
     try:
         deleted = delete_failed_vcxp_pulses()
@@ -739,7 +912,7 @@ async def ai_kb_page(
 ) -> HTMLResponse:
     if redirect := login_redirect(request):
         return redirect
-    if not is_admin(request):
+    if not has_permission(request, "ai.view"):
         raise HTTPException(status_code=403, detail="Admin access is required.")
     source_types = [source_type] if source_type else None
     search_results = (
@@ -780,7 +953,7 @@ async def ai_kb_page(
 async def ai_kb_new(request: Request) -> HTMLResponse:
     if redirect := login_redirect(request):
         return redirect
-    if not is_admin(request):
+    if not has_permission(request, "ai.manage"):
         raise HTTPException(status_code=403, detail="Admin access is required.")
     return templates.TemplateResponse(
         request=request,
@@ -801,7 +974,7 @@ async def ai_kb_new(request: Request) -> HTMLResponse:
 async def ai_kb_edit(request: Request, source_name: str) -> HTMLResponse:
     if redirect := login_redirect(request):
         return redirect
-    if not is_admin(request):
+    if not has_permission(request, "ai.manage"):
         raise HTTPException(status_code=403, detail="Admin access is required.")
     source = get_kb_source(source_name)
     if source is None:
@@ -826,7 +999,7 @@ async def ai_kb_save(request: Request) -> RedirectResponse:
     if redirect := login_redirect(request):
         return redirect
     await require_action_csrf(request)
-    if not is_admin(request):
+    if not has_permission(request, "ai.manage"):
         raise HTTPException(status_code=403, detail="Admin access is required.")
     form = await request.form()
     source_name = str(form.get("source_name", "")).strip()
@@ -864,7 +1037,7 @@ async def ai_kb_delete(request: Request, source_name: str) -> RedirectResponse:
     if redirect := login_redirect(request):
         return redirect
     await require_action_csrf(request)
-    if not is_admin(request):
+    if not has_permission(request, "ai.manage"):
         raise HTTPException(status_code=403, detail="Admin access is required.")
     form = await request.form()
     if str(form.get("confirm", "")).strip() != source_name:
@@ -892,7 +1065,7 @@ async def knowledge_ai_toggle(request: Request, source_name: str) -> RedirectRes
     if redirect := login_redirect(request):
         return redirect
     await require_action_csrf(request)
-    if not is_admin(request):
+    if not has_permission(request, "knowledge.manage"):
         raise HTTPException(status_code=403, detail="Admin access is required.")
     form = await request.form()
     enabled = str(form.get("ai_enabled", "")).strip() == "1"
@@ -912,7 +1085,7 @@ async def knowledge_live_save(request: Request) -> RedirectResponse:
     if redirect := login_redirect(request):
         return redirect
     await require_action_csrf(request)
-    if not is_admin(request):
+    if not has_permission(request, "knowledge.manage"):
         raise HTTPException(status_code=403, detail="Admin access is required.")
     form = await request.form()
     channel_id = str(form.get("channel_id", "")).strip()
@@ -950,7 +1123,7 @@ async def knowledge_live_remove(
     if redirect := login_redirect(request):
         return redirect
     await require_action_csrf(request)
-    if not is_admin(request):
+    if not has_permission(request, "knowledge.manage"):
         raise HTTPException(status_code=403, detail="Admin access is required.")
     deleted = delete_live_knowledge_source_sync(
         guild_id=guild_id,
@@ -971,7 +1144,7 @@ async def knowledge_live_sync(
     if redirect := login_redirect(request):
         return redirect
     await require_action_csrf(request)
-    if not is_admin(request):
+    if not has_permission(request, "knowledge.manage"):
         raise HTTPException(status_code=403, detail="Admin access is required.")
     form = await request.form()
     limit = int(str(form.get("limit", "200")).strip() or "200")
@@ -1148,7 +1321,7 @@ def visual_actor(request: Request) -> str:
 
 async def require_visual_admin(request: Request) -> Any:
     await require_action_csrf(request)
-    if not is_admin(request):
+    if not has_permission(request, "visual.manage"):
         raise HTTPException(
             status_code=403,
             detail="Visual Content Studio changes require dashboard admin access.",
@@ -1347,8 +1520,20 @@ async def visual_template_publish(request: Request, template_key: str) -> Redire
         )
     except (KeyError, sqlite3.Error, ValueError, OSError) as exc:
         request.session["visual_error"] = "Published configuration failed validation: {}".format(exc)
+        audit_user = current_user(request)
+        record_audit(
+            actor_user_id=audit_user.get("id"), actor_label=audit_user.get("username") or "dashboard",
+            action="content.publish", target_type="visual_template", target_id=template_key,
+            success=False, error=type(exc).__name__,
+        )
     else:
         request.session["visual_message"] = "Published version {}. New bot renders now use it.".format(version)
+        audit_user = current_user(request)
+        record_audit(
+            actor_user_id=audit_user.get("id"), actor_label=audit_user.get("username") or "dashboard",
+            action="content.publish", target_type="visual_template", target_id=template_key,
+            after={"version": version},
+        )
     return visual_redirect(request, "visual_template_edit", template_key=template_key)
 
 
@@ -1910,8 +2095,19 @@ async def visual_globals_publish(request: Request) -> RedirectResponse:
         publish_global_settings(visual_actor(request))
     except (sqlite3.Error, ValueError) as exc:
         request.session["visual_error"] = str(exc)
+        audit_user = current_user(request)
+        record_audit(
+            actor_user_id=audit_user.get("id"), actor_label=audit_user.get("username") or "dashboard",
+            action="content.publish", target_type="visual_global_settings",
+            success=False, error=type(exc).__name__,
+        )
     else:
         request.session["visual_message"] = "Global visual defaults published."
+        audit_user = current_user(request)
+        record_audit(
+            actor_user_id=audit_user.get("id"), actor_label=audit_user.get("username") or "dashboard",
+            action="content.publish", target_type="visual_global_settings",
+        )
     return visual_redirect(request, "visual_globals")
 
 
@@ -1963,21 +2159,27 @@ async def api_visual_templates(request: Request) -> JSONResponse:
 async def settings(request: Request) -> HTMLResponse:
     if redirect := login_redirect(request):
         return redirect
-    return render_settings_page(
-        request,
-        page_title="Bot Configuration",
-        visible_sections=("ask", "vcxp", "models"),
+    return templates.TemplateResponse(
+        request=request,
+        name="settings_overview.html",
+        context=template_context(
+            request,
+            page_title="Settings",
+            discord_metadata=picker_metadata(),
+            roles=list_roles(),
+            feature_count=len(feature_inventory()),
+            oauth_ready=discord_oauth_configured(),
+            database_path=str(settings_database_path()),
+            recent_changes=recent_setting_changes(limit=5),
+        ),
     )
 
 
 @app.get("/settings/permissions", response_class=HTMLResponse, name="settings_permissions")
 async def settings_permissions(request: Request) -> HTMLResponse:
-    if redirect := login_redirect(request):
-        return redirect
-    return render_settings_page(
-        request,
-        page_title="Permissions & Access",
-        visible_sections=("permissions",),
+    return RedirectResponse(
+        url=request.url_for("settings_access"),
+        status_code=status.HTTP_303_SEE_OTHER,
     )
 
 
@@ -1985,11 +2187,171 @@ async def settings_permissions(request: Request) -> HTMLResponse:
 async def settings_discord(request: Request) -> HTMLResponse:
     if redirect := login_redirect(request):
         return redirect
-    return render_settings_page(
-        request,
-        page_title="Discord Roles & Channels",
-        visible_sections=("dashboard_json",),
-        discord_metadata=picker_metadata(),
+    return templates.TemplateResponse(
+        request=request,
+        name="discord_connection.html",
+        context=template_context(
+            request,
+            page_title="Discord Connection",
+            discord_metadata=picker_metadata(),
+            message=request.session.pop("settings_message", None),
+            error=request.session.pop("settings_error", None),
+        ),
+    )
+
+
+@app.get("/settings/access", response_class=HTMLResponse, name="settings_access")
+async def settings_access(request: Request) -> HTMLResponse:
+    if redirect := login_redirect(request):
+        return redirect
+    return templates.TemplateResponse(
+        request=request,
+        name="access.html",
+        context=template_context(
+            request,
+            page_title="Dashboard Access",
+            access=access_overview(list_dashboard_users()),
+            discord_metadata=picker_metadata(),
+            message=request.session.pop("access_message", None),
+            error=request.session.pop("access_error", None),
+        ),
+    )
+
+
+def access_redirect(request: Request) -> RedirectResponse:
+    return RedirectResponse(
+        url=request.url_for("settings_access"),
+        status_code=status.HTTP_303_SEE_OTHER,
+    )
+
+
+@app.post("/settings/access/roles/save", name="access_role_save")
+async def access_role_save(request: Request) -> RedirectResponse:
+    await require_action_csrf(request)
+    form = await request.form()
+    raw_role_id = str(form.get("role_id", "")).strip()
+    try:
+        role_id = int(raw_role_id) if raw_role_id else None
+        save_custom_role(
+            role_id=role_id,
+            name=str(form.get("name", "")),
+            description=str(form.get("description", "")),
+            permissions=form.getlist("permissions"),
+            changed_by=dashboard_user_label(request),
+        )
+    except (TypeError, ValueError) as exc:
+        request.session["access_error"] = str(exc)
+    else:
+        request.session["access_message"] = "Dashboard role saved."
+    return access_redirect(request)
+
+
+@app.post("/settings/access/mappings/save", name="access_mapping_save")
+async def access_mapping_save(request: Request) -> RedirectResponse:
+    await require_action_csrf(request)
+    form = await request.form()
+    role_ids = re.findall(r"\d{17,20}", str(form.get("discord_role_ids", "")))
+    try:
+        replace_discord_role_mappings(
+            role_ids,
+            int(str(form.get("dashboard_role_id", "")).strip()),
+            changed_by=dashboard_user_label(request),
+        )
+    except (TypeError, ValueError) as exc:
+        request.session["access_error"] = str(exc)
+    else:
+        request.session["access_message"] = (
+            f"Saved {len(role_ids):,} Discord role mapping{'s' if len(role_ids) != 1 else ''}."
+        )
+    return access_redirect(request)
+
+
+@app.post(
+    "/settings/access/mappings/{discord_role_id}/{dashboard_role_id}/remove",
+    name="access_mapping_remove",
+)
+async def access_mapping_remove(
+    request: Request, discord_role_id: str, dashboard_role_id: int,
+) -> RedirectResponse:
+    await require_action_csrf(request)
+    remove_discord_role_mapping(
+        discord_role_id,
+        dashboard_role_id,
+        changed_by=dashboard_user_label(request),
+    )
+    request.session["access_message"] = "Discord role mapping removed."
+    return access_redirect(request)
+
+
+@app.post("/settings/access/users/{user_id}/role", name="access_user_role")
+async def access_user_role(request: Request, user_id: int) -> RedirectResponse:
+    await require_action_csrf(request)
+    form = await request.form()
+    try:
+        role_id = int(str(form.get("role_id", "")).strip())
+        if str(form.get("action", "assign")).strip() == "remove":
+            remove_direct_role(user_id, role_id, changed_by=dashboard_user_label(request))
+            message = "Direct dashboard role removed."
+        else:
+            assign_direct_role(user_id, role_id, changed_by=dashboard_user_label(request))
+            message = "Direct dashboard role assigned."
+    except (TypeError, ValueError) as exc:
+        request.session["access_error"] = str(exc)
+    else:
+        request.session["access_message"] = message
+    return access_redirect(request)
+
+
+@app.post("/settings/access/users/{user_id}/status", name="access_user_status")
+async def access_user_status(request: Request, user_id: int) -> RedirectResponse:
+    await require_action_csrf(request)
+    form = await request.form()
+    try:
+        set_user_status(
+            user_id,
+            str(form.get("status", "")),
+            changed_by=dashboard_user_label(request),
+        )
+    except ValueError as exc:
+        request.session["access_error"] = str(exc)
+    else:
+        request.session["access_message"] = "Dashboard user status updated."
+    return access_redirect(request)
+
+
+@app.post("/settings/access/users/{user_id}/permission", name="access_user_permission")
+async def access_user_permission(request: Request, user_id: int) -> RedirectResponse:
+    await require_action_csrf(request)
+    form = await request.form()
+    try:
+        set_user_permission_override(
+            user_id,
+            str(form.get("permission_key", "")),
+            str(form.get("mode", "inherit")),
+            changed_by=dashboard_user_label(request),
+        )
+    except ValueError as exc:
+        request.session["access_error"] = str(exc)
+    else:
+        request.session["access_message"] = "User permission override updated."
+    return access_redirect(request)
+
+
+@app.get("/settings/audit", response_class=HTMLResponse, name="settings_audit")
+async def settings_audit(request: Request) -> HTMLResponse:
+    if redirect := login_redirect(request):
+        return redirect
+    action = request.query_params.get("action", "").strip()
+    actor = request.query_params.get("actor", "").strip()
+    return templates.TemplateResponse(
+        request=request,
+        name="audit_log.html",
+        context=template_context(
+            request,
+            page_title="Audit Log",
+            events=list_audit_events(limit=200, action=action, actor=actor),
+            filters={"action": action, "actor": actor},
+        ),
     )
 
 
@@ -2005,6 +2367,12 @@ async def refresh_discord_metadata(request: Request) -> RedirectResponse:
         f"Discord metadata refresh queued as dashboard action #{action_id}. "
         "The live bot process will update the snapshot."
     )
+    user = current_user(request)
+    record_audit(
+        actor_user_id=user.get("id"), actor_label=user.get("username") or "dashboard",
+        action="discord_metadata.refresh.queued", target_type="dashboard_action",
+        target_id=str(action_id), after={"status": "pending"},
+    )
     return RedirectResponse(
         url=request.url_for("settings_discord"),
         status_code=status.HTTP_303_SEE_OTHER,
@@ -2015,23 +2383,149 @@ async def refresh_discord_metadata(request: Request) -> RedirectResponse:
 async def settings_advanced(request: Request) -> HTMLResponse:
     if redirect := login_redirect(request):
         return redirect
-    return render_settings_page(
-        request,
-        page_title="Advanced Settings",
-        visible_sections=("advanced",),
+    advanced_settings = [
+        setting
+        for section in settings_for_dashboard().values()
+        for setting in section
+        if setting.get("feature_key") in {"system", "imports"}
+    ]
+    return templates.TemplateResponse(
+        request=request,
+        name="feature_detail.html",
+        context=template_context(
+            request,
+            page_title="Advanced Settings",
+            feature={
+                "key": "advanced",
+                "name": "Advanced Settings",
+                "description": "Technical operator defaults and compatibility controls.",
+                "category": "System",
+                "enabled": True,
+                "health": "healthy",
+                "support_status": "internal",
+                "missing_settings": [],
+            },
+            feature_settings=advanced_settings,
+            save_url=request.url_for("advanced_settings_save"),
+            settings_editable=has_permission(request, "settings.manage"),
+            message=request.session.pop("settings_message", None),
+            error=request.session.pop("settings_error", None),
+            asset_options=[],
+        ),
     )
 
 
 @app.get("/settings/features", response_class=HTMLResponse, name="settings_features")
 async def settings_features(request: Request) -> HTMLResponse:
+    return RedirectResponse(
+        url=request.url_for("features_page"),
+        status_code=status.HTTP_303_SEE_OTHER,
+    )
+
+
+@app.get("/features", response_class=HTMLResponse, name="features_page")
+async def features_page(request: Request) -> HTMLResponse:
     if redirect := login_redirect(request):
         return redirect
-    return render_settings_page(
+    features = [
+        feature for feature in feature_inventory()
+        if has_permission(request, str(feature["permission"]))
+    ]
+    categories: dict[str, list[dict[str, Any]]] = {}
+    for feature in features:
+        categories.setdefault(str(feature["category"]), []).append(feature)
+    return templates.TemplateResponse(
+        request=request,
+        name="features.html",
+        context=template_context(
+            request,
+            page_title="Features",
+            feature_categories=categories,
+        ),
+    )
+
+
+@app.get("/features/{feature_key}", response_class=HTMLResponse, name="feature_detail")
+async def feature_detail(request: Request, feature_key: str) -> HTMLResponse:
+    if redirect := login_redirect(request):
+        return redirect
+    definition = FEATURES_BY_KEY.get(feature_key)
+    if definition is None:
+        raise HTTPException(status_code=404, detail="Feature was not found.")
+    if not has_permission(request, definition.permission):
+        raise HTTPException(status_code=403, detail="This feature is not available to your dashboard role.")
+    return templates.TemplateResponse(
+        request=request,
+        name="feature_detail.html",
+        context=template_context(
+            request,
+            page_title=definition.name,
+            feature=feature_snapshot(definition),
+            feature_settings=settings_for_feature(feature_key),
+            save_url=request.url_for("feature_settings_save", feature_key=feature_key),
+            settings_editable=has_permission(request, "features.manage"),
+            message=request.session.pop("settings_message", None),
+            error=request.session.pop("settings_error", None),
+            asset_options=list_embed_templates(sort="name", order="asc"),
+        ),
+    )
+
+
+async def _save_settings_form(request: Request, allowed_keys: set[str], redirect_url: str) -> RedirectResponse:
+    await require_action_csrf(request)
+    form = await request.form()
+    values = {
+        str(key)[len("setting__"):]: str(value)
+        for key, value in form.multi_items()
+        if str(key).startswith("setting__")
+    }
+    if not values or set(values) - allowed_keys:
+        raise HTTPException(status_code=400, detail="The settings request was invalid.")
+    actor = dashboard_user_label(request)
+    try:
+        changed = set_settings(values, changed_by=actor)
+    except ValueError as exc:
+        request.session["settings_error"] = str(exc)
+    else:
+        request.session["settings_message"] = (
+            f"Saved {len(changed):,} changed setting{'s' if len(changed) != 1 else ''}."
+            if changed else "No settings changed."
+        )
+        if changed:
+            record_audit(
+                actor_user_id=current_user(request).get("id"),
+                actor_label=actor,
+                action="configuration.changed",
+                target_type="settings_group",
+                target_id=redirect_url,
+                after={"keys": sorted(changed)},
+            )
+    return RedirectResponse(url=redirect_url, status_code=status.HTTP_303_SEE_OTHER)
+
+
+@app.post("/features/{feature_key}/save", name="feature_settings_save")
+async def feature_settings_save(request: Request, feature_key: str) -> RedirectResponse:
+    definition = FEATURES_BY_KEY.get(feature_key)
+    if definition is None:
+        raise HTTPException(status_code=404, detail="Feature was not found.")
+    if not has_permission(request, "features.manage"):
+        raise HTTPException(status_code=403, detail="Feature management permission is required.")
+    allowed_keys = {str(item["key"]) for item in settings_for_feature(feature_key) if item["editable"]}
+    return await _save_settings_form(
         request,
-        page_title="Feature Settings",
-        visible_sections=("bumps", "reminders", "streaks", "stats_features"),
-        discord_metadata=picker_metadata(),
-        asset_options=list_embed_templates(sort="name", order="asc"),
+        allowed_keys,
+        str(request.url_for("feature_detail", feature_key=feature_key)),
+    )
+
+
+@app.post("/settings/advanced/save", name="advanced_settings_save")
+async def advanced_settings_save(request: Request) -> RedirectResponse:
+    allowed_keys = {
+        definition.key for definition in DEFINITIONS_BY_KEY.values()
+        if definition.visible and feature_key_for_setting(definition.key) in {"system", "imports"}
+    }
+    return await _save_settings_form(
+        request, allowed_keys, str(request.url_for("settings_advanced"))
     )
 
 
@@ -2161,7 +2655,7 @@ async def reminders_detail(request: Request, reminder_id: int) -> HTMLResponse:
     )
     if detail is None:
         raise HTTPException(status_code=404, detail="Reminder was not found.")
-    if not is_admin(request):
+    if not has_permission(request, "reminders.manage"):
         detail["subscriptions"] = []
         for delivery in detail["deliveries"]:
             delivery["recipient_user_id"] = "Private"
@@ -2184,7 +2678,7 @@ async def reminders_action(request: Request, reminder_id: int) -> RedirectRespon
     if redirect := login_redirect(request):
         return redirect
     await require_action_csrf(request)
-    if not is_admin(request):
+    if not has_permission(request, "reminders.manage"):
         raise HTTPException(status_code=403, detail="Admin access is required.")
     form = await request.form()
     action = str(form.get("action", "")).strip()
@@ -2932,6 +3426,12 @@ async def restart_bot(request: Request) -> RedirectResponse:
     await require_action_csrf(request)
     ok, message = restart_service("bot")
     request.session["operations_message" if ok else "operations_error"] = message
+    user = current_user(request)
+    record_audit(
+        actor_user_id=user.get("id"), actor_label=user.get("username") or "dashboard",
+        action="service.restart", target_type="service", target_id="bot",
+        success=ok, error=None if ok else message,
+    )
     return operations_redirect(request)
 
 
@@ -2942,6 +3442,12 @@ async def restart_dashboard(request: Request) -> RedirectResponse:
     await require_action_csrf(request)
     ok, message = restart_service("dashboard")
     request.session["operations_message" if ok else "operations_error"] = message
+    user = current_user(request)
+    record_audit(
+        actor_user_id=user.get("id"), actor_label=user.get("username") or "dashboard",
+        action="service.restart", target_type="service", target_id="dashboard",
+        success=ok, error=None if ok else message,
+    )
     return operations_redirect(request)
 
 
@@ -2960,6 +3466,15 @@ async def backup_active_database(request: Request) -> RedirectResponse:
         request.session["operations_message"] = (
             f"Database backup created: {destination.name}"
         )
+    user = current_user(request)
+    succeeded = "destination" in locals()
+    record_audit(
+        actor_user_id=user.get("id"), actor_label=user.get("username") or "dashboard",
+        action="database.backup", target_type="database",
+        target_id=destination.name if succeeded else "shared",
+        success=succeeded,
+        error=None if succeeded else request.session.get("operations_error"),
+    )
     return operations_redirect(request)
 
 

@@ -3,10 +3,12 @@ from __future__ import annotations
 import hmac
 import os
 import secrets
+from datetime import datetime, timedelta, timezone
 
 from fastapi import Request
 
-from dashboard.users import authenticate_password
+from dashboard.rbac import permissions_for_user, role_names_for_user
+from dashboard.users import authenticate_password, get_user_by_id
 
 
 SESSION_USER_KEY = "dashboard_user"
@@ -58,6 +60,9 @@ def login_user(
     discord_user_id = user.get("discord_user_id")
     if discord_user_id:
         request.session[SESSION_DISCORD_USER_ID_KEY] = str(discord_user_id)
+        request.session["discord_verified_at"] = str(
+            user.get("discord_verified_at") or ""
+        )
     else:
         request.session.pop(SESSION_DISCORD_USER_ID_KEY, None)
 
@@ -66,36 +71,103 @@ def logout_user(request: Request) -> None:
     request.session.clear()
 
 
+def _database_user(request: Request) -> dict | None:
+    cached = getattr(request.state, "dashboard_database_user", None)
+    if cached is not None:
+        return cached or None
+    try:
+        user_id = int(request.session.get(SESSION_USER_ID_KEY) or 0)
+    except (TypeError, ValueError):
+        user_id = 0
+    user = get_user_by_id(user_id) if user_id else None
+    if user is None or str(user.get("status") or "").casefold() != "active":
+        request.session.clear()
+        request.state.dashboard_database_user = {}
+        return None
+    if str(user.get("auth_provider") or "").casefold() == "discord":
+        if str(user.get("discord_verification_status") or "").casefold() != "verified":
+            request.session.clear()
+            request.state.dashboard_database_user = {}
+            return None
+        raw_verified_at = str(user.get("discord_verified_at") or "")
+        try:
+            verified_at = datetime.fromisoformat(raw_verified_at.replace("Z", "+00:00"))
+            if verified_at.tzinfo is None:
+                verified_at = verified_at.replace(tzinfo=timezone.utc)
+        except ValueError:
+            request.session.clear()
+            request.state.dashboard_database_user = {}
+            return None
+        try:
+            max_age_minutes = max(
+                5,
+                min(
+                    int(os.getenv("DASHBOARD_DISCORD_REVERIFY_MINUTES", "60")),
+                    24 * 60,
+                ),
+            )
+        except ValueError:
+            max_age_minutes = 60
+        if datetime.now(timezone.utc) - verified_at > timedelta(minutes=max_age_minutes):
+            request.session.clear()
+            request.state.dashboard_database_user = {}
+            return None
+    request.state.dashboard_database_user = user
+    return user
+
+
 def is_authenticated(request: Request) -> bool:
-    return bool(
-        request.session.get(SESSION_USER_ID_KEY)
-        and (
-            request.session.get(SESSION_USERNAME_KEY)
-            or request.session.get(SESSION_USER_KEY)
-        )
-        and request.session.get(SESSION_ROLE_KEY) in {"owner", "admin", "viewer"}
-    )
+    return _database_user(request) is not None
 
 
 def current_user(request: Request) -> dict:
+    database_user = _database_user(request)
+    if database_user is None:
+        return {}
+    user_id = int(database_user["id"])
+    display_name = (
+        database_user.get("discord_global_name")
+        or database_user.get("discord_username")
+        or database_user.get("username")
+        or "dashboard"
+    )
+    role_names = role_names_for_user(user_id)
     return {
-        "id": request.session.get(SESSION_USER_ID_KEY),
-        "username": (
-            request.session.get(SESSION_USERNAME_KEY)
-            or request.session.get(SESSION_USER_KEY)
-        ),
-        "role": request.session.get(SESSION_ROLE_KEY),
-        "auth_provider": request.session.get(SESSION_PROVIDER_KEY),
-        "discord_user_id": request.session.get(SESSION_DISCORD_USER_ID_KEY),
+        "id": user_id,
+        "username": str(display_name),
+        "role": role_names[0] if role_names else str(database_user.get("role") or "viewer"),
+        "roles": role_names,
+        "auth_provider": str(database_user.get("auth_provider") or "password"),
+        "discord_user_id": database_user.get("discord_user_id"),
+        "access_source": str(database_user.get("access_source") or "legacy"),
     }
 
 
 def has_write_access(request: Request) -> bool:
-    return request.session.get(SESSION_ROLE_KEY) in {"owner", "admin"}
+    return any(
+        permission.endswith(".manage")
+        or permission in {"bot.restart", "access.manage", "discord_metadata.refresh"}
+        for permission in current_permissions(request)
+    )
 
 
 def is_admin(request: Request) -> bool:
-    return has_write_access(request)
+    return has_permission(request, "access.manage")
+
+
+def current_permissions(request: Request) -> set[str]:
+    user = _database_user(request)
+    if user is None:
+        return set()
+    cached = getattr(request.state, "dashboard_permissions", None)
+    if cached is None:
+        cached = permissions_for_user(int(user["id"]))
+        request.state.dashboard_permissions = cached
+    return set(cached)
+
+
+def has_permission(request: Request, permission: str) -> bool:
+    return str(permission) in current_permissions(request)
 
 
 def csrf_token(request: Request) -> str:

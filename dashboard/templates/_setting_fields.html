@@ -1,0 +1,44 @@
+<div class="settings-fields">
+{% for setting in feature_settings %}
+  <div class="setting-field {{ 'setting-field-wide' if setting.picker in ['role', 'channel', 'category', 'emoji_text'] else '' }}">
+    <div class="setting-field-copy">
+      <div class="setting-field-title"><label for="setting-{{ setting.key }}">{{ setting.title }}</label><span class="source-badge">{{ setting.source }}</span></div>
+      <p>{{ setting.description }}</p>
+      <small>{{ setting.source_note }}</small>
+    </div>
+    <div class="setting-control">
+      {% if not setting.editable %}
+        <div class="readonly-value">{{ setting.value or 'Not configured' }}</div>
+      {% elif setting.value_type == 'bool' %}
+        <select id="setting-{{ setting.key }}" name="setting__{{ setting.key }}">
+          <option value="false" {{ 'selected' if setting.value == 'false' else '' }}>Off</option>
+          <option value="true" {{ 'selected' if setting.value == 'true' else '' }}>On</option>
+        </select>
+      {% elif setting.picker == 'role' and setting.single %}
+        <role-single-select input-name="setting__{{ setting.key }}" setting-key="{{ setting.key }}" value-format="{{ setting.value_format }}" value="{{ setting.value|e }}"></role-single-select>
+      {% elif setting.picker == 'role' %}
+        <role-multi-select input-name="setting__{{ setting.key }}" setting-key="{{ setting.key }}" value-format="{{ setting.value_format }}" value="{{ setting.value|e }}"></role-multi-select>
+      {% elif setting.picker == 'channel' and setting.single %}
+        <channel-single-select input-name="setting__{{ setting.key }}" setting-key="{{ setting.key }}" value-format="{{ setting.value_format }}" value="{{ setting.value|e }}"></channel-single-select>
+      {% elif setting.picker == 'channel' %}
+        <channel-multi-select input-name="setting__{{ setting.key }}" setting-key="{{ setting.key }}" value-format="{{ setting.value_format }}" value="{{ setting.value|e }}"></channel-multi-select>
+      {% elif setting.picker == 'category' %}
+        <category-multi-select input-name="setting__{{ setting.key }}" setting-key="{{ setting.key }}" value-format="{{ setting.value_format }}" value="{{ setting.value|e }}"></category-multi-select>
+      {% elif setting.picker == 'emoji_text' %}
+        <div class="setting-message-editor" data-setting-message-editor>
+          <textarea id="setting-{{ setting.key }}" name="setting__{{ setting.key }}" rows="6" maxlength="{{ setting.maximum or 2000 }}" data-setting-message-input>{{ setting.value }}</textarea>
+          <div class="setting-message-tools"><button class="button secondary" type="button" data-setting-emoji-toggle>☺ Emoji</button>{% for placeholder in setting.placeholders %}<button class="setting-placeholder-button" type="button" data-setting-placeholder="{{ placeholder }}">{{ placeholder }}</button>{% endfor %}</div>
+          <div class="setting-emoji-popover" data-setting-emoji-popover hidden><label>Search emoji<input type="search" placeholder="Search emoji" autocomplete="off" data-setting-emoji-search></label><div class="setting-emoji-results" data-setting-emoji-results></div></div>
+        </div>
+      {% elif setting.picker in ['asset', 'embed'] %}
+        <select id="setting-{{ setting.key }}" name="setting__{{ setting.key }}"><option value="">Use the built-in fallback</option>{% for asset in asset_options or [] %}<option value="{{ asset.id }}" {{ 'selected' if setting.value == asset.id|string else '' }}>{{ asset.name }}</option>{% endfor %}</select>
+      {% else %}
+        <input id="setting-{{ setting.key }}" name="setting__{{ setting.key }}" value="{{ setting.value }}" inputmode="{{ 'numeric' if setting.value_type == 'int' else 'text' }}">
+      {% endif %}
+      <details class="technical-details"><summary>Technical details</summary><code>{{ setting.key }}</code><span>{{ setting.value_type }}</span></details>
+    </div>
+  </div>
+{% else %}
+  <p class="empty-state">This feature has no dashboard-editable configuration.</p>
+{% endfor %}
+</div>

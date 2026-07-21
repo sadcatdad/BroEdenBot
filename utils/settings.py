@@ -450,9 +450,10 @@ SETTING_DEFINITIONS = (
         "BANK_LOG_CHANNEL_ID",
         "permissions",
         "csv_ids",
-        "Discord channel ID used for bank logs.",
+        "Deprecated placeholder for bank logs. The current bank implementation does not read this value.",
         picker="channel",
         single=True,
+        visible=False,
     ),
     SettingDefinition(
         "BOT_OWNER_USER_IDS",
@@ -962,6 +963,88 @@ def set_setting(key: str, value: str, *, changed_by: str = "system") -> str:
     return normalized
 
 
+def set_settings(values: dict[str, str], *, changed_by: str = "system") -> dict[str, str]:
+    """Validate and save a group of settings in one SQLite transaction."""
+    normalized_values = {
+        str(key): normalize_setting_value(str(key), value)
+        for key, value in values.items()
+    }
+    now = datetime.now(timezone.utc).isoformat()
+    changed: dict[str, str] = {}
+    with closing(_connect()) as connection:
+        connection.execute("BEGIN IMMEDIATE")
+        for key, normalized in normalized_values.items():
+            definition = DEFINITIONS_BY_KEY[key]
+            row = connection.execute(
+                "SELECT value FROM bot_settings WHERE key = ?", (key,)
+            ).fetchone()
+            old_value = str(row["value"]) if row is not None else None
+            if old_value == normalized:
+                continue
+            connection.execute(
+                """
+                INSERT INTO bot_settings (
+                    key, value, value_type, description, updated_at
+                ) VALUES (?, ?, ?, ?, ?)
+                ON CONFLICT(key) DO UPDATE SET
+                    value = excluded.value,
+                    value_type = excluded.value_type,
+                    description = excluded.description,
+                    updated_at = excluded.updated_at
+                """,
+                (key, normalized, definition.value_type, definition.description, now),
+            )
+            connection.execute(
+                """
+                INSERT INTO bot_settings_audit (
+                    key, old_value, new_value, changed_by, changed_at
+                ) VALUES (?, ?, ?, ?, ?)
+                """,
+                (key, old_value, normalized, changed_by, now),
+            )
+            changed[key] = normalized
+        connection.commit()
+    database_key = str(settings_database_path())
+    for key, value in normalized_values.items():
+        _SETTING_CACHE[(database_key, key)] = value
+    return changed
+
+
+def setting_source(key: str) -> str:
+    """Return the effective configuration source without exposing its value."""
+    definition = DEFINITIONS_BY_KEY.get(key)
+    if definition and definition.editable:
+        try:
+            with closing(_connect(readonly=True)) as connection:
+                row = connection.execute(
+                    "SELECT 1 FROM bot_settings WHERE key = ?", (key,)
+                ).fetchone()
+            if row is not None:
+                return "Database"
+        except sqlite3.Error:
+            pass
+    if key in os.environ:
+        return "Environment"
+    if definition and definition.default != "":
+        return "Default"
+    return "Not configured"
+
+
+def _setting_title(definition: SettingDefinition) -> str:
+    if definition.title:
+        return definition.title
+    title = definition.key.replace("_", " ").title()
+    replacements = {
+        "Ai": "AI", "Api": "API", "Csv": "CSV", "Db": "DB",
+        "Discord Id": "Discord ID", "Embed Id": "Embed ID", "Guild Id": "Guild ID",
+        "Ids": "IDs", "Json": "JSON", "Modai": "ModAI", "Url": "URL",
+        "Vc ": "VC ", "Vcxp": "VC XP", "Xp": "XP",
+    }
+    for old, new in replacements.items():
+        title = title.replace(old, new)
+    return title
+
+
 def settings_for_dashboard() -> dict[str, list[dict[str, object]]]:
     sections = {
         "ask": [],
@@ -984,6 +1067,9 @@ def settings_for_dashboard() -> dict[str, list[dict[str, object]]]:
         elif not value and definition.key == "BUMP_REMINDER_ASSET_ID":
             value = get_setting("BUMP_REMINDER_EMBED_ID", "") or ""
         value_format = "json" if definition.value_type == "json_ids" else "csv"
+        from dashboard.features import feature_key_for_setting
+
+        source = setting_source(definition.key)
         sections[definition.section].append(
             {
                 "key": definition.key,
@@ -991,15 +1077,35 @@ def settings_for_dashboard() -> dict[str, list[dict[str, object]]]:
                 "value_type": definition.value_type,
                 "description": definition.description,
                 "editable": definition.editable,
-                "title": definition.title or definition.key.replace("_", " ").title(),
+                "title": _setting_title(definition),
                 "picker": definition.picker,
                 "single": definition.single,
                 "value_format": value_format,
                 "maximum": definition.maximum,
                 "placeholders": definition.placeholders,
+                "source": source,
+                "source_note": (
+                    "Stored in SQLite and used at runtime."
+                    if source == "Database"
+                    else "Currently supplied by the process environment. Saving here creates a database override."
+                    if source == "Environment"
+                    else "Using the built-in safe default."
+                    if source == "Default"
+                    else "No value is currently configured."
+                ),
+                "feature_key": feature_key_for_setting(definition.key),
             }
         )
     return sections
+
+
+def settings_for_feature(feature_key: str) -> list[dict[str, object]]:
+    return [
+        setting
+        for section in settings_for_dashboard().values()
+        for setting in section
+        if setting.get("feature_key") == feature_key
+    ]
 
 
 def recent_setting_changes(limit: int = 10) -> list[dict[str, object]]:

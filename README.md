@@ -1500,7 +1500,7 @@ These message commands use the bot prefix `!`.
 
 Create a `.env` file in the project root. Do not commit it.
 
-Secrets and boot-only values remain environment-backed. Phase 1.5 safe runtime
+Secrets and boot-only values remain environment-backed. Allowlisted safe runtime
 settings are seeded from `.env` into `data.db` only when a database value does
 not already exist. After seeding, the database value takes priority and can be
 updated from the authenticated local dashboard without rewriting `.env`.
@@ -1617,8 +1617,9 @@ updated from the authenticated local dashboard without rewriting `.env`.
 | `DISCORD_OAUTH_CLIENT_SECRET` | Discord application OAuth2 client secret. Keep only in `.env`. |
 | `DISCORD_OAUTH_REDIRECT_URI` | Exact OAuth callback URL, such as `https://dashboard.broeden.com/auth/discord/callback`. |
 | `DASHBOARD_DISCORD_ALLOWED_USER_IDS` | Comma- or space-separated Discord user IDs approved for dashboard login. |
-| `DASHBOARD_DISCORD_ALLOWED_ROLE_IDS` | Reserved for future guild-role approval; not used by this first implementation. |
+| `DASHBOARD_DISCORD_ALLOWED_ROLE_IDS` | Compatibility list of current Discord guild roles allowed to log in. Prefer database-backed mappings in Dashboard Access. |
 | `DASHBOARD_DISCORD_DEFAULT_ROLE` | Role assigned to new approved Discord users: `admin` or `viewer`. |
+| `DASHBOARD_DISCORD_REVERIFY_MINUTES` | Maximum age of verified Discord membership before fresh OAuth is required. Defaults to `60`; clamped to 5–1440 minutes. |
 | `DATABASE_PATH` | Optional shared SQLite path for the dashboard. Defaults to the existing `data.db`, then common local database names. |
 | `BANK_DATABASE_PATH` | Optional bank SQLite path for the dashboard. Defaults to `brobank.db`. |
 
@@ -1665,21 +1666,23 @@ Message Studio (Embed/Message Editor), and aggregate analytics. It does not
 edit `.env`, modify bank records, expose Discord or Gemini secrets, or provide
 public hosting.
 
-The responsive dashboard navigation uses grouped sections: **Monitor**
-(Overview and Analytics), **Manage** (Operations, Streaks, and Bank),
-**Content** (Visual Content Studio, Message Studio, Knowledge, and AI), and
-**System** (Settings).
+The responsive dashboard navigation uses capability-filtered groups: **Monitor**
+(Overview and Analytics), **Community** (Features and Streaks), **Operations**
+(Bot Operations and Reminders), **Content** (Visual Content Studio, Message
+Studio, Knowledge, and AI), **Finance** (Bank), and **System** (Settings,
+Dashboard Access, and Audit Log).
 It uses the Bro Eden pride icon in the desktop sidebar and mobile header. On
 smaller screens the complete navigation moves into a labeled menu instead of
 hiding destinations in a horizontal strip. `AI_DASHBOARD_VISIBLE=true` shows
 the AI item; the item is hidden when that flag is false. The AI tab shows
 framework health, usage,
 recent `/ask` feedback, and a connected-sources page that explains which
-knowledge chunks are available to AI retrieval. Knowledge changes now happen in
-the top-level Knowledge tab. Stats Graphics lives under Analytics. Imports and
-Dashboard Users live under Settings. The older `/stats`, `/settings/knowledge`,
-`/imports`, and `/users` links redirect to their new locations so existing
-bookmarks remain usable.
+knowledge chunks are available to AI retrieval. Knowledge changes happen in the
+top-level Knowledge tab. Stats Graphics lives under Analytics. Feature-specific
+settings live with their Features cards; users, roles, mappings, and overrides
+live together in Dashboard Access. Older `/stats`, `/settings/knowledge`,
+`/imports`, `/users`, `/settings/features`, and `/settings/permissions` URLs
+redirect to their current locations so existing bookmarks remain usable.
 
 ### Message Studio (Embed/Message Editor)
 
@@ -1719,8 +1722,8 @@ then confirms role changes privately. Bump reminders send the selected asset
 as configured and no longer add an automatic subscription button. Successful
 bump responses send the selected asset's content/embed and first four buttons,
 then add the built-in **Bump Leaderboard** button. Assets used by a feature
-cannot be deleted until a different asset (or the built-in fallback) is selected in **Settings → Feature
-Settings**.
+cannot be deleted until a different asset (or the built-in fallback) is selected
+on that feature's page under **Features**.
 
 Set these values in the project-root `.env` and replace the placeholder
 password and signing key before using the dashboard. When
@@ -1734,13 +1737,16 @@ DASHBOARD_PORT=3000
 DASHBOARD_USERNAME=admin
 DASHBOARD_PASSWORD=change_this_password
 DASHBOARD_SECRET_KEY=change_this_to_a_long_random_string
+DASHBOARD_COOKIE_SECURE=true
 DASHBOARD_AUTH_MODE=discord
+GUILD_ID=
 DISCORD_OAUTH_CLIENT_ID=
 DISCORD_OAUTH_CLIENT_SECRET=
 DISCORD_OAUTH_REDIRECT_URI=https://dashboard.broeden.com/auth/discord/callback
 DASHBOARD_DISCORD_ALLOWED_USER_IDS=
 DASHBOARD_DISCORD_ALLOWED_ROLE_IDS=
 DASHBOARD_DISCORD_DEFAULT_ROLE=admin
+DASHBOARD_DISCORD_REVERIFY_MINUTES=60
 ```
 
 Generate a signing key with `python3 -c "import secrets; print(secrets.token_urlsafe(48))"`.
@@ -1764,12 +1770,13 @@ that tunnel.
 
 ### Discord dashboard login
 
-The login page supports Discord OAuth with the `identify` scope while keeping
-the existing owner username/password as a fallback. Discord login is shown only
-when `DASHBOARD_AUTH_MODE=discord` and the client ID, client secret, and
-redirect URI are configured. OAuth state is stored in the signed session and
-consumed once during callback validation. Access tokens exist only in memory
-long enough to fetch the Discord identity; they are not logged, rendered, or
+The login page supports Discord OAuth with the `identify guilds.members.read`
+scopes while keeping the existing owner username/password as an emergency
+fallback. Discord login is shown only when `DASHBOARD_AUTH_MODE=discord` and
+`GUILD_ID`, the client ID, client secret, and redirect URI are configured. OAuth
+state is stored in the signed session and consumed once during callback
+validation. Access tokens exist only in memory long enough to fetch the Discord
+identity and current configured-guild member; they are not logged, rendered, or
 stored in SQLite.
 
 Configure the Discord application:
@@ -1779,38 +1786,39 @@ Configure the Discord application:
 3. Add the exact redirect URI
    `https://dashboard.broeden.com/auth/discord/callback`.
 4. Copy the OAuth2 Client ID and Client Secret into `.env`.
-5. Enable Discord Developer Mode, right-click each approved user, choose
-   **Copy User ID**, and add the IDs to
+5. Configure `GUILD_ID` and initially list the owner/test Discord user in
    `DASHBOARD_DISCORD_ALLOWED_USER_IDS`.
+6. After owner login, map live Discord roles to dashboard roles in **Dashboard
+   Access** and test with a low-risk Viewer mapping first.
 
 The dashboard creates `dashboard_users` in the shared database. On a fresh
 installation, the existing `DASHBOARD_USERNAME` and `DASHBOARD_PASSWORD` are
 seeded as a password-authenticated `owner`; only a salted PBKDF2 password hash
-is stored. Discord users are admitted only when already linked to an active row
-or explicitly listed in `DASHBOARD_DISCORD_ALLOWED_USER_IDS`. Newly approved
-Discord users receive `admin` or `viewer` according to
-`DASHBOARD_DISCORD_DEFAULT_ROLE`; OAuth never auto-creates an `owner`. Disabled
-linked users are denied.
+is stored. Discord users are admitted only after the OAuth member endpoint
+verifies current membership and either a direct allowlist, compatibility
+allowed role, existing legacy link, or database-backed Discord role mapping
+grants access. Discord-derived assignments are replaced at login; losing the
+qualifying role denies the next login. Verified Discord sessions expire after
+`DASHBOARD_DISCORD_REVERIFY_MINUTES`, forcing a fresh membership/role check.
+OAuth never auto-creates an Owner.
 
-Owners and admins retain existing dashboard write actions. Viewers can read
-dashboard pages and exports, but the shared action guard rejects settings,
-operations, stats, and knowledge POST actions. The minimal Users page lists
-provider, Discord identity, role, status, and last login for owners/admins.
-Role-based admission through `DASHBOARD_DISCORD_ALLOWED_ROLE_IDS` is deferred;
-this version does not require bot-token guild-member lookups and never starts a
-second Discord client.
+Capability-based permissions are reloaded from SQLite on every request and are
+enforced by server middleware as well as permission-filtered navigation. The
+seeded roles are Owner, Administrator, Moderator, Party Captain, and Analyst /
+Viewer; owners can add custom roles, mappings, direct assignments, and per-user
+allow/deny overrides. The final active Owner cannot be removed or disabled.
+Significant actions are written to an append-only, secret-redacted audit log.
 
 Keep Cloudflare Access enabled as the outer gate, keep password login until
 Discord login is confirmed working, and never share
 `DISCORD_OAUTH_CLIENT_SECRET`.
 
-### Phase 1.5 runtime settings
+### Runtime settings and feature configuration
 
-The Settings section has sidebar entries for Bot Configuration, Permissions &
-Access, Discord Roles & Channels, Feature Settings, Imports, Dashboard Users,
-and Advanced.
-Knowledge now lives in its own top-level tab. Updates are validated, stored as
-text in the shared `data.db`
+Global Settings contains General, Dashboard Access, Discord Connection, Data &
+Storage, Advanced, and Audit Log. Feature-specific controls are discovered and
+edited through focused **Features** pages rather than one continuous form.
+Updates are validated as a group and stored as text in the shared `data.db`
 `bot_settings` table, and recorded in `bot_settings_audit` when the value
 changes. Existing database values are never overwritten during environment
 seeding. The bot reads these safe values from SQLite first and falls back to
@@ -1822,11 +1830,12 @@ older `.env` values.
 Editable settings include `/ask` channels and cooldown, staff/owner permission
 IDs, voice/channel exclusions, bank access, VC XP role-pulse controls, and the
 transferred bump, reminder, streak/recovery, stats, and leaderboard settings.
-Those transferred settings are consolidated under **Feature Settings** rather
-than duplicated across the general permissions and advanced pages.
-Role and channel permission settings use the same Discord metadata selectors
-as the Discord Roles & Channels page; user ID allowlists remain plain ID
-fields. The dashboard Overview page also shows a
+Each control shows a plain-language label, current source (Database,
+Environment, Default, or Not configured), impact-oriented help, and a collapsed
+Technical details section containing the raw key. Feature forms use one dirty-
+state Save/Discard bar. Role and channel settings use compact searchable live
+Discord selectors; user ID allowlists remain plain snowflake fields. The
+dashboard Overview page also shows a
 read-only VC XP readiness card using the shared database and latest Discord
 metadata snapshot when available. Discord ID lists accept blank values or
 comma-separated 17-20 digit IDs and remove spaces when saved. Integer and
@@ -1843,8 +1852,8 @@ in `bot_settings`:
 
 Older dashboard-only role, ask, and bank JSON settings remain accepted by the
 settings validator for compatibility, but the normal dashboard UI does not show
-them because the live runtime settings are edited in Bot Configuration or
-Permissions & Access. Advanced settings are limited to miscellaneous local
+them. `BANK_LOG_CHANNEL_ID` is also hidden because the current bank cog does not
+read it. Advanced settings are limited to miscellaneous local
 operator defaults such as:
 
 - `import_archive_path`
@@ -1863,9 +1872,9 @@ options. Missing or deleted saved objects are displayed separately as missing
 saved items so operators can remove stale values deliberately; the dashboard
 does not silently delete saved IDs.
 
-Settings → Discord Roles & Channels includes a Discord Metadata Preview showing
-roles, categories, channels, emojis, last refresh time, and the latest refresh error if
-one exists, plus the remaining dashboard-managed Discord selector settings.
+Settings → Discord Connection shows compact roles/categories/channels/emojis
+counts, a friendly last-refresh time, and the latest refresh error if one exists.
+Feature-owned selectors stay on their feature pages.
 The Refresh Discord Metadata button queues the fixed
 `refresh_discord_metadata` dashboard action. The live bot process handles that
 action from its existing dashboard action worker, explicitly fetches the current

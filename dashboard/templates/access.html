@@ -1,0 +1,56 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="page-heading"><div><p class="eyebrow">Capability-based authorization</p><h1>Dashboard Access</h1><p class="muted">Access is fail-closed: authenticated users see only routes and actions granted by effective permissions.</p></div></div>
+<div class="settings-layout">
+{% include "_settings_nav.html" %}
+<div>
+{% if message %}<div class="alert success">{{ message }}</div>{% endif %}{% if error %}<div class="alert error">{{ error }}</div>{% endif %}
+
+<section class="card settings-section">
+  <div class="section-heading"><div><p class="eyebrow">Discord mapping</p><h2>Map server roles to dashboard roles</h2><p class="muted">Mappings are refreshed at each Discord login. Saving replaces the selected dashboard role’s mapping set.</p></div></div>
+  <form method="post" action="{{ url_for('access_mapping_save') }}" class="access-mapping-form">
+    <input type="hidden" name="csrf" value="{{ csrf_token }}">
+    <label>Discord roles<role-multi-select input-name="discord_role_ids" value-format="csv" value=""></role-multi-select></label>
+    <label>Dashboard role<select name="dashboard_role_id" required><option value="">Choose a role</option>{% for role in access.roles %}<option value="{{ role.id }}">{{ role.name }}</option>{% endfor %}</select></label>
+    <button class="button" type="submit">Save mapping set</button>
+  </form>
+  {% if access.mappings %}<div class="mapping-list">{% for mapping in access.mappings %}<div class="mapping-row"><div><strong>{{ mapping.discord_role_name or 'Unknown Discord role' }}</strong><small>ID {{ mapping.discord_role_id }}</small></div><span>→</span><strong>{{ mapping.dashboard_role_name }}</strong><form method="post" action="{{ url_for('access_mapping_remove', discord_role_id=mapping.discord_role_id, dashboard_role_id=mapping.role_id) }}"><input type="hidden" name="csrf" value="{{ csrf_token }}"><button class="button secondary compact-button" type="submit">Remove</button></form></div>{% endfor %}</div>{% else %}<p class="empty-state">No Discord roles are mapped yet. Direct allowlisted users keep their existing compatibility access.</p>{% endif %}
+</section>
+
+<section class="card settings-section">
+  <div class="section-heading"><div><p class="eyebrow">Dashboard roles</p><h2>Roles and capabilities</h2></div></div>
+  <div class="role-grid">
+  {% for role in access.roles %}
+    <article class="soft-card role-card"><div class="feature-card-heading"><h3>{{ role.name }}</h3><span class="badge">{{ 'System' if role.is_system else 'Custom' }}</span></div><p>{{ role.description }}</p><p class="muted">{{ role.permission_count }} permissions · {{ role.user_count }} users · {{ role.mapping_count }} mappings</p><details><summary>Included capabilities</summary><ul class="permission-list">{% for permission in role.permissions %}<li><code>{{ permission }}</code></li>{% endfor %}</ul></details></article>
+  {% endfor %}
+  </div>
+</section>
+
+<section class="card settings-section">
+  <div class="section-heading"><div><p class="eyebrow">Custom authorization</p><h2>Create a custom role</h2><p class="muted">Select only the capabilities this role needs. System roles remain stable and cannot be edited.</p></div></div>
+  <form method="post" action="{{ url_for('access_role_save') }}" class="form-grid">
+    <input type="hidden" name="csrf" value="{{ csrf_token }}">
+    <div class="form-grid two"><label>Role name<input name="name" maxlength="80" required></label><label>Description<input name="description" maxlength="300"></label></div>
+    <div class="permission-groups">{% for group in access.permissions|groupby('category') %}<fieldset><legend>{{ group.grouper }}</legend>{% for permission in group.list %}<label class="permission-option"><input type="checkbox" name="permissions" value="{{ permission.key }}"><span><strong>{{ permission.name }}</strong><small>{{ permission.description }}</small></span></label>{% endfor %}</fieldset>{% endfor %}</div>
+    <div><button class="button" type="submit">Create role</button></div>
+  </form>
+</section>
+
+<section class="card">
+  <div class="section-heading"><div><p class="eyebrow">Effective access</p><h2>Dashboard users</h2><p class="muted">Role assignments combine; explicit per-user denies take precedence. Owners cannot be locked out.</p></div></div>
+  <div class="access-user-list">
+  {% for user in access.users %}
+    <article class="soft-card access-user-card">
+      <div class="access-user-heading"><div><h3>{{ user.discord_global_name or user.discord_username or user.username or 'Dashboard user' }}</h3><p class="muted">{{ user.auth_provider|title }} · {{ user.access_source|replace('_', ' ')|title }}{% if user.discord_verified_at %} · verified {{ user.discord_verified_at|friendly_datetime }}{% endif %}</p></div><span class="badge badge-{{ 'healthy' if user.status == 'active' else 'disabled' }}">{{ user.status|title }}</span></div>
+      <div class="assignment-list">{% for assignment in user.assignments %}<span class="assignment-chip">{{ assignment.role_name }} <small>{{ assignment.source }}</small>{% if assignment.source == 'direct' %}<form method="post" action="{{ url_for('access_user_role', user_id=user.id) }}"><input type="hidden" name="csrf" value="{{ csrf_token }}"><input type="hidden" name="role_id" value="{{ assignment.role_id }}"><input type="hidden" name="action" value="remove"><button type="submit" aria-label="Remove {{ assignment.role_name }}">×</button></form>{% endif %}</span>{% else %}<span class="muted">No assigned role</span>{% endfor %}</div>
+      <div class="access-user-actions">
+        <form method="post" action="{{ url_for('access_user_role', user_id=user.id) }}" class="inline-control"><input type="hidden" name="csrf" value="{{ csrf_token }}"><select name="role_id" aria-label="Dashboard role"><option value="">Assign role…</option>{% for role in access.roles %}<option value="{{ role.id }}">{{ role.name }}</option>{% endfor %}</select><button class="button secondary" type="submit">Assign</button></form>
+        <form method="post" action="{{ url_for('access_user_status', user_id=user.id) }}" class="inline-control"><input type="hidden" name="csrf" value="{{ csrf_token }}"><input type="hidden" name="status" value="{{ 'disabled' if user.status == 'active' else 'active' }}"><button class="button {{ 'danger' if user.status == 'active' else 'secondary' }}" type="submit">{{ 'Disable' if user.status == 'active' else 'Enable' }}</button></form>
+      </div>
+      <details><summary>{{ user.permissions|length }} effective capabilities{% if user.overrides %} · {{ user.overrides|length }} overrides{% endif %}</summary><div class="permission-summary">{% for permission in user.permissions %}<code>{{ permission }}</code>{% endfor %}</div><form method="post" action="{{ url_for('access_user_permission', user_id=user.id) }}" class="override-form"><input type="hidden" name="csrf" value="{{ csrf_token }}"><label>Capability<select name="permission_key">{% for permission in access.permissions %}<option value="{{ permission.key }}">{{ permission.name }}</option>{% endfor %}</select></label><label>Override<select name="mode"><option value="inherit">Inherit</option><option value="allow">Allow</option><option value="deny">Deny</option></select></label><button class="button secondary" type="submit">Apply override</button></form></details>
+    </article>
+  {% else %}<p class="empty-state">No dashboard users have been created.</p>{% endfor %}
+  </div>
+</section>
+</div></div>
+{% endblock %}

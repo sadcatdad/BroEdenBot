@@ -58,6 +58,12 @@ sudo systemctl stop "${SERVICES[@]}"
 SERVICES_STOPPED=true
 .venv/bin/python scripts/migrate_reminders.py --database "$DATABASE_PATH"
 .venv/bin/python scripts/migrate_reminders.py --database "$DATABASE_PATH" --validate-only
+.venv/bin/python scripts/migrate_dashboard_rbac.py \
+  --database "$DATABASE_PATH" \
+  --backup-dir "$BACKUP_DIR"
+.venv/bin/python scripts/migrate_dashboard_rbac.py \
+  --database "$DATABASE_PATH" \
+  --validate-only
 .venv/bin/python scripts/migrate_visual_content_studio.py \
   --database "$DATABASE_PATH" \
   --asset-dir "$VISUAL_ASSET_DIR" \
