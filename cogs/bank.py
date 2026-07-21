@@ -1,5 +1,6 @@
 import datetime
 import math
+import os
 from pathlib import Path
 
 import aiosqlite
@@ -20,11 +21,18 @@ from utils.ui import (
 
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
-DATABASE_PATH = PROJECT_ROOT / "brobank.db"
 SUPPORTED_BY_BANK = (
     "Funds support Bro Eden events, giveaways, bots, server improvements, "
     "and new features."
 )
+
+
+def bank_database_path() -> Path:
+    configured = os.getenv("BANK_DATABASE_PATH", "").strip()
+    path = Path(configured).expanduser() if configured else PROJECT_ROOT / "brobank.db"
+    if not path.is_absolute():
+        path = PROJECT_ROOT / path
+    return path.resolve()
 
 
 def allowed_role_ids():
@@ -49,7 +57,9 @@ class Bank(commands.Cog):
         self.db = None
 
     async def cog_load(self):
-        self.db = await aiosqlite.connect(DATABASE_PATH)
+        database_path = bank_database_path()
+        database_path.parent.mkdir(parents=True, exist_ok=True)
+        self.db = await aiosqlite.connect(database_path)
         await configure_connection(self.db)
         await self.db.execute(
             """
