@@ -170,6 +170,7 @@ class DiscordObjectPicker extends HTMLElement {
         if (!group) return;
         group.objects.forEach((item) => this.selected.delete(String(item.id)));
         this.draw();
+        this.notifyChange();
       });
     });
     options.querySelectorAll("[data-show-more]").forEach((button) => {
@@ -187,6 +188,7 @@ class DiscordObjectPicker extends HTMLElement {
         }
         else this.selected.delete(value);
         this.draw();
+        this.notifyChange();
       });
     });
   }
@@ -338,6 +340,7 @@ class DiscordObjectPicker extends HTMLElement {
       button.addEventListener("click", () => {
         this.selected.delete(String(button.dataset.removeId));
         this.draw();
+        this.notifyChange();
       });
     });
   }
@@ -366,8 +369,13 @@ class DiscordObjectPicker extends HTMLElement {
       button.addEventListener("click", () => {
         this.selected.delete(String(button.dataset.removeMissing));
         this.draw();
+        this.notifyChange();
       });
     });
+  }
+
+  notifyChange() {
+    this.dispatchEvent(new CustomEvent("discord-picker-change", { bubbles: true }));
   }
 
   updateBrowseButton() {

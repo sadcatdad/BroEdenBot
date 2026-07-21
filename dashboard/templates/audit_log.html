@@ -1,0 +1,12 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="page-heading"><div><p class="eyebrow">Append-only security record</p><h1>Audit Log</h1><p class="muted">Authentication, authorization, access changes, configuration writes, and sensitive operations are recorded without secrets.</p></div></div>
+<div class="settings-layout">
+{% include "_settings_nav.html" %}
+<div>
+<section class="card settings-section">
+  <form method="get" action="{{ url_for('settings_audit') }}" class="filter-bar"><label>Action<input name="action" value="{{ filters.action }}" placeholder="configuration.changed"></label><label>Actor<input name="actor" value="{{ filters.actor }}" placeholder="Username"></label><button class="button secondary" type="submit">Filter</button>{% if filters.action or filters.actor %}<a class="button secondary" href="{{ url_for('settings_audit') }}">Clear</a>{% endif %}</form>
+</section>
+{% if events %}<section class="card audit-list">{% for event in events %}<article class="audit-event"><div class="audit-event-main"><span class="audit-dot {{ 'audit-ok' if event.success else 'audit-failed' }}" aria-hidden="true"></span><div><strong>{{ event.action }}</strong><p>{{ event.actor_label }}{% if event.target_type %} · {{ event.target_type }}{% endif %}{% if event.target_id %} · <code>{{ event.target_id }}</code>{% endif %}</p></div><time>{{ event.created_at|friendly_datetime }}</time></div>{% if event.error %}<p class="warning-text">{{ event.error }}</p>{% endif %}{% if event.before_json or event.after_json %}<details><summary>Change details</summary>{% if event.before_json %}<h4>Before</h4><pre class="log-output compact">{{ event.before_json }}</pre>{% endif %}{% if event.after_json %}<h4>After</h4><pre class="log-output compact">{{ event.after_json }}</pre>{% endif %}<small>Request {{ event.request_id }}</small></details>{% endif %}</article>{% endfor %}</section>{% else %}<p class="empty-state">No audit events match these filters.</p>{% endif %}
+</div></div>
+{% endblock %}

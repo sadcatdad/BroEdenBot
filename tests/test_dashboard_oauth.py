@@ -19,6 +19,7 @@ from dashboard.users import (
     initialize_dashboard_users,
     list_dashboard_users,
 )
+from utils.settings import initialize_settings_from_env
 
 
 class DashboardOAuthTests(unittest.TestCase):
@@ -39,6 +40,7 @@ class DashboardOAuthTests(unittest.TestCase):
                 "DISCORD_OAUTH_REDIRECT_URI": (
                     "https://dashboard.broeden.com/auth/discord/callback"
                 ),
+                "GUILD_ID": "999999999999999999",
                 "DASHBOARD_DISCORD_ALLOWED_USER_IDS": "111111111111111111",
                 "DASHBOARD_DISCORD_ALLOWED_ROLE_IDS": "",
                 "DASHBOARD_DISCORD_DEFAULT_ROLE": "admin",
@@ -46,6 +48,7 @@ class DashboardOAuthTests(unittest.TestCase):
             clear=False,
         )
         self.environment.start()
+        initialize_settings_from_env()
         initialize_dashboard_users()
         self.client = TestClient(app)
 
@@ -80,6 +83,11 @@ class DashboardOAuthTests(unittest.TestCase):
 
     def oauth_callback(self, identity: dict, state=None):
         oauth_state = state or self.start_oauth()
+        identity = {
+            **identity,
+            "_guild_id": "999999999999999999",
+            "_guild_member": {"roles": [], "user": dict(identity)},
+        }
         with patch(
             "dashboard.app.fetch_discord_identity",
             return_value=identity,
@@ -118,7 +126,7 @@ class DashboardOAuthTests(unittest.TestCase):
         parameters = parse_qs(parsed.query)
         self.assertEqual(parsed.netloc, "discord.com")
         self.assertEqual(parameters["client_id"], ["123456789012345678"])
-        self.assertEqual(parameters["scope"], ["identify"])
+        self.assertEqual(parameters["scope"], ["identify guilds.members.read"])
         self.assertEqual(parameters["response_type"], ["code"])
         self.assertEqual(
             parameters["redirect_uri"],
@@ -187,6 +195,7 @@ class DashboardOAuthTests(unittest.TestCase):
         self.assertEqual(session["dashboard_role"], "admin")
         self.assertEqual(session["auth_provider"], "discord")
         self.assertEqual(session["discord_user_id"], "111111111111111111")
+        self.assertTrue(session["discord_verified_at"])
 
         connection = sqlite3.connect(self.database)
         columns = {
@@ -283,9 +292,11 @@ class DashboardOAuthTests(unittest.TestCase):
             )
         self.assertEqual(response.status_code, 303)
         settings = self.client.get("/settings")
+        self.assertEqual(settings.status_code, 403)
+        home = self.client.get("/")
         csrf = re.search(
             r'name="csrf" value="([^"]+)"',
-            settings.text,
+            home.text,
         ).group(1)
         update = self.client.post(
             "/settings/update",
@@ -302,7 +313,7 @@ class DashboardOAuthTests(unittest.TestCase):
         self.password_login()
         response = self.client.get("/users")
         self.assertEqual(response.status_code, 200)
-        self.assertIn("Dashboard Users", response.text)
+        self.assertIn("Dashboard Access", response.text)
         self.assertNotIn("never-render-this-secret", response.text)
         settings = self.client.get("/settings")
         self.assertNotIn("DISCORD_OAUTH_CLIENT_SECRET", settings.text)

@@ -12,6 +12,7 @@ import httpx
 DISCORD_AUTHORIZE_URL = "https://discord.com/oauth2/authorize"
 DISCORD_TOKEN_URL = "https://discord.com/api/oauth2/token"
 DISCORD_USER_URL = "https://discord.com/api/users/@me"
+DISCORD_CURRENT_MEMBER_URL = "https://discord.com/api/users/@me/guilds/{guild_id}/member"
 
 
 class DiscordOAuthError(RuntimeError):
@@ -26,6 +27,7 @@ def discord_oauth_configured() -> bool:
             "DISCORD_OAUTH_CLIENT_ID",
             "DISCORD_OAUTH_CLIENT_SECRET",
             "DISCORD_OAUTH_REDIRECT_URI",
+            "GUILD_ID",
         )
     )
 
@@ -37,7 +39,7 @@ def discord_authorize_url(state: str) -> str:
         "client_id": os.getenv("DISCORD_OAUTH_CLIENT_ID", "").strip(),
         "redirect_uri": os.getenv("DISCORD_OAUTH_REDIRECT_URI", "").strip(),
         "response_type": "code",
-        "scope": "identify",
+        "scope": "identify guilds.members.read",
         "state": state,
     }
     return f"{DISCORD_AUTHORIZE_URL}?{urlencode(parameters)}"
@@ -75,10 +77,21 @@ async def fetch_discord_identity(code: str) -> dict[str, Any]:
             )
             identity_response.raise_for_status()
             identity = identity_response.json()
+            guild_id = os.getenv("GUILD_ID", "").strip()
+            member_response = await client.get(
+                DISCORD_CURRENT_MEMBER_URL.format(guild_id=guild_id),
+                headers={"Authorization": f"Bearer {access_token}"},
+            )
+            member_response.raise_for_status()
+            member = member_response.json()
     except DiscordOAuthError:
         raise
     except (httpx.HTTPError, ValueError, TypeError) as exc:
         raise DiscordOAuthError("Discord login could not be completed.") from exc
     if not isinstance(identity, dict) or not str(identity.get("id", "")).isdigit():
         raise DiscordOAuthError("Discord identity could not be verified.")
+    if not isinstance(member, dict):
+        raise DiscordOAuthError("Discord server membership could not be verified.")
+    identity["_guild_id"] = guild_id
+    identity["_guild_member"] = member
     return identity

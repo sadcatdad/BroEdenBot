@@ -487,7 +487,7 @@ class VisualStudioDashboardTests(unittest.TestCase):
         finally:
             unauthenticated.close()
         csrf = self.csrf("/visual/templates/activity_leaderboard")
-        with patch("dashboard.app.is_admin", return_value=False):
+        with patch("dashboard.app.has_permission", return_value=False):
             viewer_write = self.client.post(
                 "/visual/templates/activity_leaderboard/draft",
                 data={"csrf": csrf, "settings_json": "{}"},

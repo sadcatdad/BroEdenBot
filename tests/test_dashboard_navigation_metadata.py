@@ -13,7 +13,7 @@ from dashboard.app import app
 from dashboard.discord_metadata import channel_matches_selection
 from dashboard.users import initialize_dashboard_users
 from utils.settings import get_setting, initialize_settings_from_env
-from utils.discord_metadata import save_discord_metadata_snapshot
+from utils.discord_metadata import record_discord_metadata_error, save_discord_metadata_snapshot
 
 
 class DashboardNavigationMetadataTests(unittest.TestCase):
@@ -141,12 +141,11 @@ class DashboardNavigationMetadataTests(unittest.TestCase):
         self.assertIn('class="settings-menu-item active"', settings.text)
         self.assertIn('aria-current="page"', settings.text)
         for label in (
-            "Bot Configuration",
-            "Permissions &amp; Access",
-            "Discord Roles &amp; Channels",
-            "Feature Settings",
-            "Imports",
-            "Dashboard Users",
+            "General",
+            "Dashboard Access",
+            "Discord Connection",
+            "Data &amp; Storage",
+            "Audit Log",
             "Advanced",
         ):
             self.assertIn(label, settings.text)
@@ -202,16 +201,17 @@ class DashboardNavigationMetadataTests(unittest.TestCase):
         self.assertIn("Feature(s)", listing.text)
 
         template_id = saved.headers["location"].split("/")[-2]
-        settings = self.client.get("/settings/features")
-        self.assertIn(f'<option value="{template_id}"', settings.text)
-        self.assertIn("Bump Reminder", settings.text)
-        self.assertIn("Successful Bump Response", settings.text)
-        self.assertIn("Bump Reminder Message / Embed", settings.text)
-        self.assertIn("Streak Milestone Message / Embed", settings.text)
-        self.assertIn('aria-label="BUMP_SUCCESS_ASSET_ID"', settings.text)
-        self.assertIn('aria-label="BUMP_REMINDER_ASSET_ID"', settings.text)
-        self.assertIn('aria-label="STREAK_MILESTONE_ASSET_ID"', settings.text)
-        self.assertNotIn('aria-label="BUMP_SUCCESS_MESSAGE"', settings.text)
+        bumps = self.client.get("/features/bumps")
+        self.assertIn(f'<option value="{template_id}"', bumps.text)
+        self.assertIn("Bump Reminder", bumps.text)
+        self.assertIn("Successful Bump Response", bumps.text)
+        self.assertIn("Bump Reminder Message / Embed", bumps.text)
+        streaks = self.client.get("/features/streaks")
+        self.assertIn("Streak Milestone Message / Embed", streaks.text)
+        self.assertIn('name="setting__BUMP_SUCCESS_ASSET_ID"', bumps.text)
+        self.assertIn('name="setting__BUMP_REMINDER_ASSET_ID"', bumps.text)
+        self.assertIn('name="setting__STREAK_MILESTONE_ASSET_ID"', streaks.text)
+        self.assertNotIn('name="setting__BUMP_SUCCESS_MESSAGE"', bumps.text)
 
         message_editor = self.client.get("/embeds/new?asset_type=message")
         self.assertEqual(message_editor.status_code, 200)
@@ -303,7 +303,7 @@ class DashboardNavigationMetadataTests(unittest.TestCase):
 
     def test_json_settings_save_and_stale_ids_are_preserved(self):
         self.login()
-        page = self.client.get("/settings/discord")
+        page = self.client.get("/features/analytics")
         token = re.search(r'name="csrf" value="([^"]+)"', page.text).group(1)
         response = self.client.post(
             "/settings/update",
@@ -319,7 +319,7 @@ class DashboardNavigationMetadataTests(unittest.TestCase):
 
         categories = self.client.get("/api/discord/categories").json()
         self.assertEqual(categories, [])
-        settings = self.client.get("/settings/discord")
+        settings = self.client.get("/features/analytics")
         self.assertIn("analytics_excluded_category_ids", settings.text)
 
     def test_imported_channels_are_not_selector_options(self):
@@ -362,6 +362,15 @@ class DashboardNavigationMetadataTests(unittest.TestCase):
         self.assertEqual(row[1], "{}")
         self.assertEqual(row[2], "pending")
 
+    def test_discord_connection_renders_refresh_failure_actionably(self):
+        record_discord_metadata_error("Missing Manage Guild permission")
+        self.login()
+        page = self.client.get("/settings/discord")
+        self.assertEqual(page.status_code, 200)
+        self.assertIn("Metadata refresh failed", page.text)
+        self.assertIn("Missing Manage Guild permission", page.text)
+        self.assertIn("Needs attention", page.text)
+
     def test_picker_assets_use_collapsed_compact_panel_pattern(self):
         root = Path(__file__).resolve().parent.parent
         script = (root / "dashboard/static/discord_pickers.js").read_text()
@@ -380,7 +389,7 @@ class DashboardNavigationMetadataTests(unittest.TestCase):
         self.assertIn(".settings-menu-item", styles)
         self.assertIn("text-decoration: none", styles)
         base_template = (root / "dashboard/templates/base.html").read_text()
-        self.assertIn("styles.css') }}?v=visual-studio1", base_template)
+        self.assertIn("styles.css') }}?v=dashboard-audit1", base_template)
         self.assertIn("dashboard_nav.js') }}?v=dashboard-refresh1", base_template)
         self.assertIn(".embed-fields-card[hidden]", styles)
         self.assertIn("discord_pickers.js') }}?v=picker-single-values2", base_template)

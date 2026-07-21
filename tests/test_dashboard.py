@@ -74,7 +74,7 @@ class DashboardRouteTests(unittest.TestCase):
 
     def test_login_and_settings_do_not_expose_secrets(self):
         self.login()
-        settings = self.client.get("/settings/permissions")
+        settings = self.client.get("/features/staff_tools")
         self.assertEqual(settings.status_code, 200)
         self.assertIn("STAFF_AI_ALLOWED_ROLE_IDS", settings.text)
         self.assertIn("MESSAGE_CONTEXT_ALLOWED_ROLE_IDS", settings.text)
@@ -98,34 +98,35 @@ class DashboardRouteTests(unittest.TestCase):
 
     def test_vcxp_trigger_role_uses_single_role_picker(self):
         self.login()
-        settings = self.client.get("/settings")
+        settings = self.client.get("/features/voice")
         self.assertEqual(settings.status_code, 200)
         self.assertIn("VCXP_TRIGGER_ROLE_ID", settings.text)
         self.assertIn("<role-single-select", settings.text)
 
     def test_vcxp_exclusions_use_discord_pickers(self):
         self.login()
-        settings = self.client.get("/settings")
+        settings = self.client.get("/features/voice")
         self.assertEqual(settings.status_code, 200)
         self.assertIn("VCXP_EXCLUDED_ROLE_IDS", settings.text)
-        self.assertIn('<role-multi-select input-name="value" setting-key="VCXP_EXCLUDED_ROLE_IDS"', settings.text)
+        self.assertIn('<role-multi-select input-name="setting__VCXP_EXCLUDED_ROLE_IDS" setting-key="VCXP_EXCLUDED_ROLE_IDS"', settings.text)
         self.assertIn("VCXP_EXCLUDED_VOICE_CHANNEL_IDS", settings.text)
-        self.assertIn('<channel-multi-select input-name="value" setting-key="VCXP_EXCLUDED_VOICE_CHANNEL_IDS"', settings.text)
+        self.assertIn('<channel-multi-select input-name="setting__VCXP_EXCLUDED_VOICE_CHANNEL_IDS" setting-key="VCXP_EXCLUDED_VOICE_CHANNEL_IDS"', settings.text)
 
     def test_permission_roles_and_channels_use_discord_pickers(self):
         self.login()
-        settings = self.client.get("/settings/permissions")
+        settings = self.client.get("/features/staff_tools")
         self.assertEqual(settings.status_code, 200)
         self.assertIn("STAFF_AI_ALLOWED_ROLE_IDS", settings.text)
-        self.assertIn('<role-multi-select input-name="value" setting-key="STAFF_AI_ALLOWED_ROLE_IDS"', settings.text)
-        self.assertIn("EXCLUDED_VOICE_CHANNEL_IDS", settings.text)
-        self.assertIn('<channel-multi-select input-name="value" setting-key="EXCLUDED_VOICE_CHANNEL_IDS"', settings.text)
-        self.assertIn("BANK_LOG_CHANNEL_ID", settings.text)
-        self.assertIn('<channel-single-select input-name="value" setting-key="BANK_LOG_CHANNEL_ID"', settings.text)
+        self.assertIn('<role-multi-select input-name="setting__STAFF_AI_ALLOWED_ROLE_IDS" setting-key="STAFF_AI_ALLOWED_ROLE_IDS"', settings.text)
+        voice = self.client.get("/features/voice")
+        self.assertIn("EXCLUDED_VOICE_CHANNEL_IDS", voice.text)
+        self.assertIn('<channel-multi-select input-name="setting__EXCLUDED_VOICE_CHANNEL_IDS" setting-key="EXCLUDED_VOICE_CHANNEL_IDS"', voice.text)
+        bank = self.client.get("/features/bank")
+        self.assertNotIn("BANK_LOG_CHANNEL_ID", bank.text)
 
     def test_reminder_command_permissions_use_role_pickers(self):
         self.login()
-        settings = self.client.get("/settings/features")
+        settings = self.client.get("/features/reminders")
         self.assertEqual(settings.status_code, 200)
         for key in (
             "REMINDER_PERSONAL_ALLOWED_ROLE_IDS",
@@ -135,7 +136,7 @@ class DashboardRouteTests(unittest.TestCase):
             "REMINDER_SUBSCRIPTIONS_ALLOWED_ROLE_IDS",
         ):
             self.assertIn(
-                f'<role-multi-select input-name="value" setting-key="{key}"',
+                f'<role-multi-select input-name="setting__{key}" setting-key="{key}"',
                 settings.text,
             )
 
@@ -143,7 +144,7 @@ class DashboardRouteTests(unittest.TestCase):
         self.login()
         settings = self.client.get("/settings/discord")
         self.assertEqual(settings.status_code, 200)
-        self.assertIn("analytics_excluded_channel_ids", settings.text)
+        self.assertIn("Live guild catalog", settings.text)
         self.assertNotIn("bank_allowed_role_ids", settings.text)
         self.assertNotIn("bank_log_channel_id", settings.text)
         self.assertNotIn("ask_command_allowed_channel_ids", settings.text)

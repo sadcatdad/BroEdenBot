@@ -1,0 +1,75 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="page-heading">
+  <div>
+    <p class="eyebrow">System configuration</p>
+    <h1>Settings</h1>
+    <p class="muted">Configuration is grouped by purpose. Feature-specific controls live in Features; access and infrastructure stay here.</p>
+  </div>
+</div>
+<div class="settings-layout">
+{% include "_settings_nav.html" %}
+<div>
+  <section class="settings-card-grid">
+    <a class="card settings-hub-card" href="{{ url_for('features_page') }}">
+      <span class="badge">{{ feature_count }} features</span>
+      <h2>Feature configuration</h2>
+      <p>Configure streaks, bumps, reminders, analytics, voice XP, AI, and other bot capabilities in context.</p>
+      <span class="card-link">Open Features →</span>
+    </a>
+    {% if can('access.manage') %}
+    <a class="card settings-hub-card" href="{{ url_for('settings_access') }}">
+      <span class="badge">{{ roles|length }} dashboard roles</span>
+      <h2>Dashboard Access</h2>
+      <p>Map Discord roles, assign dashboard roles, and review each user’s effective capabilities.</p>
+      <span class="card-link">Manage access →</span>
+    </a>
+    {% endif %}
+    {% if can('discord_metadata.view') %}
+    <a class="card settings-hub-card" href="{{ url_for('settings_discord') }}">
+      <span class="badge {{ 'badge-good' if not discord_metadata.status.last_error else 'badge-warning' }}">{{ 'Connected' if not discord_metadata.status.last_error else 'Needs attention' }}</span>
+      <h2>Discord Connection</h2>
+      <p>Review the synchronized guild catalog used by friendly role, channel, category, and emoji pickers.</p>
+      <span class="card-link">View connection →</span>
+    </a>
+    {% endif %}
+    {% if can('imports.view') %}
+    <a class="card settings-hub-card" href="{{ url_for('imports') }}">
+      <span class="badge">Read-only history</span>
+      <h2>Data &amp; Storage</h2>
+      <p>Inspect import history and the shared SQLite data path without exposing secrets or arbitrary file controls.</p>
+      <span class="card-link">Review data →</span>
+    </a>
+    {% endif %}
+    <a class="card settings-hub-card" href="{{ url_for('settings_advanced') }}">
+      <span class="badge">Technical</span>
+      <h2>Advanced</h2>
+      <p>Review allowlisted system defaults, compatibility controls, and their effective configuration source.</p>
+      <span class="card-link">Open Advanced →</span>
+    </a>
+  </section>
+
+  <section class="card settings-section">
+    <div class="section-heading">
+      <div><p class="eyebrow">Configuration health</p><h2>Current sources</h2></div>
+    </div>
+    <div class="status-list">
+      <div><span>Discord OAuth and guild verification</span><strong class="{{ 'good' if oauth_ready else 'warning-text' }}">{{ 'Ready' if oauth_ready else 'Incomplete' }}</strong></div>
+      <div><span>Discord metadata</span><strong>{{ discord_metadata.status.roles_count or 0 }} roles · {{ discord_metadata.status.channels_count or 0 }} channels</strong></div>
+      <div><span>Last Discord refresh</span><strong>{{ discord_metadata.status.last_refreshed_at|friendly_datetime }}</strong></div>
+      <div><span>Runtime database</span><span class="path" title="{{ database_path }}">{{ database_path }}</span></div>
+    </div>
+  </section>
+
+  <section class="card">
+    <h2>Recent configuration changes</h2>
+    {% if recent_changes %}
+    <div class="table-wrap"><table>
+      <thead><tr><th>Setting</th><th>Changed by</th><th>When</th></tr></thead>
+      <tbody>{% for change in recent_changes %}<tr><td>{{ change.key|replace('_', ' ')|title }}</td><td>{{ change.changed_by }}</td><td>{{ change.changed_at|friendly_datetime }}</td></tr>{% endfor %}</tbody>
+    </table></div>
+    {% else %}<p class="empty-state">No dashboard configuration changes have been recorded yet.</p>{% endif %}
+  </section>
+</div>
+</div>
+{% endblock %}

@@ -1,0 +1,10 @@
+{% extends "base.html" %}
+{% block content %}
+<section class="card access-denied-card">
+  <p class="eyebrow">Permission required</p>
+  <h1>Access denied</h1>
+  <p>Your dashboard role does not include this capability. Nothing from the requested page was loaded.</p>
+  <details><summary>Technical details</summary><code>{{ required_permission }}</code></details>
+  <p><a class="button secondary" href="{{ url_for('home') }}">Return to Overview</a></p>
+</section>
+{% endblock %}

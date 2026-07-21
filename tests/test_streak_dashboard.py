@@ -163,15 +163,16 @@ class StreakDashboardTests(unittest.TestCase):
             response = self.client.post(path, data={"csrf": "invalid"})
             self.assertEqual(response.status_code, 400)
 
-    def test_viewer_can_read_but_cannot_restore_or_adjust(self):
+    def test_analyst_viewer_cannot_open_or_mutate_streaks(self):
         with sqlite3.connect(self.database) as connection:
             connection.execute("UPDATE dashboard_users SET role = 'viewer'")
             connection.commit()
         self.login()
         page = self.client.get("/streaks")
-        self.assertEqual(page.status_code, 200)
-        self.assertIn("Viewer accounts can monitor recovery", page.text)
-        token = re.search(r'name="csrf" value="([^"]+)"', page.text).group(1)
+        self.assertEqual(page.status_code, 403)
+        token = re.search(
+            r'name="csrf" value="([^"]+)"', self.client.get("/").text
+        ).group(1)
         response = self.client.post(
             "/streaks/restore",
             data={"csrf": token},
@@ -180,46 +181,37 @@ class StreakDashboardTests(unittest.TestCase):
 
     def test_feature_settings_consolidate_transferred_configuration(self):
         self.login()
-        response = self.client.get("/settings/features")
+        response = self.client.get("/features/streaks")
         self.assertEqual(response.status_code, 200)
-        for label in (
-            "DISBOARD Bumps",
-            "Reminders",
-            "Streaks &amp; Recovery",
-            "Stats &amp; Leaderboards",
-        ):
-            self.assertIn(label, response.text)
+        self.assertIn("Activity Streaks", response.text)
+        self.assertIn("DISBOARD Bumps", self.client.get("/features/bumps").text)
+        self.assertIn("Reminders", self.client.get("/features/reminders").text)
+        self.assertIn("Analytics &amp; Stats", self.client.get("/features/analytics").text)
         for key in (
-            "BUMP_REWARD_ROLE_ID",
-            "BUMP_SUCCESS_ASSET_ID",
-            "BUMP_REMINDER_ASSET_ID",
-            "REMINDER_TIMEZONE",
             "STREAK_RESTORE_ENABLED",
             "STREAK_RESTORE_MAX_DAYS",
             "STREAK_EXCLUDED_CATEGORY_IDS",
             "STREAK_MILESTONE_CHANNEL_ID",
             "STREAK_MILESTONE_ASSET_ID",
-            "STATS_ALLOWED_ROLE_IDS",
         ):
             self.assertIn(key, response.text)
         self.assertIn('setting-key="STREAK_EXCLUDED_CATEGORY_IDS"', response.text)
         self.assertIn('setting-key="STREAK_MILESTONE_CHANNEL_ID"', response.text)
-        self.assertIn('aria-label="STREAK_MILESTONE_ASSET_ID"', response.text)
-        self.assertNotIn('aria-label="STREAK_MILESTONE_MESSAGE"', response.text)
+        self.assertIn('name="setting__STREAK_MILESTONE_ASSET_ID"', response.text)
+        self.assertNotIn('name="setting__STREAK_MILESTONE_MESSAGE"', response.text)
         token = re.search(r'name="csrf" value="([^"]+)"', response.text).group(1)
         saved = self.client.post(
-            "/settings/update",
+            "/features/streaks/save",
             data={
                 "csrf": token,
-                "key": "STREAK_RESTORE_MAX_DAYS",
-                "value": "7",
+                "setting__STREAK_RESTORE_MAX_DAYS": "7",
             },
             follow_redirects=False,
         )
         self.assertEqual(saved.status_code, 303)
         self.assertEqual(
             saved.headers["location"],
-            "http://testserver/settings/features",
+            "http://testserver/features/streaks",
         )
 
 

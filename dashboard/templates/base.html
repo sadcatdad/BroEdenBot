@@ -6,7 +6,7 @@
   <meta name="theme-color" content="#0b0b11">
   <title>{{ page_title or "Login" }} · BroEdenBot</title>
   <link rel="icon" type="image/png" href="{{ url_for('static', path='broeden-pride-icon.png') }}">
-  <link rel="stylesheet" href="{{ url_for('static', path='styles.css') }}?v=visual-studio1">
+  <link rel="stylesheet" href="{{ url_for('static', path='styles.css') }}?v=dashboard-audit1">
   <script src="{{ url_for('static', path='dashboard_nav.js') }}?v=dashboard-refresh1" defer></script>
   <script src="{{ url_for('static', path='discord_pickers.js') }}?v=picker-single-values2" defer></script>
 </head>
@@ -26,63 +26,123 @@
       </div>
 
       <nav class="primary-nav">
+        {% if can('dashboard.view') or can('analytics.view') %}
         <div class="nav-group">
           <p class="nav-group-label">Monitor</p>
+          {% if can('dashboard.view') %}
           <a class="nav-item {{ 'active' if current_path == '/' else '' }}" href="{{ url_for('home') }}" {% if current_path == '/' %}aria-current="page"{% endif %}>
             <svg class="nav-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 13h6V4H4v9Zm0 7h6v-4H4v4Zm10 0h6v-9h-6v9Zm0-16v4h6V4h-6Z"/></svg>
             <span>Overview</span>
           </a>
+          {% endif %}
+          {% if can('analytics.view') %}
           <a class="nav-item {{ 'active' if current_path.startswith('/analytics') else '' }}" href="{{ url_for('analytics_page') }}" {% if current_path.startswith('/analytics') %}aria-current="page"{% endif %}>
             <svg class="nav-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 20V10m6 10V4m6 16v-7m4 7H2"/></svg>
             <span>Analytics</span>
           </a>
+          {% endif %}
         </div>
+        {% endif %}
 
+        {% if can('features.view') or can('streaks.view') or can('events.view') %}
         <div class="nav-group">
-          <p class="nav-group-label">Manage</p>
-          <a class="nav-item {{ 'active' if current_path.startswith('/operations') else '' }}" href="{{ url_for('operations_page') }}" {% if current_path.startswith('/operations') %}aria-current="page"{% endif %}>
-            <svg class="nav-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3v4m0 10v4M3 12h4m10 0h4M5.6 5.6l2.8 2.8m7.2 7.2 2.8 2.8m0-12.8-2.8 2.8m-7.2 7.2-2.8 2.8"/><circle cx="12" cy="12" r="4"/></svg>
-            <span>Operations</span>
+          <p class="nav-group-label">Community</p>
+          {% if can('features.view') %}
+          <a class="nav-item {{ 'active' if current_path.startswith('/features') else '' }}" href="{{ url_for('features_page') }}" {% if current_path.startswith('/features') %}aria-current="page"{% endif %}>
+            <svg class="nav-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 6h7v5H4V6Zm9 0h7v5h-7V6ZM4 13h7v5H4v-5Zm9 0h7v5h-7v-5Z"/></svg>
+            <span>Features</span>
           </a>
+          {% endif %}
+          {% if can('streaks.view') %}
           <a class="nav-item {{ 'active' if current_path.startswith('/streaks') else '' }}" href="{{ url_for('streaks_page') }}" {% if current_path.startswith('/streaks') %}aria-current="page"{% endif %}>
             <svg class="nav-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M13 3s1 4-2 6c-2-2-5-1-5-1s-3 3-2 7 4 6 8 6 7-3 8-8c.7-3-1-6-1-6s-1 3-3 3c1-4-3-7-3-7Z"/></svg>
             <span>Streaks</span>
           </a>
-          <a class="nav-item {{ 'active' if current_path == '/bank' else '' }}" href="{{ url_for('bank') }}" {% if current_path == '/bank' %}aria-current="page"{% endif %}>
-            <svg class="nav-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M3 10h18M5 10v8m4-8v8m6-8v8m4-8v8M3 21h18M12 3 3 7v3h18V7l-9-4Z"/></svg>
-            <span>Bank</span>
-          </a>
+          {% endif %}
         </div>
+        {% endif %}
 
+        {% if can('operations.view') or can('reminders.view') %}
+        <div class="nav-group">
+          <p class="nav-group-label">Operations</p>
+          {% if can('operations.view') %}
+          <a class="nav-item {{ 'active' if current_path == '/operations' else '' }}" href="{{ url_for('operations_page') }}" {% if current_path == '/operations' %}aria-current="page"{% endif %}>
+            <svg class="nav-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3v4m0 10v4M3 12h4m10 0h4M5.6 5.6l2.8 2.8m7.2 7.2 2.8 2.8m0-12.8-2.8 2.8m-7.2 7.2-2.8 2.8"/><circle cx="12" cy="12" r="4"/></svg>
+            <span>Operations</span>
+          </a>
+          {% endif %}
+          {% if can('reminders.view') %}
+          <a class="nav-item {{ 'active' if current_path.startswith('/operations/reminders') else '' }}" href="{{ url_for('reminders_page') }}" {% if current_path.startswith('/operations/reminders') %}aria-current="page"{% endif %}>
+            <svg class="nav-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v7l4 2M5 3v4H1M4 6a9 9 0 1 1-1 8"/></svg>
+            <span>Reminders</span>
+          </a>
+          {% endif %}
+        </div>
+        {% endif %}
+
+        {% if can('visual.view') or can('message_studio.view') or can('knowledge.view') or can('ai.view') %}
         <div class="nav-group">
           <p class="nav-group-label">Content</p>
+          {% if can('visual.view') %}
           <a class="nav-item {{ 'active' if current_path.startswith('/visual') else '' }}" href="{{ url_for('visual_templates') }}" {% if current_path.startswith('/visual') %}aria-current="page"{% endif %}>
             <svg class="nav-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 5h16v14H4V5Zm3 10 3-4 3 3 2-2 3 3M8 9h.01"/></svg>
             <span>Visual Content Studio</span>
           </a>
+          {% endif %}
+          {% if can('message_studio.view') %}
           <a class="nav-item {{ 'active' if current_path.startswith('/embeds') else '' }}" href="{{ url_for('embed_templates') }}" {% if current_path.startswith('/embeds') %}aria-current="page"{% endif %}>
             <svg class="nav-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 5h16v12H8l-4 4V5Zm4 4h8m-8 4h5"/></svg>
             <span>Message Studio</span>
           </a>
+          {% endif %}
+          {% if can('knowledge.view') %}
           <a class="nav-item {{ 'active' if current_path.startswith('/knowledge') else '' }}" href="{{ url_for('knowledge_page') }}" {% if current_path.startswith('/knowledge') %}aria-current="page"{% endif %}>
             <svg class="nav-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M5 4h11a3 3 0 0 1 3 3v13H8a3 3 0 0 1-3-3V4Zm3 12h11M9 8h6m-6 4h6"/></svg>
             <span>Knowledge</span>
           </a>
-          {% if ai_dashboard_visible %}
+          {% endif %}
+          {% if ai_dashboard_visible and can('ai.view') %}
           <a class="nav-item {{ 'active' if current_path.startswith('/ai') else '' }}" href="{{ url_for('ai_page') }}" {% if current_path.startswith('/ai') %}aria-current="page"{% endif %}>
             <svg class="nav-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="m12 3 1.5 4.5L18 9l-4.5 1.5L12 15l-1.5-4.5L6 9l4.5-1.5L12 3Zm6 11 .8 2.2L21 17l-2.2.8L18 20l-.8-2.2L15 17l2.2-.8L18 14ZM6 13l1 3 3 1-3 1-1 3-1-3-3-1 3-1 1-3Z"/></svg>
             <span>AI</span>
           </a>
           {% endif %}
         </div>
+        {% endif %}
 
+        {% if can('bank.view') %}
+        <div class="nav-group">
+          <p class="nav-group-label">Finance</p>
+          <a class="nav-item {{ 'active' if current_path == '/bank' else '' }}" href="{{ url_for('bank') }}" {% if current_path == '/bank' %}aria-current="page"{% endif %}>
+            <svg class="nav-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M3 10h18M5 10v8m4-8v8m6-8v8m4-8v8M3 21h18M12 3 3 7v3h18V7l-9-4Z"/></svg>
+            <span>Bank</span>
+          </a>
+        </div>
+        {% endif %}
+
+        {% if can('settings.view') or can('access.manage') or can('audit_log.view') %}
         <div class="nav-group nav-group-system">
           <p class="nav-group-label">System</p>
-          <a class="nav-item {{ 'active' if current_path.startswith('/settings') else '' }}" href="{{ url_for('settings') }}" {% if current_path.startswith('/settings') %}aria-current="page"{% endif %}>
+          {% if can('settings.view') %}
+          <a class="nav-item {{ 'active' if current_path in ['/settings', '/settings/discord', '/settings/imports', '/settings/advanced'] else '' }}" href="{{ url_for('settings') }}" {% if current_path in ['/settings', '/settings/discord', '/settings/imports', '/settings/advanced'] %}aria-current="page"{% endif %}>
             <svg class="nav-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 8a4 4 0 1 0 0 8 4 4 0 0 0 0-8Zm8 4 2-1-2-4-2 .5a8 8 0 0 0-2-1.2L15.5 4h-5L10 6.3a8 8 0 0 0-2 1.2L6 7 4 11l2 1v2l-2 1 2 4 2-.5a8 8 0 0 0 2 1.2l.5 2.3h5l.5-2.3a8 8 0 0 0 2-1.2l2 .5 2-4-2-1v-2Z"/></svg>
             <span>Settings</span>
           </a>
+          {% endif %}
+          {% if can('access.manage') %}
+          <a class="nav-item {{ 'active' if current_path.startswith('/settings/access') else '' }}" href="{{ url_for('settings_access') }}" {% if current_path.startswith('/settings/access') %}aria-current="page"{% endif %}>
+            <svg class="nav-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2M9 11a4 4 0 1 0 0-8 4 4 0 0 0 0 8Zm8-1 2 2 4-4"/></svg>
+            <span>Dashboard Access</span>
+          </a>
+          {% endif %}
+          {% if can('audit_log.view') %}
+          <a class="nav-item {{ 'active' if current_path.startswith('/settings/audit') else '' }}" href="{{ url_for('settings_audit') }}" {% if current_path.startswith('/settings/audit') %}aria-current="page"{% endif %}>
+            <svg class="nav-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 4h16v16H4V4Zm4 4h8m-8 4h8m-8 4h5"/></svg>
+            <span>Audit Log</span>
+          </a>
+          {% endif %}
         </div>
+        {% endif %}
       </nav>
 
       {% if current_user %}

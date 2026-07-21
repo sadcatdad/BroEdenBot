@@ -1,0 +1,35 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="page-heading">
+  <div>
+    <p class="eyebrow">Bot capability catalog</p>
+    <h1>Features</h1>
+    <p class="muted">See what the bot supports, whether each capability is ready, and where its operational tools live.</p>
+  </div>
+</div>
+{% for category, features in feature_categories.items() %}
+<section class="feature-section">
+  <div class="section-heading"><div><p class="eyebrow">{{ category }}</p><h2>{{ category }}</h2></div></div>
+  <div class="feature-grid">
+    {% for feature in features %}
+    <article class="card feature-card">
+      <div class="feature-card-heading">
+        <h3>{{ feature.name }}</h3>
+        <span class="badge badge-{{ feature.health }}">{{ feature.health|title }}</span>
+      </div>
+      <p>{{ feature.description }}</p>
+      {% if feature.discord_dependencies %}<p class="feature-dependencies"><strong>Discord:</strong> {{ feature.discord_dependencies|join(' · ') }}</p>{% endif %}
+      {% if feature.support_status != 'supported' %}<p><span class="badge">{{ feature.support_status|title }}</span></p>{% endif %}
+      {% if feature.missing_settings %}<p class="warning-text">Needs {{ feature.missing_settings|length }} required value{{ '' if feature.missing_settings|length == 1 else 's' }}.</p>{% endif %}
+      <div class="feature-card-footer">
+        <span class="muted">{{ feature.setting_count }} setting{{ '' if feature.setting_count == 1 else 's' }}</span>
+        <a class="button secondary" href="{{ url_for('feature_detail', feature_key=feature.key) }}">View feature</a>
+      </div>
+    </article>
+    {% endfor %}
+  </div>
+</section>
+{% else %}
+<p class="empty-state">No features are available to your dashboard role.</p>
+{% endfor %}
+{% endblock %}
