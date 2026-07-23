@@ -1,8 +1,9 @@
-# Bro Eden Events Hub
+# Events in The Garden
 
 ## Purpose and boundaries
 
-`/events` is a private, Discord-authenticated schedule for current verified
+`/events` is the private, Discord-authenticated **Events** area in The Garden
+for current verified
 Bro Eden members. It mirrors Discord Scheduled Events; it does not replace
 Discord's Interested RSVP. **Open in Discord** is the native RSVP path, while
 **DM Reminders** uses BroEdenBot's existing canonical reminder service.
@@ -17,12 +18,12 @@ the bot token.
 
 1. Enable Discord OAuth with `identify guilds.members.read` and an exact OAuth
    callback URL.
-2. In **Dashboard Access**, map the server's Verified role to **Verified Events
+2. In **Admin Dashboard → Access**, map the server's Verified role to **Verified Events
    Member**. This role contains only `events.view` and `events.subscribe`.
 3. Map the Party Captain Discord role to **Party Captain**. It adds
    `events.create` and `events.edit_own`.
 4. Owner and Administrator accounts may manage every one-time event. Captains
-   may manage only dashboard events they submitted or Discord events they
+   may manage only events they submitted through The Garden or Discord events they
    personally created. Every edit/cancel handler re-checks ownership.
 5. Anonymous visitors, non-members, pending membership-screening accounts, and
    members without a mapped role are rejected before event data is loaded.
@@ -56,7 +57,7 @@ forum post. Reconciliation refreshes the attachment URL from its source message
 so signed Discord links remain current.
 Recurring Discord events are mirrored and subscribable but read-only.
 
-BroEdenBot is the Discord-visible creator for dashboard-published events. The
+BroEdenBot is the Discord-visible creator for events published through The Garden. The
 human Captain is retained as the organizer in the event ownership table, UI,
 description credit, action history, and audit trail.
 
@@ -116,7 +117,7 @@ queued actions, and failures.
    resubscribe. Confirm Discord Interested count does not change.
 3. Select a private artwork forum in **Features → Events**. As a Captain,
    publish one Stage, Voice, and external event; verify the auto-created artwork
-   post, Discord fields/artwork, dashboard image source, and human organizer
+   post, Discord fields/artwork, The Garden image source, and human organizer
    label. Retry a temporary failure and confirm it does not duplicate the post.
 4. Edit/reschedule and confirm pending reminder deliveries are rebuilt. Cancel
    after typing `CANCEL` and confirm future deliveries are cancelled.

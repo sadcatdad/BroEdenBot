@@ -1100,7 +1100,7 @@ details summary { color: var(--muted); cursor: pointer; }
 .crop-preview img { display: block; width: 100%; max-height: 34rem; object-fit: cover; }
 .safe-frame { position: absolute; inset: 8%; pointer-events: none; border: 2px dashed rgba(94,211,154,.9); box-shadow: 0 0 0 999px rgba(0,0,0,.12); }
 
-/* Private Bro Eden Events hub */
+/* Private Events area in The Garden */
 .events-heading { display: flex; align-items: end; justify-content: space-between; gap: 1rem; margin-bottom: 1.25rem; }
 .event-create-button { background: linear-gradient(105deg, #f03b9f, #8259ff 62%, #28cce8); }
 .event-hero { position: relative; min-height: clamp(19rem, 42vw, 31rem); overflow: hidden; margin-bottom: 1.25rem; border: 1px solid rgba(113,214,255,.25); border-radius: 1.4rem; background: linear-gradient(130deg, #35133b, #101829 60%, #07313a); box-shadow: 0 26px 70px rgba(0,0,0,.3); }

@@ -2,7 +2,7 @@
 {% block content %}
 <div class="page-heading">
   <div>
-    <p class="eyebrow">Local administration</p>
+    <p class="eyebrow">Admin Dashboard</p>
     <h1>Overview</h1>
   </div>
   <p class="muted">{{ current_time.strftime("%B %d, %Y · %I:%M:%S %p %Z") }}</p>
@@ -10,9 +10,9 @@
 
 <section class="card-grid">
   <article class="card">
-    <p class="label">Dashboard</p>
+    <p class="label">Admin Dashboard</p>
     <p class="metric good">{{ dashboard_status }}</p>
-    <p class="muted">Protected by dashboard authentication and the configured outer access gate.</p>
+    <p class="muted">Protected by The Garden authentication and the configured outer access gate.</p>
   </article>
   <article class="card">
     <p class="label">Bot status</p>
@@ -91,7 +91,7 @@
     {% endfor %}
   </div>
   {% else %}
-  <div class="alert success compact-alert">Dashboard checks look clean. Run `/vcrewards audit` in Discord for the live role hierarchy check before enabling automation.</div>
+  <div class="alert success compact-alert">Admin Dashboard checks look clean. Run `/vcrewards audit` in Discord for the live role hierarchy check before enabling automation.</div>
   {% endif %}
 </section>
 

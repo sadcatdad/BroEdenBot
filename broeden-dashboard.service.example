@@ -1,5 +1,5 @@
 [Unit]
-Description=BroEdenBot local dashboard
+Description=Bro Eden Admin Dashboard
 StartLimitIntervalSec=300
 StartLimitBurst=3
 After=network-online.target

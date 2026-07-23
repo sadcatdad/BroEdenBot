@@ -30,15 +30,23 @@ Required for Discord login:
 
 ```dotenv
 DASHBOARD_AUTH_MODE=discord
+DASHBOARD_PUBLIC_URL=https://garden.broeden.com
+DASHBOARD_LEGACY_HOSTS=dashboard.broeden.com
 GUILD_ID=123456789012345678
 DISCORD_OAUTH_CLIENT_ID=123456789012345678
 DISCORD_OAUTH_CLIENT_SECRET=keep_this_only_in_env
-DISCORD_OAUTH_REDIRECT_URI=https://dashboard.example/auth/discord/callback
+DISCORD_OAUTH_REDIRECT_URI=https://garden.broeden.com/auth/discord/callback
 DASHBOARD_DISCORD_REVERIFY_MINUTES=60
 DASHBOARD_COOKIE_SECURE=true
 ```
 
-`DASHBOARD_DISCORD_ALLOWED_USER_IDS` remains a direct compatibility admission list. `DASHBOARD_DISCORD_ALLOWED_ROLE_IDS` remains a compatibility role list; new role-to-dashboard-role policy should be managed in Dashboard Access after the first owner login.
+`DASHBOARD_PUBLIC_URL` must be an origin only: scheme plus hostname, without a
+path, query string, credentials, or fragment. Requests whose hostname matches
+`DASHBOARD_LEGACY_HOSTS` receive a 308 redirect to the same path and query on
+the public URL. Keep the preferred Cloudflare edge redirect as the first line
+of defense and retain the app redirect as a safe fallback.
+
+`DASHBOARD_DISCORD_ALLOWED_USER_IDS` remains a direct compatibility admission list. `DASHBOARD_DISCORD_ALLOWED_ROLE_IDS` remains a compatibility role list; new role-to-dashboard-role policy should be managed in **Admin Dashboard → Access** after the first owner login.
 
 ## Deployment
 
@@ -47,13 +55,15 @@ DASHBOARD_COOKIE_SECURE=true
 After restart:
 
 1. Check both systemd services are active and inspect logs.
-2. Log in with the emergency owner account.
-3. Open Dashboard Access; confirm Owner, Administrator, Moderator, Party Captain, and Analyst / Viewer roles.
-4. Map a low-risk Discord test role to Analyst / Viewer and verify OAuth login/navigation/403 behavior.
-5. Test role removal and confirm the next login is denied.
-6. Verify Discord Connection status/refresh and Audit Log events.
-7. Verify Settings, Features, Operations, Message Studio, Visual Studio, Knowledge, Analytics, Streaks, and Bank for the owner.
-8. Run `PRAGMA quick_check` again and retain the pre-deploy backup.
+2. Verify `https://garden.broeden.com/health` before enabling the legacy-host redirect.
+3. Log in with the emergency owner account.
+4. Open **Admin Dashboard → Access**; confirm Owner, Administrator, Moderator, Party Captain, and Analyst / Viewer roles.
+5. Map a low-risk Discord test role to Analyst / Viewer and verify OAuth login/navigation/403 behavior.
+6. Test role removal and confirm the next login is denied.
+7. Verify Discord Connection status/refresh and Audit Log events.
+8. Verify Settings, Features, Operations, Message Studio, Visual Studio, Knowledge, Analytics, Streaks, and Bank for the owner.
+9. Confirm `https://dashboard.broeden.com/events?test=redirect` redirects to the same path and query on `garden.broeden.com`.
+10. Run `PRAGMA quick_check` again and retain the pre-deploy backup.
 
 Local visual evidence for the revised information architecture is recorded under `docs/screenshots/`; the capture used disposable databases and is not a substitute for the production-role smoke test above.
 

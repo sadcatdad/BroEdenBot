@@ -103,7 +103,7 @@ untouched for rollback evidence. Full architecture, dashboard, migration,
 manual-test, deployment, and troubleshooting instructions are in
 [`docs/reminders.md`](docs/reminders.md).
 
-## Dashboard Events Hub
+## The Garden: Events
 
 The authenticated `/events` page mirrors every Discord Scheduled Event and
 keeps each event linked to the canonical reminder service. It presents a Bro
@@ -113,14 +113,14 @@ Quick Subscribe selects 15 minutes before plus start time; members can instead
 choose 6 hours, 1 hour, 15 minutes, and/or start time.
 
 Map the server's existing Verified Discord role to **Verified Events Member**
-under Dashboard Access. Map the Party Captain role to **Party Captain**. The
-dashboard continues to re-check live guild membership, pending membership
+under **Admin Dashboard → Access**. Map the Party Captain role to **Party Captain**. The
+Garden continues to re-check live guild membership, pending membership
 screening, and role IDs through Discord OAuth. Captains can publish one-time
 Stage, Voice, or external events and edit/cancel only their own. Discord-created
-recurring events remain visible and subscribable but read-only. Dashboard writes
+recurring events remain visible and subscribable but read-only. The Garden writes
 are queued in SQLite for the bot process; FastAPI never receives or uses the bot
 token. Owners select a private forum, thread, or text channel as **Event Artwork
-Storage** under **Features → Events**. Dashboard covers are normalized, posted
+Storage** under **Admin Dashboard → Features → Events**. Event covers are normalized, posted
 there by the bot, and then displayed from the Discord attachment link; the
 temporary database bytes are cleared when the action finishes. Full setup,
 permissions, migration, validation, and recovery guidance is
@@ -1639,10 +1639,12 @@ updated from the authenticated local dashboard without rewriting `.env`.
 | `DASHBOARD_PASSWORD` | Local dashboard login password. Use a unique password. |
 | `DASHBOARD_SECRET_KEY` | Long random key used to sign dashboard sessions. |
 | `DASHBOARD_COOKIE_SECURE` | Set to `true` when the dashboard is served over HTTPS (e.g. behind a TLS reverse proxy) so the session cookie is only sent over secure connections. Leave `false` for plain-HTTP LAN access. |
+| `DASHBOARD_PUBLIC_URL` | Canonical public origin for The Garden, for example `https://garden.broeden.com`. Enables canonical links and legacy-host redirects. |
+| `DASHBOARD_LEGACY_HOSTS` | Comma- or space-separated old public hosts that permanently redirect to `DASHBOARD_PUBLIC_URL`. Defaults to `dashboard.broeden.com`. |
 | `DASHBOARD_AUTH_MODE` | Set to `discord` to enable Discord OAuth while retaining password fallback. |
 | `DISCORD_OAUTH_CLIENT_ID` | Discord application OAuth2 client ID. |
 | `DISCORD_OAUTH_CLIENT_SECRET` | Discord application OAuth2 client secret. Keep only in `.env`. |
-| `DISCORD_OAUTH_REDIRECT_URI` | Exact OAuth callback URL, such as `https://dashboard.broeden.com/auth/discord/callback`. |
+| `DISCORD_OAUTH_REDIRECT_URI` | Exact OAuth callback URL, such as `https://garden.broeden.com/auth/discord/callback`. |
 | `DASHBOARD_DISCORD_ALLOWED_USER_IDS` | Comma- or space-separated Discord user IDs approved for dashboard login. |
 | `DASHBOARD_DISCORD_ALLOWED_ROLE_IDS` | Compatibility list of current Discord guild roles allowed to log in. Prefer database-backed mappings in Dashboard Access. |
 | `DASHBOARD_DISCORD_DEFAULT_ROLE` | Role assigned to new approved Discord users: `admin` or `viewer`. |
@@ -1696,9 +1698,10 @@ Successful answers, redirects, and errors should be visible only to the member
 who invoked the command. Generated user, role, and everyone mentions must not
 notify anyone.
 
-## Local web dashboard
+## The Garden member platform and Admin Dashboard
 
-The local FastAPI dashboard provides shared-database status, bank overview,
+The lightweight FastAPI web app is branded **The Garden** for members. Its
+privileged operational area remains labeled **Admin Dashboard**. It provides shared-database status, bank overview,
 historical-import status, database-backed editing for an explicit allowlist of
 safe runtime settings, AI framework status/usage, a unified Knowledge manager,
 a VC XP role-pulse readiness summary, stats graphics management, the reusable
@@ -1706,11 +1709,11 @@ Message Studio (Embed/Message Editor), and aggregate analytics. It does not
 edit `.env`, modify bank records, expose Discord or Gemini secrets, or provide
 public hosting.
 
-The responsive dashboard navigation uses capability-filtered groups: **Monitor**
+The responsive Admin Dashboard navigation uses capability-filtered groups: **Monitor**
 (Overview and Analytics), **Community** (Features, Streaks, and Events), **Operations**
 (Bot Operations and Reminders), **Content** (Visual Content Studio, Message
-Studio, Knowledge, and AI), **Finance** (Bank), and **System** (Settings,
-Dashboard Access, and Audit Log).
+Studio, Knowledge, and AI), **Finance** (Bank), and **Admin Dashboard** (Settings,
+Access, and Audit Log).
 It uses the Bro Eden pride icon in the desktop sidebar and mobile header. On
 smaller screens the complete navigation moves into a labeled menu instead of
 hiding destinations in a horizontal strip. `AI_DASHBOARD_VISIBLE=true` shows
@@ -1778,11 +1781,13 @@ DASHBOARD_USERNAME=admin
 DASHBOARD_PASSWORD=change_this_password
 DASHBOARD_SECRET_KEY=change_this_to_a_long_random_string
 DASHBOARD_COOKIE_SECURE=true
+DASHBOARD_PUBLIC_URL=https://garden.broeden.com
+DASHBOARD_LEGACY_HOSTS=dashboard.broeden.com
 DASHBOARD_AUTH_MODE=discord
 GUILD_ID=
 DISCORD_OAUTH_CLIENT_ID=
 DISCORD_OAUTH_CLIENT_SECRET=
-DISCORD_OAUTH_REDIRECT_URI=https://dashboard.broeden.com/auth/discord/callback
+DISCORD_OAUTH_REDIRECT_URI=https://garden.broeden.com/auth/discord/callback
 DASHBOARD_DISCORD_ALLOWED_USER_IDS=
 DASHBOARD_DISCORD_ALLOWED_ROLE_IDS=
 DASHBOARD_DISCORD_DEFAULT_ROLE=admin
@@ -1804,11 +1809,16 @@ uvicorn dashboard.app:app --host 0.0.0.0 --port 3000
 
 Open `http://<pi-ip>:3000` or, when local hostname resolution is available,
 `http://broedenbot.local:3000`. The deployed
-`https://dashboard.broeden.com` endpoint may remain behind the existing
-Cloudflare Tunnel/Access outer gate; the dashboard does not create or configure
-that tunnel.
+`https://garden.broeden.com` endpoint may remain behind the existing Cloudflare
+Tunnel/Access outer gate; the app does not create or configure that tunnel.
+Keep `dashboard.broeden.com` routed to the same origin during the cutover and
+redirect it permanently to `garden.broeden.com`. The app-level redirect is a
+backup; an edge redirect in Cloudflare is preferred. Follow the
+[The Garden public-domain migration runbook](docs/the-garden-domain-migration.md)
+for the staged Railway, Cloudflare, Discord OAuth, verification, and rollback
+steps.
 
-### Discord dashboard login
+### Discord login for The Garden
 
 The login page supports Discord OAuth with the `identify guilds.members.read`
 scopes while keeping the existing owner username/password as an emergency
@@ -1824,12 +1834,15 @@ Configure the Discord application:
 1. Open the Discord Developer Portal and select the BroEdenBot application.
 2. Open **OAuth2**.
 3. Add the exact redirect URI
-   `https://dashboard.broeden.com/auth/discord/callback`.
+   `https://garden.broeden.com/auth/discord/callback`. Keep the old
+   `https://dashboard.broeden.com/auth/discord/callback` entry through the
+   cutover, then remove it after old-host traffic and in-flight sessions have
+   expired.
 4. Copy the OAuth2 Client ID and Client Secret into `.env`.
 5. Configure `GUILD_ID` and initially list the owner/test Discord user in
    `DASHBOARD_DISCORD_ALLOWED_USER_IDS`.
-6. After owner login, map live Discord roles to dashboard roles in **Dashboard
-   Access** and test with a low-risk Viewer mapping first.
+6. After owner login, map live Discord roles to dashboard roles in **Admin
+   Dashboard → Access** and test with a low-risk Viewer mapping first.
 
 The dashboard creates `dashboard_users` in the shared database. On a fresh
 installation, the existing `DASHBOARD_USERNAME` and `DASHBOARD_PASSWORD` are

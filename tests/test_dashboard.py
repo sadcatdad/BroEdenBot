@@ -530,6 +530,17 @@ class DashboardConfigurationTests(unittest.TestCase):
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("DASHBOARD_PASSWORD is required", result.stderr)
 
+    def test_invalid_public_url_raises_when_enabled(self):
+        environment = {
+            "DASHBOARD_ENABLED": "true",
+            "DASHBOARD_PASSWORD": "test-password",
+            "DASHBOARD_SECRET_KEY": "test-session-signing-key",
+            "DASHBOARD_PUBLIC_URL": "https://garden.broeden.com/member",
+        }
+        with patch.dict(os.environ, environment, clear=True):
+            with self.assertRaisesRegex(RuntimeError, "DASHBOARD_PUBLIC_URL"):
+                validate_dashboard_config()
+
 
 class DashboardDatabaseTests(unittest.TestCase):
     def test_bank_overview_reads_existing_ledger(self):
