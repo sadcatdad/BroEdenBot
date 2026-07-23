@@ -26,6 +26,11 @@ currently enforce an allowed-host list. Railway's internal health hostname can
 therefore continue to reach `/health`, while only explicitly listed legacy
 hosts redirect.
 
+The Railway startup command trusts the platform edge's forwarded scheme and
+host headers. This keeps login and permission redirects on `https://` behind
+Cloudflare and Railway. Do not copy the Railway-only
+`--forwarded-allow-ips="*"` setting to a directly exposed local deployment.
+
 ## Discord Developer Portal
 
 1. Open the existing BroEdenBot application and choose **OAuth2**.
@@ -94,7 +99,9 @@ an application session.
    path and query on `garden.broeden.com`.
 7. Response cookies on the new hostname include `Secure`, `HttpOnly`, and
    `SameSite=Lax`.
-8. Railway health, logs, database mounts, and replica count are unchanged.
+8. An anonymous request to `/events` redirects to an
+   `https://garden.broeden.com/login` URL, never `http://`.
+9. Railway health, logs, database mounts, and replica count are unchanged.
 
 ## Rollback
 

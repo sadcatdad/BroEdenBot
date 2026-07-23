@@ -1,5 +1,6 @@
 import os
 import unittest
+from pathlib import Path
 from unittest.mock import patch
 
 from fastapi.testclient import TestClient
@@ -59,3 +60,11 @@ class DashboardUrlMigrationTests(unittest.TestCase):
         )
 
         self.assertEqual(response.status_code, 200)
+
+    def test_railway_start_trusts_platform_forwarded_scheme(self):
+        script = (
+            Path(__file__).resolve().parents[1] / "scripts/railway_start.sh"
+        ).read_text()
+
+        self.assertIn("--proxy-headers", script)
+        self.assertIn('--forwarded-allow-ips="*"', script)

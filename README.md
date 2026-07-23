@@ -2273,9 +2273,14 @@ VISUAL_ASSET_DIR=/data/visual-assets
 VISUAL_ASSET_STORAGE_THREAD_ID=your-private-forum-post-thread-id
 DASHBOARD_HOST=0.0.0.0
 DASHBOARD_COOKIE_SECURE=true
+DASHBOARD_PUBLIC_URL=https://garden.broeden.com
+DASHBOARD_LEGACY_HOSTS=dashboard.broeden.com
+DISCORD_OAUTH_REDIRECT_URI=https://garden.broeden.com/auth/discord/callback
 ```
 
 Railway supplies `PORT`; the startup script binds the dashboard to that port,
+runs Uvicorn with Railway edge proxy headers trusted so generated redirects
+remain HTTPS,
 runs read-only SQLite quick checks, applies and validates the additive reminder
 and Visual Content Studio migrations, then supervises both long-running
 processes. A missing or malformed database prevents the deployment from
