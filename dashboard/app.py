@@ -8,6 +8,7 @@ import sqlite3
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Optional
+from urllib.parse import urlsplit, urlunsplit
 
 import uvicorn
 from dotenv import load_dotenv
@@ -281,6 +282,52 @@ def dashboard_enabled() -> bool:
     return env_flag("DASHBOARD_ENABLED", default=False)
 
 
+def dashboard_public_url() -> str:
+    raw_url = os.getenv("DASHBOARD_PUBLIC_URL", "").strip().rstrip("/")
+    if not raw_url:
+        return ""
+    parsed = urlsplit(raw_url)
+    if (
+        parsed.scheme not in {"http", "https"}
+        or not parsed.netloc
+        or parsed.username
+        or parsed.password
+        or parsed.path not in {"", "/"}
+        or parsed.query
+        or parsed.fragment
+    ):
+        return ""
+    return urlunsplit((parsed.scheme, parsed.netloc, "", "", ""))
+
+
+def dashboard_legacy_hosts() -> set[str]:
+    raw_hosts = os.getenv(
+        "DASHBOARD_LEGACY_HOSTS",
+        "dashboard.broeden.com",
+    )
+    return {
+        host.strip().casefold().rstrip(".")
+        for host in re.split(r"[\s,]+", raw_hosts)
+        if host.strip()
+    }
+
+
+def canonical_dashboard_url(request: Request) -> str:
+    public_url = dashboard_public_url()
+    if not public_url:
+        return ""
+    parsed = urlsplit(public_url)
+    return urlunsplit(
+        (
+            parsed.scheme,
+            parsed.netloc,
+            request.url.path,
+            request.url.query,
+            "",
+        )
+    )
+
+
 def validate_dashboard_config() -> None:
     if not dashboard_enabled():
         return
@@ -290,6 +337,11 @@ def validate_dashboard_config() -> None:
                 f"{name} is required when DASHBOARD_ENABLED=true. "
                 "Set it in the project .env file before starting the dashboard."
             )
+    if os.getenv("DASHBOARD_PUBLIC_URL", "").strip() and not dashboard_public_url():
+        raise RuntimeError(
+            "DASHBOARD_PUBLIC_URL must be an http(s) origin without a path, "
+            "query string, credentials, or fragment."
+        )
 
 
 validate_dashboard_config()
@@ -308,7 +360,7 @@ if dashboard_enabled():
     initialize_events_schema()
 
 app = FastAPI(
-    title="BroEdenBot Local Dashboard",
+    title="The Garden",
     docs_url=None,
     redoc_url=None,
     openapi_url=None,
@@ -426,7 +478,30 @@ class DashboardPermissionMiddleware(BaseHTTPMiddleware):
         return response
 
 
+class CanonicalDashboardHostMiddleware(BaseHTTPMiddleware):
+    async def dispatch(self, request: Request, call_next):
+        public_url = dashboard_public_url()
+        request_host = (request.url.hostname or "").casefold().rstrip(".")
+        if public_url and request_host in dashboard_legacy_hosts():
+            parsed = urlsplit(public_url)
+            redirect_url = urlunsplit(
+                (
+                    parsed.scheme,
+                    parsed.netloc,
+                    request.url.path,
+                    request.url.query,
+                    "",
+                )
+            )
+            return RedirectResponse(
+                url=redirect_url,
+                status_code=status.HTTP_308_PERMANENT_REDIRECT,
+            )
+        return await call_next(request)
+
+
 app.add_middleware(DashboardPermissionMiddleware)
+app.add_middleware(CanonicalDashboardHostMiddleware)
 app.add_middleware(
     SessionMiddleware,
     secret_key=os.getenv("DASHBOARD_SECRET_KEY", "").strip()
@@ -481,6 +556,7 @@ def template_context(request: Request, **values: Any) -> dict[str, Any]:
         "can": lambda permission: permission in permissions,
         "ai_dashboard_visible": ai_dashboard_visible(),
         "csrf_token": csrf_token(request),
+        "canonical_url": canonical_dashboard_url(request),
         **values,
     }
 
@@ -558,7 +634,7 @@ async def login(
     csrf: str = Form(...),
 ) -> HTMLResponse:
     if not dashboard_enabled():
-        error = "The dashboard is disabled. Set DASHBOARD_ENABLED=true to use it."
+        error = "The Garden is disabled. Set DASHBOARD_ENABLED=true to use it."
     elif not csrf_is_valid(request, csrf):
         error = "Your login session expired. Please try again."
     else:

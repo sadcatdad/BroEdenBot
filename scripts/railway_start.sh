@@ -62,7 +62,11 @@ python scripts/migrate_visual_content_studio.py \
 
 python main.py &
 bot_pid=$!
-python -m uvicorn dashboard.app:app --host 0.0.0.0 --port "$PORT" &
+python -m uvicorn dashboard.app:app \
+  --host 0.0.0.0 \
+  --port "$PORT" \
+  --proxy-headers \
+  --forwarded-allow-ips="*" &
 dashboard_pid=$!
 
 shutdown() {

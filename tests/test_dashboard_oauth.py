@@ -38,7 +38,7 @@ class DashboardOAuthTests(unittest.TestCase):
                 "DISCORD_OAUTH_CLIENT_ID": "123456789012345678",
                 "DISCORD_OAUTH_CLIENT_SECRET": "never-render-this-secret",
                 "DISCORD_OAUTH_REDIRECT_URI": (
-                    "https://dashboard.broeden.com/auth/discord/callback"
+                    "https://garden.broeden.com/auth/discord/callback"
                 ),
                 "GUILD_ID": "999999999999999999",
                 "DASHBOARD_DISCORD_ALLOWED_USER_IDS": "111111111111111111",
@@ -130,7 +130,7 @@ class DashboardOAuthTests(unittest.TestCase):
         self.assertEqual(parameters["response_type"], ["code"])
         self.assertEqual(
             parameters["redirect_uri"],
-            ["https://dashboard.broeden.com/auth/discord/callback"],
+            ["https://garden.broeden.com/auth/discord/callback"],
         )
         self.assertTrue(parameters["state"][0])
 

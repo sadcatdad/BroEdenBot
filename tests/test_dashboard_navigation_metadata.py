@@ -129,6 +129,10 @@ class DashboardNavigationMetadataTests(unittest.TestCase):
             self.assertIn(label, response.text)
         self.assertNotIn(">Stats</a>", response.text)
         self.assertNotIn(">Users</a>", response.text)
+        self.assertIn("<title>Overview · The Garden</title>", response.text)
+        self.assertIn("<small>The Garden</small>", response.text)
+        self.assertIn(">Admin Dashboard</p>", response.text)
+        self.assertIn('aria-label="The Garden home"', response.text)
         self.assertIn('src="http://testserver/static/broeden-pride-icon.png"', response.text)
         self.assertIn('aria-label="Open navigation"', response.text)
         self.assertIn('aria-current="page"', response.text)
@@ -149,6 +153,11 @@ class DashboardNavigationMetadataTests(unittest.TestCase):
             "Advanced",
         ):
             self.assertIn(label, settings.text)
+
+        events = self.client.get("/events")
+        self.assertEqual(events.status_code, 200)
+        self.assertIn("<h1>Events</h1>", events.text)
+        self.assertNotIn("<h1>Bro Eden Events</h1>", events.text)
 
     def test_embed_editor_create_search_edit_and_feature_picker(self):
         self.login()

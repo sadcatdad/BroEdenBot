@@ -1,16 +1,16 @@
 {% extends "base.html" %}
 {% block login_content %}
 <section class="login-card">
-  <a class="login-brand" href="{{ url_for('login_page') }}" aria-label="Bro Eden Bot login">
+  <a class="login-brand" href="{{ url_for('login_page') }}" aria-label="The Garden login">
     <img src="{{ url_for('static', path='broeden-pride-icon.png') }}" alt="">
-    <span><strong>Bro Eden</strong><small>Bot dashboard</small></span>
+    <span><strong>Bro Eden</strong><small>The Garden</small></span>
   </a>
-  <p class="eyebrow">Protected dashboard</p>
-  <h1>BroEdenBot</h1>
+  <p class="eyebrow">Member platform</p>
+  <h1>The Garden</h1>
   <p class="muted">Sign in with an approved Discord account or use the owner password fallback.</p>
   {% if error %}<div class="alert error">{{ error }}</div>{% endif %}
   {% if not dashboard_enabled %}
-  <div class="alert warning">The dashboard is currently disabled.</div>
+  <div class="alert warning">The Garden is currently disabled.</div>
   {% endif %}
   {% if discord_oauth_enabled %}
   <a class="button discord-button" href="{{ url_for('discord_login') }}">Log in with Discord</a>

@@ -97,7 +97,7 @@ maintenance.
   idempotent action queue, and canonical reminder subscription bridge.
 - `dashboard/events_manager.py` — Event form, channel, timezone, artwork, card,
   and calendar validation/presentation helpers.
-- `scripts/migrate_events.py` — Idempotent Events Hub schema initialization and
+- `scripts/migrate_events.py` — Idempotent Events schema initialization and
   validation with optional SQLite-aware backup.
 - `utils/reminder_service.py` — Canonical reminder schema, legacy migration,
   recurrence, subscription, occurrence, delivery lease/retry, and audit service.

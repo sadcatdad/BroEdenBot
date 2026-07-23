@@ -4,7 +4,8 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="theme-color" content="#0b0b11">
-  <title>{{ page_title or "Login" }} · BroEdenBot</title>
+  <title>{{ page_title or "Login" }} · The Garden</title>
+  {% if canonical_url %}<link rel="canonical" href="{{ canonical_url }}">{% endif %}
   <link rel="icon" type="image/png" href="{{ url_for('static', path='broeden-pride-icon.png') }}">
   <link rel="stylesheet" href="{{ url_for('static', path='styles.css') }}?v=dashboard-audit1">
   <script src="{{ url_for('static', path='dashboard_nav.js') }}?v=dashboard-refresh1" defer></script>
@@ -14,11 +15,11 @@
   <a class="skip-link" href="#main-content">Skip to main content</a>
   {% if authenticated %}
   <div class="app-shell">
-    <aside class="site-sidebar" id="dashboard-navigation" aria-label="Dashboard navigation">
+    <aside class="site-sidebar" id="dashboard-navigation" aria-label="The Garden navigation">
       <div class="sidebar-heading">
-        <a class="brand" href="{{ url_for('home') if can('dashboard.view') else url_for('events_page') }}" aria-label="Bro Eden dashboard home">
+        <a class="brand" href="{{ url_for('home') if can('dashboard.view') else url_for('events_page') }}" aria-label="The Garden home">
           <img class="brand-logo" src="{{ url_for('static', path='broeden-pride-icon.png') }}" alt="">
-          <span class="brand-copy"><strong>Bro Eden</strong><small>Bot dashboard</small></span>
+          <span class="brand-copy"><strong>Bro Eden</strong><small>The Garden</small></span>
         </a>
         <button class="icon-button nav-close" type="button" data-nav-close aria-label="Close navigation">
           <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m6 6 12 12M18 6 6 18"/></svg>
@@ -128,7 +129,7 @@
 
         {% if can('settings.view') or can('access.manage') or can('audit_log.view') %}
         <div class="nav-group nav-group-system">
-          <p class="nav-group-label">System</p>
+          <p class="nav-group-label">Admin Dashboard</p>
           {% if can('settings.view') %}
           <a class="nav-item {{ 'active' if current_path in ['/settings', '/settings/discord', '/settings/imports', '/settings/advanced'] else '' }}" href="{{ url_for('settings') }}" {% if current_path in ['/settings', '/settings/discord', '/settings/imports', '/settings/advanced'] %}aria-current="page"{% endif %}>
             <svg class="nav-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 8a4 4 0 1 0 0 8 4 4 0 0 0 0-8Zm8 4 2-1-2-4-2 .5a8 8 0 0 0-2-1.2L15.5 4h-5L10 6.3a8 8 0 0 0-2 1.2L6 7 4 11l2 1v2l-2 1 2 4 2-.5a8 8 0 0 0 2 1.2l.5 2.3h5l.5-2.3a8 8 0 0 0 2-1.2l2 .5 2-4-2-1v-2Z"/></svg>
@@ -138,7 +139,7 @@
           {% if can('access.manage') %}
           <a class="nav-item {{ 'active' if current_path.startswith('/settings/access') else '' }}" href="{{ url_for('settings_access') }}" {% if current_path.startswith('/settings/access') %}aria-current="page"{% endif %}>
             <svg class="nav-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2M9 11a4 4 0 1 0 0-8 4 4 0 0 0 0 8Zm8-1 2 2 4-4"/></svg>
-            <span>Dashboard Access</span>
+            <span>Access</span>
           </a>
           {% endif %}
           {% if can('audit_log.view') %}
@@ -172,9 +173,9 @@
 
     <div class="app-workspace">
       <header class="mobile-header">
-        <a class="mobile-brand" href="{{ url_for('home') if can('dashboard.view') else url_for('events_page') }}" aria-label="Bro Eden dashboard home">
+        <a class="mobile-brand" href="{{ url_for('home') if can('dashboard.view') else url_for('events_page') }}" aria-label="The Garden home">
           <img src="{{ url_for('static', path='broeden-pride-icon.png') }}" alt="">
-          <strong>Bro Eden</strong>
+          <strong>The Garden</strong>
         </a>
         <button class="icon-button menu-button" type="button" data-nav-toggle aria-controls="dashboard-navigation" aria-expanded="false" aria-label="Open navigation">
           <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h16M4 12h16M4 17h16"/></svg>

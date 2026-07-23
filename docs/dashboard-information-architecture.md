@@ -1,6 +1,9 @@
-# Dashboard information architecture
+# The Garden and Admin Dashboard information architecture
 
-The dashboard is organized around administrator goals. Raw setting sections and implementation modules are not navigation concepts.
+The member platform is branded **The Garden**. Its privileged operational
+surface remains labeled **Admin Dashboard** and is organized around
+administrator goals. Raw setting sections and implementation modules are not
+navigation concepts.
 
 ## Primary navigation
 
@@ -11,14 +14,14 @@ The dashboard is organized around administrator goals. Raw setting sections and 
 | Operations | Bot Operations, Reminders | `operations.view`, `reminders.view` |
 | Content | Visual Content Studio, Message Studio, Knowledge, AI | domain-specific view capabilities |
 | Finance | Bank | `bank.view` |
-| System | Settings, Dashboard Access, Audit Log | `settings.view`, `access.manage`, `audit_log.view` |
+| Admin Dashboard | Settings, Access, Audit Log | `settings.view`, `access.manage`, `audit_log.view` |
 
 Navigation is computed from effective server-side permissions. A missing link is not the security boundary: the same capability policy runs before route handling.
 
 ## Settings boundaries
 
 - General (`/settings`): system health and links, not feature fields.
-- Dashboard Access (`/settings/access`): users, system/custom roles, Discord mappings, direct assignments, per-user overrides.
+- Access (`/settings/access`): users, system/custom roles, Discord mappings, direct assignments, per-user overrides.
 - Discord Connection (`/settings/discord`): connection/snapshot status, counts, friendly refresh time, refresh action, errors.
 - Data & Storage (`/settings/imports`): import history. Database backup remains in Operations because it is an operation, not a preference.
 - Advanced (`/settings/advanced`): allowlisted technical system/import values and compatibility controls.

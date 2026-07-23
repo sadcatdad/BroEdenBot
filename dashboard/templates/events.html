@@ -1,7 +1,7 @@
 {% extends "base.html" %}
 {% block content %}
 <section class="events-heading">
-  <div><p class="eyebrow">Private community schedule</p><h1>Bro Eden Events</h1><p class="muted">Gatherings from Discord, with reminder timing that belongs to you.</p></div>
+  <div><p class="eyebrow">The Garden</p><h1>Events</h1><p class="muted">Gatherings from Discord, with reminder timing that belongs to you.</p></div>
   <div class="action-buttons">{% if can('features.manage') %}<a class="button secondary" href="{{ url_for('feature_detail', feature_key='events') }}">Event settings</a>{% endif %}{% if can_create %}<a class="button event-create-button" href="{{ url_for('events_new') }}">Create an event</a>{% endif %}</div>
 </section>
 {% if message %}<div class="notice success">{{ message }}</div>{% endif %}
