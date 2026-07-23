@@ -3,6 +3,7 @@
 <div class="page-heading"><div><p class="eyebrow">Validated and normalized</p><h1>Upload Visual Asset</h1></div></div>
 {% include "_visual_nav.html" %}
 {% if error %}<div class="alert error">{{ error }}</div>{% endif %}
+{% if not storage_module_enabled %}<div class="alert warning">Asset uploads are paused until <code>visual</code> is included in <code>ENABLED_MODULES</code>.</div>{% elif storage_thread_id %}<div class="alert success">After normalization, the live bot will store this image in Discord forum post/thread <code>{{ storage_thread_id }}</code> and switch the library to its attachment link.</div>{% else %}<div class="alert warning">Asset uploads are paused until the <a href="{{ url_for('feature_detail', feature_key='visual') }}">Asset Library Storage Forum Post</a> is configured.</div>{% endif %}
 <section class="visual-upload-layout" data-visual-upload data-registry='{{ registry|tojson }}' data-generic-guidance='{{ generic_guidance|tojson }}'>
   <form method="post" action="{{ url_for('visual_asset_upload_save') }}" enctype="multipart/form-data" class="card stack">
     <input type="hidden" name="csrf" value="{{ csrf_token }}">
@@ -16,7 +17,7 @@
     <div class="focal-grid"><label>Horizontal focal point<input type="range" name="focal_x" min="0" max="1" step="0.01" value="0.5" data-focal-x><small>Move the crop left or right.</small></label><label>Vertical focal point<input type="range" name="focal_y" min="0" max="1" step="0.01" value="0.5" data-focal-y><small>Move the crop up or down.</small></label></div>
     <label class="checkbox-label"><input type="checkbox" name="allow_crop"> Continue when a mismatched aspect ratio requires cropping or transparent padding</label>
     <label class="checkbox-label"><input type="checkbox" name="acknowledge_quality"> Continue when the file is below the recommended minimum</label>
-    {% if can_manage_users %}<button class="button" type="submit">Validate, optimize, and save</button>{% endif %}
+    {% if can_manage_users %}<button class="button" type="submit" {{ 'disabled' if (not storage_thread_id or not storage_module_enabled) else '' }}>Validate, optimize, and queue Discord storage</button>{% endif %}
   </form>
   <aside class="upload-guidance-card sticky-panel" data-upload-guidance>
     <p class="eyebrow">Recommended upload</p><strong class="guidance-size" data-recommended-size>{{ guidance.recommended_width }} × {{ guidance.recommended_height }} px</strong>

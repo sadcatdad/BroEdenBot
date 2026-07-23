@@ -42,6 +42,8 @@ done
 
 python scripts/migrate_reminders.py --database "$DATABASE_PATH"
 python scripts/migrate_reminders.py --database "$DATABASE_PATH" --validate-only
+python scripts/migrate_events.py --database "$DATABASE_PATH"
+python scripts/migrate_events.py --database "$DATABASE_PATH" --validate-only
 
 if ! python scripts/migrate_visual_content_studio.py \
   --database "$DATABASE_PATH" \

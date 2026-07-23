@@ -27,7 +27,7 @@ FEATURES = (
     FeatureDefinition("streaks", "Activity Streaks", "Daily message streaks, milestones, leaderboards, and recovery.", "Community & engagement", "streaks.view", "/streaks", ("streaks",), ("STREAK_TIMEZONE",)),
     FeatureDefinition("bumps", "DISBOARD Bumps", "Verified bumps, points, reminders, reward roles, and Bump Legends.", "Community & engagement", "bumps.view", "/features/bumps", ("bumps",), ("DISBOARD_BOT_USER_ID",)),
     FeatureDefinition("reminders", "Reminders", "Personal reminders, scheduled delivery, subscriptions, and operator recovery.", "Reminders & automation", "reminders.view", "/operations/reminders", ("reminders",), ("REMINDER_TIMEZONE",)),
-    FeatureDefinition("events", "Events", "Discord event creation and subscription flows; dashboard event authoring is planned.", "Reminders & automation", "events.view", "/features/events", ("reminders",), support_status="experimental"),
+    FeatureDefinition("events", "Events", "Private Verified-member Discord event schedule, DM subscriptions, and Captain authoring.", "Reminders & automation", "events.view", "/events", ("events",), ("EVENTS_ARTWORK_STORAGE_CHANNEL_ID",), support_status="supported"),
     FeatureDefinition("ask", "Ask", "Private, public-knowledge-grounded member answers with channel controls.", "AI & knowledge", "ask.view", "/features/ask", ("ask",), ("ASK_COOLDOWN_SECONDS",)),
     FeatureDefinition("knowledge", "Knowledge", "File, manual AI, and live Discord knowledge sources.", "AI & knowledge", "knowledge.view", "/knowledge", ("knowledge",)),
     FeatureDefinition("staff_tools", "Staff & Moderation Tools", "Private staff AI, ModAI, notes, and message-context permissions.", "Moderation", "staff_tools.view", "/features/staff_tools", ("mod_ai", "staff_ai", "staff_notes", "message_context")),
@@ -39,7 +39,7 @@ FEATURES = (
     FeatureDefinition("queue", "Karaoke Queue", "Voice-channel queue dashboards and staff queue controls.", "Community & engagement", "queue.view", "/features/queue", ("karaoke",)),
     FeatureDefinition("rulecards", "Rule Cards", "AI-assisted staff rule reminder drafts.", "Moderation", "rulecards.view", "/features/rulecards", ("rulecards",)),
     FeatureDefinition("message_studio", "Message Studio", "Reusable message and multi-embed assets used by bot features.", "Content generation", "message_studio.view", "/embeds"),
-    FeatureDefinition("visual", "Visual Content Studio", "Shared templates, themes, uploaded assets, previews, and publishing.", "Content generation", "visual.view", "/visual"),
+    FeatureDefinition("visual", "Visual Content Studio", "Shared templates, Discord-backed assets, themes, previews, and publishing.", "Content generation", "visual.view", "/visual", ("visual",), ("VISUAL_ASSET_STORAGE_THREAD_ID",)),
 )
 
 FEATURES_BY_KEY = {feature.key: feature for feature in FEATURES}
@@ -48,7 +48,7 @@ FEATURE_DEPENDENCIES = {
     "streaks": ("Eligible message channels", "Optional milestone and leaderboard channels"),
     "bumps": ("DISBOARD bot identity", "Optional reward and reminder roles"),
     "reminders": ("Delivery channels", "Command-access roles"),
-    "events": ("Event destination channels", "Subscriber access roles"),
+    "events": ("Reminders module", "Verified and Party Captain role mappings", "Private Discord artwork storage", "Create Events and Manage Events permissions", "Eligible Stage or Voice channels"),
     "ask": ("Allowed channels or categories",),
     "knowledge": ("Allowed channels or categories",),
     "staff_tools": ("Staff roles", "Private source channels"),
@@ -59,6 +59,7 @@ FEATURE_DEPENDENCIES = {
     "checklists": ("Staff roles", "Posting channels"),
     "queue": ("Voice channels", "Queue message channels"),
     "rulecards": ("Staff roles",),
+    "visual": ("Private Discord forum post/thread", "View, history, attachment, and thread-message permissions"),
 }
 
 
@@ -71,6 +72,8 @@ def enabled_modules() -> Optional[set[str]]:
 
 def feature_is_enabled(feature: FeatureDefinition) -> bool:
     configured = enabled_modules()
+    if feature.key == "events" and configured is not None:
+        return {"events", "reminders"}.issubset(configured)
     return not feature.module_keys or configured is None or bool(set(feature.module_keys) & configured)
 
 
@@ -85,6 +88,8 @@ def feature_key_for_setting(key: str) -> str:
         return "reminders"
     if upper.startswith("EVENTS_"):
         return "events"
+    if upper.startswith("VISUAL_"):
+        return "visual"
     if upper.startswith("STREAK_"):
         return "streaks"
     if upper.startswith(("VCXP_", "VC_XP_", "VCSTATS_", "VC_EXCLUDED_", "EXCLUDED_VOICE_")):

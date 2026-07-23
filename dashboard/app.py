@@ -71,6 +71,25 @@ from dashboard.reminders_manager import (
     reminder_detail as dashboard_reminder_detail,
     reminder_overview as dashboard_reminder_overview,
 )
+from dashboard.events_manager import (
+    MAX_EVENT_IMAGE_BYTES,
+    calendar_month,
+    decorate_events,
+    eligible_event_channels,
+    event_is_owned_by,
+    event_sync_status,
+    get_event,
+    get_event_action,
+    list_events,
+    list_recent_actions,
+    normalize_event_image,
+    parse_event_form,
+    parse_offsets,
+    queue_event_action,
+    subscribe_to_event,
+    unsubscribe_from_event,
+    update_event_subscription,
+)
 from dashboard.streaks_manager import (
     adjust_streak_day,
     initialize_streak_dashboard_schema,
@@ -153,6 +172,7 @@ from utils.settings import (
     DEFINITIONS_BY_KEY,
     EDITABLE_SETTING_KEYS,
     initialize_settings_from_env,
+    get_setting,
     is_forbidden_key,
     recent_setting_changes,
     set_setting,
@@ -223,6 +243,10 @@ from utils.visual_studio.storage import (
     rename_asset,
     save_asset,
 )
+from utils.visual_studio.discord_storage import (
+    queue_asset_upload,
+    storage_overview,
+)
 
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
@@ -280,6 +304,8 @@ if dashboard_enabled():
     initialize_streak_dashboard_schema()
     initialize_embed_templates_schema()
     initialize_visual_studio_schema()
+    from utils.events import initialize_events_schema
+    initialize_events_schema()
 
 app = FastAPI(
     title="BroEdenBot Local Dashboard",
@@ -310,6 +336,16 @@ def required_permission(path: str, method: str) -> str | None:
         parts = [part for part in path.split("/") if part]
         feature = FEATURES_BY_KEY.get(parts[1]) if len(parts) > 1 else None
         return feature.permission if feature else "features.view"
+    if path.startswith("/events"):
+        if path == "/events/new":
+            return "events.create"
+        if path.endswith("/edit") or path.endswith("/cancel"):
+            return "events.edit_own"
+        if normalized_method == "GET":
+            return "events.view"
+        if path.endswith(("/subscribe", "/timing", "/unsubscribe")):
+            return "events.subscribe"
+        return "events.edit_own"
     if path.startswith("/analytics") or path.startswith("/stats"):
         return "analytics.manage" if normalized_method != "GET" else "analytics.view"
     if path.startswith("/operations/reminders"):
@@ -373,6 +409,9 @@ class DashboardPermissionMiddleware(BaseHTTPMiddleware):
                     status_code=status.HTTP_403_FORBIDDEN,
                 )
         response = await call_next(request)
+        if request.url.path.startswith("/events"):
+            response.headers["Cache-Control"] = "private, no-store"
+            response.headers["Pragma"] = "no-cache"
         if request.method.upper() in {"POST", "PUT", "PATCH", "DELETE"} and request.url.path not in {"/login", "/logout"}:
             user = current_user(request) if is_authenticated(request) else {}
             record_audit(
@@ -505,7 +544,7 @@ def login_response(
 async def login_page(request: Request) -> HTMLResponse:
     if is_authenticated(request) and dashboard_enabled():
         return RedirectResponse(
-            url=request.url_for("home"),
+            url=request.url_for("home") if has_permission(request, "dashboard.view") else request.url_for("events_page"),
             status_code=status.HTTP_303_SEE_OTHER,
         )
     return login_response(request)
@@ -534,7 +573,7 @@ async def login(
                 target_id="password",
             )
             return RedirectResponse(
-                url=request.url_for("home"),
+                url=request.url_for("home") if has_permission(request, "dashboard.view") else request.url_for("events_page"),
                 status_code=status.HTTP_303_SEE_OTHER,
             )
         error = "Invalid username or password."
@@ -677,7 +716,7 @@ async def discord_callback(
         after={"access_source": user.get("access_source")},
     )
     return RedirectResponse(
-        url=request.url_for("home"),
+        url=request.url_for("home") if has_permission(request, "dashboard.view") else request.url_for("events_page"),
         status_code=status.HTTP_303_SEE_OTHER,
     )
 
@@ -779,6 +818,281 @@ def streaks_redirect(request: Request) -> RedirectResponse:
         url=request.url_for("streaks_page"),
         status_code=status.HTTP_303_SEE_OTHER,
     )
+
+
+def events_redirect(request: Request, action_id: int | None = None) -> RedirectResponse:
+    url = str(request.url_for("events_page"))
+    if action_id is not None:
+        url += f"?action={int(action_id)}"
+    return RedirectResponse(url=url, status_code=status.HTTP_303_SEE_OTHER)
+
+
+def _events_user(request: Request) -> tuple[dict[str, Any], str]:
+    user = current_user(request)
+    return user, str(user.get("discord_user_id") or "")
+
+
+def _event_manage_allowed(request: Request, event: dict[str, Any]) -> bool:
+    user, discord_user_id = _events_user(request)
+    return bool(
+        has_permission(request, "events.edit_all")
+        or event_is_owned_by(event, user.get("id"), discord_user_id)
+    )
+
+
+def _event_form_values(event: dict[str, Any] | None = None) -> dict[str, Any]:
+    values = dict(event or {})
+    for source, target in (("scheduled_at_utc", "start_time"), ("end_at_utc", "end_time")):
+        value = str(values.get(source) or "")
+        if value:
+            try:
+                parsed = datetime.fromisoformat(value.replace("Z", "+00:00")).astimezone()
+                values[target] = parsed.strftime("%Y-%m-%dT%H:%M")
+            except ValueError:
+                values[target] = ""
+    return values
+
+
+def _event_artwork_storage_configured() -> bool:
+    return str(get_setting("EVENTS_ARTWORK_STORAGE_CHANNEL_ID", "") or "").strip().isdigit()
+
+
+@app.get("/events", response_class=HTMLResponse, name="events_page")
+async def events_page(request: Request) -> HTMLResponse:
+    user, discord_user_id = _events_user(request)
+    guild_id = str(get_setting("GUILD_ID", "") or os.getenv("GUILD_ID", "")).strip()
+    events = decorate_events(list_events(guild_id, user_id=discord_user_id)) if guild_id else []
+    now = datetime.now().astimezone()
+    month_text = request.query_params.get("month", "")
+    try:
+        selected = datetime.strptime(month_text, "%Y-%m") if month_text else (events[0]["start_local"] if events else now)
+    except ValueError:
+        selected = now
+    channels = eligible_event_channels(channels_metadata())
+    access = access_overview([])
+    mapped_roles = {str(item.get("role_name") or "") for item in access.get("mappings", [])}
+    manage_all = has_permission(request, "events.edit_all")
+    for event in events:
+        event["can_manage"] = not event.get("is_recurring") and _event_manage_allowed(request, event)
+    readiness = event_sync_status(guild_id) if guild_id else {"last_error": "GUILD_ID is not configured."}
+    readiness.update({
+        "events_module": "events" in (os.getenv("ENABLED_MODULES", "").replace(",", " ").split()) or not os.getenv("ENABLED_MODULES", "").strip(),
+        "reminders_module": "reminders" in (os.getenv("ENABLED_MODULES", "").replace(",", " ").split()) or not os.getenv("ENABLED_MODULES", "").strip(),
+        "verified_mapping": "Verified Events Member" in mapped_roles,
+        "captain_mapping": "Party Captain" in mapped_roles,
+        "eligible_channels": len(channels["stage"]) + len(channels["voice"]),
+        "storage_channel_configured": _event_artwork_storage_configured(),
+    })
+    return templates.TemplateResponse(
+        request=request,
+        name="events.html",
+        context=template_context(
+            request,
+            page_title="Events",
+            events=events,
+            next_event=events[0] if events else None,
+            event_calendar=calendar_month(events, selected.year, selected.month),
+            can_create=has_permission(request, "events.create"),
+            can_manage_all=manage_all,
+            actions=list_recent_actions(guild_id=guild_id, dashboard_user_id=user.get("id"), all_users=manage_all),
+            readiness=readiness,
+            message=request.session.pop("events_message", None),
+            error=request.session.pop("events_error", None),
+            tracked_action=request.query_params.get("action", ""),
+        ),
+    )
+
+
+@app.get("/events/new", response_class=HTMLResponse, name="events_new")
+async def events_new(request: Request) -> HTMLResponse:
+    return templates.TemplateResponse(
+        request=request,
+        name="event_form.html",
+        context=template_context(
+            request, page_title="Create event", event={},
+            channels=eligible_event_channels(channels_metadata()), editing=False,
+            submission_id=secrets.token_hex(16),
+            artwork_storage_configured=_event_artwork_storage_configured(),
+        ),
+    )
+
+
+async def _queue_event_form(request: Request, event: dict[str, Any] | None = None) -> RedirectResponse:
+    form = await request.form()
+    if not csrf_is_valid(request, str(form.get("csrf", ""))):
+        raise HTTPException(status_code=400, detail="Invalid CSRF token.")
+    try:
+        payload = parse_event_form(form)
+        eligible = eligible_event_channels(channels_metadata())
+        if payload["entity_type"] != "external":
+            allowed = {str(item["id"]) for item in eligible[payload["entity_type"]]}
+            if str(payload.get("channel_id")) not in allowed:
+                raise ValueError("That Discord channel is not eligible for this event type.")
+        upload = form.get("artwork")
+        image_bytes = image_type = None
+        if upload is not None and getattr(upload, "filename", ""):
+            if not _event_artwork_storage_configured():
+                raise ValueError(
+                    "Event Artwork Storage must be selected in the Events dashboard settings before uploading artwork."
+                )
+            image_bytes, image_type = normalize_event_image(
+                await upload.read(MAX_EVENT_IMAGE_BYTES + 1),
+                str(getattr(upload, "content_type", "")),
+            )
+        user, discord_user_id = _events_user(request)
+        action_id = queue_event_action(
+            action="edit" if event else "create",
+            guild_id=str(get_setting("GUILD_ID", "") or os.getenv("GUILD_ID", "")),
+            scheduled_event_id=event.get("scheduled_event_id") if event else None,
+            requested_by_dashboard_user_id=int(user["id"]),
+            requested_by_discord_user_id=discord_user_id or None,
+            requested_by_name=str(user.get("username") or "Bro Eden organizer"),
+            payload=payload,
+            image_bytes=image_bytes,
+            image_content_type=image_type,
+            idempotency_key=f"{form.get('csrf')}:{'edit:' + str(event['scheduled_event_id']) if event else 'create'}:{form.get('submission_id')}",
+        )
+    except (OSError, sqlite3.Error, ValueError) as exc:
+        request.session["events_error"] = str(exc)
+        return events_redirect(request)
+    request.session["events_message"] = f"Event {'update' if event else 'publication'} queued as action #{action_id}."
+    return events_redirect(request, action_id)
+
+
+@app.post("/events/new", name="events_create")
+async def events_create(request: Request) -> RedirectResponse:
+    return await _queue_event_form(request)
+
+
+@app.get("/events/{event_id}/edit", response_class=HTMLResponse, name="events_edit")
+async def events_edit(request: Request, event_id: str) -> HTMLResponse:
+    user, discord_user_id = _events_user(request)
+    event = get_event(str(get_setting("GUILD_ID", "") or os.getenv("GUILD_ID", "")), event_id, user_id=discord_user_id)
+    if event is None:
+        raise HTTPException(status_code=404, detail="Event not found.")
+    if event.get("is_recurring"):
+        raise HTTPException(status_code=403, detail="Recurring Discord events are read-only here.")
+    if not _event_manage_allowed(request, event):
+        raise HTTPException(status_code=403, detail="You may only manage your own events.")
+    return templates.TemplateResponse(
+        request=request,
+        name="event_form.html",
+        context=template_context(
+            request, page_title="Edit event", event=_event_form_values(event),
+            channels=eligible_event_channels(channels_metadata()), editing=True,
+            submission_id=secrets.token_hex(16),
+            artwork_storage_configured=_event_artwork_storage_configured(),
+        ),
+    )
+
+
+@app.post("/events/{event_id}/edit", name="events_update")
+async def events_update(request: Request, event_id: str) -> RedirectResponse:
+    _, discord_user_id = _events_user(request)
+    event = get_event(str(get_setting("GUILD_ID", "") or os.getenv("GUILD_ID", "")), event_id, user_id=discord_user_id)
+    if event is None:
+        raise HTTPException(status_code=404, detail="Event not found.")
+    if event.get("is_recurring") or not _event_manage_allowed(request, event):
+        raise HTTPException(status_code=403, detail="This event cannot be edited by your account.")
+    return await _queue_event_form(request, event)
+
+
+@app.post("/events/{event_id}/cancel", name="events_cancel")
+async def events_cancel(request: Request, event_id: str) -> RedirectResponse:
+    await require_action_csrf(request)
+    form = await request.form()
+    _, discord_user_id = _events_user(request)
+    guild_id = str(get_setting("GUILD_ID", "") or os.getenv("GUILD_ID", ""))
+    event = get_event(guild_id, event_id, user_id=discord_user_id)
+    if event is None:
+        raise HTTPException(status_code=404, detail="Event not found.")
+    if event.get("is_recurring") or not _event_manage_allowed(request, event):
+        raise HTTPException(status_code=403, detail="This event cannot be cancelled by your account.")
+    if str(form.get("confirmation") or "").strip().casefold() != "cancel":
+        request.session["events_error"] = "Type CANCEL to confirm cancellation."
+        return events_redirect(request)
+    user, _ = _events_user(request)
+    action_id = queue_event_action(
+        action="cancel", guild_id=guild_id, scheduled_event_id=event_id,
+        requested_by_dashboard_user_id=int(user["id"]), requested_by_discord_user_id=discord_user_id or None,
+        requested_by_name=str(user.get("username") or "Bro Eden organizer"), payload={},
+        idempotency_key=f"cancel:{event_id}:{form.get('csrf')}",
+    )
+    request.session["events_message"] = f"Cancellation queued as action #{action_id}."
+    return events_redirect(request, action_id)
+
+
+def _subscribable_event(request: Request, event_id: str) -> tuple[dict[str, Any], dict[str, Any], str]:
+    user, discord_user_id = _events_user(request)
+    if not discord_user_id:
+        raise HTTPException(status_code=403, detail="Discord sign-in is required for DM reminders.")
+    guild_id = str(get_setting("GUILD_ID", "") or os.getenv("GUILD_ID", ""))
+    event = get_event(guild_id, event_id, user_id=discord_user_id)
+    if event is None or not event.get("reminder_id"):
+        raise HTTPException(status_code=404, detail="This event is not available for reminders.")
+    return event, user, guild_id
+
+
+@app.post("/events/{event_id}/subscribe", name="events_subscribe")
+async def events_subscribe(request: Request, event_id: str) -> RedirectResponse:
+    await require_action_csrf(request)
+    event, user, guild_id = _subscribable_event(request, event_id)
+    try:
+        subscription, created = await subscribe_to_event(reminder_id=int(event["reminder_id"]), user_id=int(user["discord_user_id"]), offsets=(15, 0))
+    except (OSError, sqlite3.Error, ValueError) as exc:
+        request.session["events_error"] = str(exc)
+        return events_redirect(request)
+    if created:
+        queue_event_action(
+            action="confirm_subscription", guild_id=guild_id, scheduled_event_id=event_id,
+            requested_by_dashboard_user_id=int(user["id"]), requested_by_discord_user_id=user["discord_user_id"],
+            requested_by_name=str(user.get("username") or "member"), payload={"subscription_id": subscription["id"]},
+            idempotency_key=f"confirm:{subscription['id']}:{subscription.get('updated_at_utc') or subscription.get('created_at_utc')}",
+        )
+    request.session["events_message"] = "DM reminders are enabled for 15 minutes before and at start time."
+    return events_redirect(request)
+
+
+@app.post("/events/{event_id}/timing", name="events_timing")
+async def events_timing(request: Request, event_id: str) -> RedirectResponse:
+    await require_action_csrf(request)
+    form = await request.form()
+    event, user, _ = _subscribable_event(request, event_id)
+    if not event.get("subscription_id"):
+        raise HTTPException(status_code=404, detail="Subscribe before customizing reminders.")
+    try:
+        offsets = parse_offsets(form.getlist("timing"))
+        await update_event_subscription(subscription_id=int(event["subscription_id"]), user_id=int(user["discord_user_id"]), offsets=offsets)
+    except (OSError, sqlite3.Error, ValueError) as exc:
+        request.session["events_error"] = str(exc)
+        return events_redirect(request)
+    request.session["events_message"] = "Your event reminder timing was updated."
+    return events_redirect(request)
+
+
+@app.post("/events/{event_id}/unsubscribe", name="events_unsubscribe")
+async def events_unsubscribe(request: Request, event_id: str) -> RedirectResponse:
+    await require_action_csrf(request)
+    event, user, _ = _subscribable_event(request, event_id)
+    try:
+        if event.get("subscription_id"):
+            await unsubscribe_from_event(subscription_id=int(event["subscription_id"]), user_id=int(user["discord_user_id"]))
+    except (OSError, sqlite3.Error, ValueError) as exc:
+        request.session["events_error"] = str(exc)
+        return events_redirect(request)
+    request.session["events_message"] = "DM reminders were turned off for this event."
+    return events_redirect(request)
+
+
+@app.get("/events/actions/{action_id}", response_class=JSONResponse, name="events_action_status")
+async def events_action_status(request: Request, action_id: int) -> JSONResponse:
+    action = get_event_action(action_id)
+    user, _ = _events_user(request)
+    if action is None:
+        raise HTTPException(status_code=404, detail="Event action not found.")
+    if not has_permission(request, "events.edit_all") and int(action.get("requested_by_dashboard_user_id") or 0) != int(user.get("id") or 0):
+        raise HTTPException(status_code=403, detail="This event action belongs to another organizer.")
+    return JSONResponse(action)
 
 
 @app.get("/streaks", response_class=HTMLResponse, name="streaks_page")
@@ -1693,6 +2007,7 @@ async def visual_schedule_delete(request: Request, schedule_id: int) -> Redirect
 async def visual_assets_page(request: Request, asset_type: str = "", archived: bool = False) -> HTMLResponse:
     if redirect := login_redirect(request):
         return redirect
+    visual_feature = feature_snapshot(FEATURES_BY_KEY["visual"])
     return templates.TemplateResponse(
         request=request,
         name="visual_assets.html",
@@ -1703,6 +2018,11 @@ async def visual_assets_page(request: Request, asset_type: str = "", archived: b
             asset_types=ASSET_TYPES,
             selected_asset_type=asset_type,
             include_archived=archived,
+            storage=storage_overview(),
+            storage_thread_id=str(
+                get_setting("VISUAL_ASSET_STORAGE_THREAD_ID", "") or ""
+            ).strip(),
+            storage_module_enabled=visual_feature["enabled"],
             message=request.session.pop("visual_message", None),
             error=request.session.pop("visual_error", None),
         ),
@@ -1718,6 +2038,7 @@ async def visual_asset_upload_page(
 ) -> HTMLResponse:
     if redirect := login_redirect(request):
         return redirect
+    visual_feature = feature_snapshot(FEATURES_BY_KEY["visual"])
     guidance = None
     replace_asset = get_asset(replace_asset_id) if replace_asset_id else None
     if replace_asset is not None:
@@ -1744,6 +2065,10 @@ async def visual_asset_upload_page(
             selected_slot_key=slot_key,
             guidance=guidance or asset_type_guidance("other"),
             replace_asset=replace_asset,
+            storage_thread_id=str(
+                get_setting("VISUAL_ASSET_STORAGE_THREAD_ID", "") or ""
+            ).strip(),
+            storage_module_enabled=visual_feature["enabled"],
             error=request.session.pop("visual_error", None),
         ),
     )
@@ -1754,6 +2079,19 @@ async def visual_asset_upload_save(request: Request) -> Response:
     if redirect := login_redirect(request):
         return redirect
     form = await require_visual_admin(request)
+    if not feature_snapshot(FEATURES_BY_KEY["visual"])["enabled"]:
+        request.session["visual_error"] = (
+            "Add visual to ENABLED_MODULES before uploading Asset Library files."
+        )
+        return visual_redirect(request, "visual_asset_upload")
+    storage_thread_id = str(
+        get_setting("VISUAL_ASSET_STORAGE_THREAD_ID", "") or ""
+    ).strip()
+    if not storage_thread_id.isdigit():
+        request.session["visual_error"] = (
+            "Configure the Asset Library Storage Forum Post before uploading."
+        )
+        return visual_redirect(request, "visual_asset_upload")
     upload = form.get("file")
     if upload is None or not hasattr(upload, "read"):
         request.session["visual_error"] = "Choose a PNG, JPG, or WEBP file."
@@ -1791,10 +2129,25 @@ async def visual_asset_upload_save(request: Request) -> Response:
             url="{}{}".format(request.url_for("visual_asset_upload"), query),
             status_code=status.HTTP_303_SEE_OTHER,
         )
-    request.session["visual_message"] = "Asset #{} uploaded and normalized to {} x {} px.".format(
+    try:
+        storage_job_id = queue_asset_upload(
+            asset_id,
+            visual_actor(request),
+            storage_thread_id,
+        )
+    except (sqlite3.Error, ValueError) as exc:
+        request.session["visual_error"] = (
+            "The asset was normalized, but its Discord storage job could not be queued: {}"
+        ).format(exc)
+        return visual_redirect(request, "visual_assets")
+    request.session["visual_message"] = (
+        "Asset #{} uploaded and normalized to {} x {} px. "
+        "Discord storage job #{} is queued."
+    ).format(
         asset_id,
         inspection["normalized_width"],
         inspection["normalized_height"],
+        storage_job_id,
     )
     return visual_redirect(request, "visual_assets")
 
@@ -1830,7 +2183,10 @@ async def visual_asset_image(request: Request, asset_id: int, thumbnail: bool = 
     if not storage_key:
         raise HTTPException(status_code=404, detail="Asset preview is unavailable.")
     try:
-        data = asset_bytes(storage_key)
+        data = asset_bytes(
+            storage_key,
+            None if thumbnail else asset.get("discord_attachment_url"),
+        )
     except (OSError, ValueError):
         raise HTTPException(status_code=404, detail="Asset file is unavailable.")
     disposition = "attachment" if download else "inline"
@@ -1886,11 +2242,15 @@ async def visual_asset_delete(request: Request, asset_id: int) -> RedirectRespon
         return redirect
     await require_visual_admin(request)
     try:
-        delete_asset(asset_id, visual_actor(request))
+        discord_delete_queued = delete_asset(asset_id, visual_actor(request))
     except ValueError as exc:
         request.session["visual_error"] = str(exc)
     else:
-        request.session["visual_message"] = "Archived asset permanently deleted."
+        request.session["visual_message"] = (
+            "Archived asset permanently deleted. Its Discord storage message is queued for removal."
+            if discord_delete_queued
+            else "Archived asset permanently deleted."
+        )
     return visual_redirect(request, "visual_assets")
 
 

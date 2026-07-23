@@ -68,8 +68,33 @@ All visible values have consumers in staff/moderation/context code. Model values
 | `REMINDER_EVENT_AUTO_SUBSCRIBE_CREATOR` | `bool` | `true` | edit |
 | `ENABLE_LEGACY_REMINDER_COMMANDS` | `bool` | `true` | Advanced |
 | `EVENTS_HEADER_ASSET_ID` | `asset_id` | blank | edit on Events |
+| `EVENTS_ARTWORK_STORAGE_CHANNEL_ID` | `csv_ids` | blank | single-channel picker on Events |
 
 Every key is read by the reminder/event service or its compatibility command gate. The fallback and command-specific roles intentionally overlap with documented precedence; they are not duplicate writes.
+
+The dashboard Events Hub adds no Discord role-ID environment setting. Map the
+existing live Verified role to **Verified Events Member** and the live Captain
+role to **Party Captain** in Dashboard Access. Runtime activation is
+`ENABLED_MODULES=events,reminders,...`; the Events cog remains disabled if its
+canonical Reminders dependency is omitted.
+
+`EVENTS_ARTWORK_STORAGE_CHANNEL_ID` accepts an existing private forum, thread,
+or text channel. Dashboard uploads are queued in SQLite, normalized to WebP,
+and posted by the live bot. Only the Discord message references and current
+attachment URL remain after the action completes. The 15-minute reconciliation
+also refreshes signed attachment links from the source message.
+
+### Visual Content Studio
+
+| Key | Type | Default | Dashboard |
+|---|---|---|---|
+| `VISUAL_ASSET_STORAGE_THREAD_ID` | `csv_ids` | blank | single forum-post/thread ID on Visual Content Studio |
+
+Set this to an existing private forum post/thread, not its parent forum
+channel. With `visual` in `ENABLED_MODULES`, the live bot backfills active
+assets, posts new normalized uploads, refreshes attachment links, and processes
+message deletion jobs. Changing the value reroutes active assets to the new
+thread after their replacements are safely recorded.
 
 ### Activity streaks
 

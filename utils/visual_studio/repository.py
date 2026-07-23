@@ -47,6 +47,36 @@ ON visual_assets(asset_type, archived_at, updated_at DESC);
 CREATE INDEX IF NOT EXISTS idx_visual_assets_checksum
 ON visual_assets(checksum);
 
+CREATE TABLE IF NOT EXISTS visual_asset_discord_storage (
+    asset_id INTEGER PRIMARY KEY REFERENCES visual_assets(id) ON DELETE CASCADE,
+    storage_thread_id TEXT NOT NULL,
+    message_id TEXT NOT NULL,
+    attachment_url TEXT NOT NULL,
+    sync_status TEXT NOT NULL DEFAULT 'ready',
+    last_error TEXT,
+    updated_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS visual_asset_storage_jobs (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    asset_id INTEGER NOT NULL,
+    action TEXT NOT NULL CHECK(action IN ('upload', 'delete')),
+    idempotency_key TEXT NOT NULL UNIQUE,
+    requested_by TEXT,
+    status TEXT NOT NULL DEFAULT 'pending'
+        CHECK(status IN ('pending', 'processing', 'completed', 'failed', 'superseded')),
+    attempt_count INTEGER NOT NULL DEFAULT 0,
+    storage_thread_id TEXT,
+    message_id TEXT,
+    attachment_url TEXT,
+    result_message TEXT,
+    failure_reason TEXT,
+    requested_at TEXT NOT NULL,
+    processed_at TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_visual_asset_storage_jobs_pending
+ON visual_asset_storage_jobs(status, id);
+
 CREATE TABLE IF NOT EXISTS visual_themes (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     name TEXT NOT NULL COLLATE NOCASE UNIQUE,
@@ -513,7 +543,14 @@ def _load_asset_references(
     warnings: List[str] = []
     for slot, asset_id in (settings.get("assets") or {}).items():
         row = connection.execute(
-            "SELECT * FROM visual_assets WHERE id = ?",
+            """
+            SELECT a.*, d.attachment_url AS discord_attachment_url,
+                   d.storage_thread_id AS discord_storage_thread_id,
+                   d.message_id AS discord_message_id
+            FROM visual_assets a
+            LEFT JOIN visual_asset_discord_storage d ON d.asset_id = a.id
+            WHERE a.id = ?
+            """,
             (int(asset_id),),
         ).fetchone()
         if row is None:
@@ -530,6 +567,7 @@ def _load_asset_references(
             "width": int(row["width"]),
             "height": int(row["height"]),
             "mime_type": row["mime_type"],
+            "discord_attachment_url": row["discord_attachment_url"],
         }
     return assets, warnings
 

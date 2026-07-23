@@ -81,7 +81,10 @@ def _asset_data(configuration: Mapping[str, Any], slot: str) -> Optional[bytes]:
     if not asset:
         return None
     try:
-        return asset_bytes(asset["storage_key"])
+        return asset_bytes(
+            asset["storage_key"],
+            asset.get("discord_attachment_url"),
+        )
     except (OSError, ValueError):
         return None
 

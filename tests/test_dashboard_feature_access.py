@@ -15,6 +15,7 @@ from dashboard.rbac import initialize_rbac_schema
 from dashboard.users import hash_password, initialize_dashboard_users
 from utils.settings import initialize_settings_from_env
 from utils.settings import get_setting
+from utils.events import initialize_events_schema
 
 
 class DashboardFeatureAccessTests(unittest.TestCase):
@@ -30,6 +31,7 @@ class DashboardFeatureAccessTests(unittest.TestCase):
                 "DASHBOARD_PASSWORD": "owner-password",
                 "DASHBOARD_SECRET_KEY": "feature-access-test-key",
                 "DASHBOARD_AUTH_MODE": "password",
+                "GUILD_ID": "999999999999999999",
             },
             clear=False,
         )
@@ -37,6 +39,7 @@ class DashboardFeatureAccessTests(unittest.TestCase):
         initialize_settings_from_env()
         initialize_dashboard_users()
         initialize_rbac_schema()
+        initialize_events_schema()
         self.client = TestClient(app)
 
     def tearDown(self):
@@ -93,6 +96,53 @@ class DashboardFeatureAccessTests(unittest.TestCase):
         self.assertEqual(self.client.get("/features/ask").status_code, 403)
         self.assertEqual(self.client.get("/features/events").status_code, 200)
 
+    def test_party_captain_cannot_edit_another_organizers_event(self):
+        self.add_password_user("captain", "captain-password", "party_captain")
+        self.login("captain", "captain-password")
+        future = (datetime.now(timezone.utc) + timedelta(days=3)).isoformat()
+        with sqlite3.connect(self.database) as connection:
+            connection.execute(
+                """INSERT INTO dashboard_scheduled_events
+                (scheduled_event_id,guild_id,name,entity_type,location,scheduled_at_utc,event_url,status,updated_at_utc)
+                VALUES ('700', '999999999999999999', 'Another Event', 'external', 'Park', ?, 'https://discord.com/events/1/700', 'scheduled', ?)""",
+                (future, datetime.now(timezone.utc).isoformat()),
+            )
+            connection.execute(
+                """INSERT INTO dashboard_event_ownership
+                (scheduled_event_id,dashboard_user_id,organizer_name,created_at_utc,updated_at_utc)
+                VALUES ('700', 999, 'Another Captain', ?, ?)""",
+                (future, future),
+            )
+            connection.commit()
+        self.assertEqual(self.client.get("/events/700/edit").status_code, 403)
+
+    def test_owner_can_queue_external_event_with_csrf(self):
+        self.login("owner", "owner-password")
+        page = self.client.get("/events/new")
+        token = re.search(r'name="csrf" value="([^"]+)"', page.text).group(1)
+        submission = re.search(r'name="submission_id" value="([^"]+)"', page.text).group(1)
+        start = (datetime.now() + timedelta(days=3)).strftime("%Y-%m-%dT%H:%M")
+        end = (datetime.now() + timedelta(days=3, hours=2)).strftime("%Y-%m-%dT%H:%M")
+        response = self.client.post(
+            "/events/new",
+            data={"csrf": token, "submission_id": submission, "entity_type": "external", "name": "Pride Picnic", "description": "Welcome", "start_time": start, "end_time": end, "location": "River Park"},
+        )
+        self.assertEqual(response.status_code, 200)
+        with sqlite3.connect(self.database) as connection:
+            action = connection.execute("SELECT action, status FROM event_dashboard_actions").fetchone()
+        self.assertEqual(action, ("create", "pending"))
+
+    def test_owner_events_settings_include_discord_artwork_storage_picker(self):
+        self.login("owner", "owner-password")
+        events_page = self.client.get("/events")
+        self.assertIn("Event settings", events_page.text)
+        self.assertIn('/features/events', events_page.text)
+        response = self.client.get("/features/events")
+        self.assertEqual(response.status_code, 200)
+        self.assertIn("Event Artwork Storage", response.text)
+        self.assertIn("EVENTS_ARTWORK_STORAGE_CHANNEL_ID", response.text)
+        self.assertIn("channel-single-select", response.text)
+
     def test_viewer_cannot_fetch_discord_metadata_or_settings(self):
         self.add_password_user("viewer", "viewer-password", "viewer")
         self.login("viewer", "viewer-password")
@@ -108,6 +158,16 @@ class DashboardFeatureAccessTests(unittest.TestCase):
         denied = self.client.get("/settings")
         self.assertEqual(denied.status_code, 403)
         self.assertIn("Nothing from the requested page was loaded", denied.text)
+
+    def test_verified_events_member_is_limited_to_schedule_and_subscriptions(self):
+        self.add_password_user("verified", "verified-password", "verified_events_member")
+        self.login("verified", "verified-password")
+        events = self.client.get("/events")
+        self.assertEqual(events.status_code, 200)
+        self.assertIn("Bro Eden Events", events.text)
+        self.assertNotIn("Create an event", events.text)
+        self.assertEqual(self.client.get("/").status_code, 403)
+        self.assertEqual(self.client.get("/events/new").status_code, 403)
 
     def test_expired_discord_verification_clears_existing_session(self):
         self.login("owner", "owner-password")

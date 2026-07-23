@@ -7,6 +7,8 @@ import io
 import json
 import os
 import secrets
+import urllib.parse
+import urllib.request
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
@@ -79,8 +81,41 @@ def asset_path(storage_key: str) -> Path:
     return path
 
 
-def asset_bytes(storage_key: str) -> bytes:
-    return asset_path(storage_key).read_bytes()
+def _discord_asset_bytes(source_url: str) -> bytes:
+    parsed = urllib.parse.urlparse(str(source_url or ""))
+    if parsed.scheme != "https" or parsed.hostname not in {"cdn.discordapp.com", "media.discordapp.net"}:
+        raise ValueError("Visual asset Discord source URL is invalid.")
+    request = urllib.request.Request(
+        source_url,
+        headers={"User-Agent": "BroEdenBot/VisualContentStudio"},
+    )
+    with urllib.request.urlopen(request, timeout=15) as response:
+        data = response.read(MAX_UPLOAD_BYTES + 1)
+    if not data or len(data) > MAX_UPLOAD_BYTES:
+        raise ValueError("Visual asset Discord source is empty or too large.")
+    try:
+        with Image.open(io.BytesIO(data)) as image:
+            image.verify()
+    except (UnidentifiedImageError, OSError, SyntaxError) as exc:
+        raise ValueError("Visual asset Discord source is not a valid image.") from exc
+    return data
+
+
+def asset_bytes(storage_key: str, source_url: Optional[str] = None) -> bytes:
+    try:
+        return asset_path(storage_key).read_bytes()
+    except FileNotFoundError:
+        if not source_url:
+            raise
+    data = _discord_asset_bytes(source_url)
+    target = _safe_child(storage_key)
+    temporary = target.with_name("{}.{}.tmp".format(target.name, secrets.token_hex(4)))
+    try:
+        temporary.write_bytes(data)
+        os.replace(str(temporary), str(target))
+    finally:
+        temporary.unlink(missing_ok=True)
+    return data
 
 
 def _slot(template_key: Optional[str], slot_key: Optional[str]) -> Optional[AssetSlot]:
@@ -378,8 +413,21 @@ def list_assets(
     with _connect() as connection:
         rows = connection.execute(
             """
-            SELECT a.*, COUNT(u.id) AS usage_count
-            FROM visual_assets a LEFT JOIN visual_asset_usage u ON u.asset_id=a.id
+            SELECT a.*, d.storage_thread_id AS discord_storage_thread_id,
+                   d.message_id AS discord_message_id,
+                   d.attachment_url AS discord_attachment_url,
+                   d.sync_status AS discord_storage_status,
+                   d.last_error AS discord_storage_error,
+                   (
+                       SELECT j.status
+                       FROM visual_asset_storage_jobs j
+                       WHERE j.asset_id = a.id
+                       ORDER BY j.id DESC LIMIT 1
+                   ) AS discord_storage_job_status,
+                   COUNT(u.id) AS usage_count
+            FROM visual_assets a
+            LEFT JOIN visual_asset_discord_storage d ON d.asset_id=a.id
+            LEFT JOIN visual_asset_usage u ON u.asset_id=a.id
             {} GROUP BY a.id ORDER BY a.updated_at DESC LIMIT ? OFFSET ?
             """.format(where),
             tuple(parameters),
@@ -395,7 +443,25 @@ def list_assets(
 def get_asset(asset_id: int) -> Optional[Dict[str, Any]]:
     initialize_visual_studio_schema()
     with _connect() as connection:
-        row = connection.execute("SELECT * FROM visual_assets WHERE id=?", (asset_id,)).fetchone()
+        row = connection.execute(
+            """
+            SELECT a.*, d.storage_thread_id AS discord_storage_thread_id,
+                   d.message_id AS discord_message_id,
+                   d.attachment_url AS discord_attachment_url,
+                   d.sync_status AS discord_storage_status,
+                   d.last_error AS discord_storage_error,
+                   (
+                       SELECT j.status
+                       FROM visual_asset_storage_jobs j
+                       WHERE j.asset_id = a.id
+                       ORDER BY j.id DESC LIMIT 1
+                   ) AS discord_storage_job_status
+            FROM visual_assets a
+            LEFT JOIN visual_asset_discord_storage d ON d.asset_id=a.id
+            WHERE a.id=?
+            """,
+            (asset_id,),
+        ).fetchone()
         if row is None:
             return None
         usages = [
@@ -445,7 +511,7 @@ def archive_asset(asset_id: int, actor: str, *, restore: bool = False) -> None:
     invalidate_visual_cache()
 
 
-def delete_asset(asset_id: int, actor: str) -> None:
+def delete_asset(asset_id: int, actor: str) -> bool:
     with _connect() as connection:
         row = connection.execute("SELECT * FROM visual_assets WHERE id=?", (asset_id,)).fetchone()
         if row is None:
@@ -454,6 +520,9 @@ def delete_asset(asset_id: int, actor: str) -> None:
             raise ValueError("Archive the asset before permanently deleting it.")
         if connection.execute("SELECT 1 FROM visual_asset_usage WHERE asset_id=? LIMIT 1", (asset_id,)).fetchone():
             raise ValueError("This asset is still referenced and cannot be deleted.")
+        from .discord_storage import prepare_asset_deletion
+
+        discord_delete_queued = prepare_asset_deletion(connection, asset_id, actor)
         metadata = json.loads(row["metadata_json"] or "{}")
         connection.execute("DELETE FROM visual_assets WHERE id=?", (asset_id,))
         _audit(connection, "asset_deleted", "asset", asset_id, "Archived visual asset permanently deleted.", actor)
@@ -465,6 +534,7 @@ def delete_asset(asset_id: int, actor: str) -> None:
             except (OSError, ValueError):
                 pass
     invalidate_visual_cache()
+    return discord_delete_queued
 
 
 def clean_preview_cache(maximum_age_seconds: int = 86_400) -> int:

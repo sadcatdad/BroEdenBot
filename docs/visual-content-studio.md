@@ -10,8 +10,10 @@ protection, and Discord output optimizer.
 
 - **Templates** are registered image generators with a fixed canvas, supported
   settings, asset slots, validation rules, preview data, and legacy fallback.
-- **Assets** are reusable normalized image files. SQLite stores metadata and
-  relationships; renderer-ready PNGs and thumbnails live in persistent storage.
+- **Assets** are reusable normalized image files. SQLite stores metadata,
+  relationships, Discord message references, and durable storage jobs. The
+  Discord attachment is the durable source; renderer-ready PNGs and thumbnails
+  remain a local cache.
 - **Themes** are reusable visual tokens and optional asset references.
 - **Global settings** are defaults inherited by all compatible templates.
 - **Variants** are optional alternate settings/canvases. Existing commands keep
@@ -76,6 +78,21 @@ Wrong-ratio and undersized files require separate explicit acknowledgements.
 The upload is normalized only once; bot commands do not reopen an original
 full-resolution upload. Focal points are expressed from 0 to 1 on each axis.
 
+Before uploading, set **Asset Library Storage Forum Post** under **Features →
+Visual Content Studio** to an existing private Discord forum-post/thread ID.
+The dashboard makes no Discord API call. It saves the normalized local copy and
+queues an idempotent job; the live bot posts one attachment message inside that
+thread, records the message and attachment URL, and the Asset Library switches
+its display to that URL. A local normalized file is retained as the fast
+renderer cache. If that cache is missing, only allowlisted
+`cdn.discordapp.com` or `media.discordapp.net` attachment URLs may rebuild it.
+
+Existing active assets are backfilled when the `visual` module starts.
+Changing the configured storage thread queues the current active library into
+the new thread. Each old storage message is removed only after the replacement
+message and URL have been recorded. Replacing an asset edits its existing
+storage message when possible.
+
 The current, registry-generated dimension table is in
 [`visual-content-studio-size-reference.md`](visual-content-studio-size-reference.md).
 Regenerate it after a registry change:
@@ -133,6 +150,7 @@ configuration as drafts. Nothing imported becomes live automatically.
 Authoritative backup data is:
 
 - the shared SQLite database (`DATABASE_PATH`);
+- the private Discord storage forum post containing the source attachments;
 - `VISUAL_ASSET_DIR/normalized` and `VISUAL_ASSET_DIR/thumbnails`;
 - the environment/configuration that points both services to the same directory.
 
@@ -222,6 +240,10 @@ Production uses the normal `./deploy.sh` workflow. Before restarting, confirm:
 - Pillow and bundled fonts load in the production venv;
 - disk space covers the SQLite and asset backups;
 - both services point to the same `DATABASE_PATH` and `VISUAL_ASSET_DIR`.
+- `visual` is present in `ENABLED_MODULES`;
+- `VISUAL_ASSET_STORAGE_THREAD_ID` names an existing private forum post/thread;
+- the bot can view the post, read its history, send messages and attachments in
+  it, and reopen it when archived.
 
 The migration is additive and idempotent. Roll back code by fast-forwarding or
 reverting the deployment commit, restoring the pre-deploy SQLite snapshot and
@@ -234,6 +256,9 @@ Do not drop Studio tables during an ordinary rollback.
 - `VISUAL_ASSET_DIR`: shared persistent storage. Default:
   `data/visual-assets`; production recommendation:
   `/home/sadcatdad/BroEdenBot/data/visual-assets`.
+- `VISUAL_ASSET_STORAGE_THREAD_ID`: one existing private Discord forum-post or
+  thread ID. It is editable under **Features → Visual Content Studio**. Do not
+  use a forum channel ID; paste the post/thread ID itself.
 - `VISUAL_RENDER_CONCURRENCY`: concurrent centralized ranked/roster renders,
   bounded from 1 to 4; default `2` for Raspberry Pi stability.
 - `STATS_IMAGE_TARGET_BYTES`: existing per-PNG Discord target, default 8 MB.
@@ -246,4 +271,5 @@ Do not drop Studio tables during an ordinary rollback.
 - Variant selection is dashboard/schedule-driven. Discord commands intentionally
   keep their existing interface.
 - JSON exports contain configuration metadata, not binary assets. Asset ZIP
-  packages can be added later; the documented filesystem backup is authoritative.
+  packages can be added later; preserve both the SQLite references and Discord
+  storage post, with the documented filesystem backup as a recovery cache.

@@ -26,6 +26,15 @@ class ModuleLoaderTests(unittest.TestCase):
     def test_unmapped_destination_cogs_remain_enabled(self):
         self.assertTrue(cog_is_enabled("bot_admin.py", {"stats"}))
 
+    def test_events_requires_its_reminder_dependency(self):
+        self.assertFalse(cog_is_enabled("events.py", {"events"}))
+        self.assertFalse(cog_is_enabled("events.py", {"reminders"}))
+        self.assertTrue(cog_is_enabled("events.py", {"events", "reminders"}))
+
+    def test_visual_asset_storage_has_a_dedicated_module(self):
+        self.assertFalse(cog_is_enabled("visual_assets.py", {"stats"}))
+        self.assertTrue(cog_is_enabled("visual_assets.py", {"visual"}))
+
 
 if __name__ == "__main__":
     unittest.main()

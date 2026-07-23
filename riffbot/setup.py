@@ -19,6 +19,8 @@ SENSITIVE_SUFFIXES = {".db", ".sqlite", ".sqlite3", ".csv", ".zip"}
 FEATURE_FILES = (
     "cogs/disboard_bumps.py",
     "cogs/reminder.py",
+    "cogs/events.py",
+    "cogs/visual_assets.py",
     "cogs/streaks.py",
     "cogs/stats.py",
     "cogs/leaderboards.py",
@@ -35,6 +37,8 @@ FEATURE_SETTINGS = (
     "BUMP_POINTS_PER_SUCCESS",
     "REMINDER_ALLOWED_ROLE_IDS",
     "REMINDER_TIMEZONE",
+    "EVENTS_ARTWORK_STORAGE_CHANNEL_ID",
+    "VISUAL_ASSET_STORAGE_THREAD_ID",
     "STREAK_TIMEZONE",
     "STREAK_MIN_WORDS",
     "STREAK_DUPLICATE_LOOKBACK_DAYS",

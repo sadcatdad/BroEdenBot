@@ -175,6 +175,24 @@ SETTING_DEFINITIONS = (
         picker="asset",
     ),
     SettingDefinition(
+        "EVENTS_ARTWORK_STORAGE_CHANNEL_ID",
+        "events",
+        "csv_ids",
+        "Private Discord forum, thread, or text channel where dashboard event artwork is stored. "
+        "BroEdenBot keeps the resulting Discord attachment link and clears temporary upload bytes.",
+        title="Event Artwork Storage",
+        picker="channel",
+        single=True,
+    ),
+    SettingDefinition(
+        "VISUAL_ASSET_STORAGE_THREAD_ID",
+        "visual",
+        "csv_ids",
+        "Existing private Discord forum post/thread used as durable storage for Visual Content Studio Asset Library images. Paste the thread ID; each asset is stored as its own message inside that post.",
+        title="Asset Library Storage Forum Post",
+        single=True,
+    ),
+    SettingDefinition(
         "MESSAGE_CONTEXT_ALLOWED_ROLE_IDS",
         "permissions",
         "csv_ids",
@@ -891,6 +909,8 @@ def normalize_setting_value(key: str, value: str) -> str:
             )
         if key == "VCXP_TRIGGER_ROLE_ID" and len(items) != 1:
             raise ValueError("Use one Discord role ID.")
+        if definition.single and len(items) != 1:
+            raise ValueError("Choose one Discord item.")
         return ",".join(items)
     if definition.value_type == "json_ids":
         if not text:
@@ -1055,6 +1075,8 @@ def settings_for_dashboard() -> dict[str, list[dict[str, object]]]:
         "advanced": [],
         "bumps": [],
         "reminders": [],
+        "events": [],
+        "visual": [],
         "streaks": [],
         "stats_features": [],
     }

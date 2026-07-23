@@ -34,6 +34,8 @@ For a module-by-module architecture and reliability map, see
 | `/remind event` | Roles in `REMINDER_EVENT_ALLOWED_ROLE_IDS`; blank falls back to `REMINDER_ALLOWED_ROLE_IDS` and configured staff/admin roles. |
 | `/remind manage` | Roles in `REMINDER_MANAGE_ALLOWED_ROLE_IDS`; blank allows all members to manage their own reminders. `REMINDER_MANAGE_ALL_ROLE_IDS` controls guild-wide management. |
 | `/remind subscriptions`, `/events`, and event **Remind Me** buttons | Roles in `REMINDER_SUBSCRIPTIONS_ALLOWED_ROLE_IDS`; blank allows all members. |
+| Dashboard `/events` schedule and DM controls | Signed-in current server members mapped to **Verified Events Member** (or a higher event-management dashboard role). |
+| Dashboard event create/edit/cancel | **Party Captain** can create and manage their own one-time events. Owner/Administrator can manage all one-time events. Recurring Discord events are read-only. |
 | `/remind help`, `/timezone`, `/time` | All server members. |
 | ModAI commands and context menus | Administrators or roles listed in `MODAI_ALLOWED_ROLE_IDS` |
 | Staff-note commands | Administrators or roles listed in `STAFF_NOTES_ALLOWED_ROLE_IDS` |
@@ -100,6 +102,29 @@ them. Existing reminder rows are migrated idempotently at startup and retained
 untouched for rollback evidence. Full architecture, dashboard, migration,
 manual-test, deployment, and troubleshooting instructions are in
 [`docs/reminders.md`](docs/reminders.md).
+
+## Dashboard Events Hub
+
+The authenticated `/events` page mirrors every Discord Scheduled Event and
+keeps each event linked to the canonical reminder service. It presents a Bro
+Eden-styled next-gathering hero, type filters, month-grouped cards, an HTML
+calendar, native **Open in Discord** links, and separate BroEdenBot DM controls.
+Quick Subscribe selects 15 minutes before plus start time; members can instead
+choose 6 hours, 1 hour, 15 minutes, and/or start time.
+
+Map the server's existing Verified Discord role to **Verified Events Member**
+under Dashboard Access. Map the Party Captain role to **Party Captain**. The
+dashboard continues to re-check live guild membership, pending membership
+screening, and role IDs through Discord OAuth. Captains can publish one-time
+Stage, Voice, or external events and edit/cancel only their own. Discord-created
+recurring events remain visible and subscribable but read-only. Dashboard writes
+are queued in SQLite for the bot process; FastAPI never receives or uses the bot
+token. Owners select a private forum, thread, or text channel as **Event Artwork
+Storage** under **Features → Events**. Dashboard covers are normalized, posted
+there by the bot, and then displayed from the Discord attachment link; the
+temporary database bytes are cleared when the action finishes. Full setup,
+permissions, migration, validation, and recovery guidance is
+in [`docs/events.md`](docs/events.md).
 
 ## DISBOARD bump rewards
 
@@ -1508,7 +1533,7 @@ updated from the authenticated local dashboard without rewriting `.env`.
 | Variable | Purpose |
 | --- | --- |
 | `DISCORD_TOKEN` | Discord bot token. Required. |
-| `ENABLED_MODULES` | Optional comma/space-separated module gate. Keep existing values and add `bumps,reminders,streaks,stats`; blank loads every cog. |
+| `ENABLED_MODULES` | Optional comma/space-separated module gate. Keep existing values and add `bumps,events,reminders,streaks,stats,visual`; blank loads every cog. `events` requires `reminders`; `visual` enables Discord-backed Asset Library storage. |
 | `BOT_OWNER_USER_IDS` | Comma-separated Discord user IDs allowed to use `/bot` commands. |
 | `BOT_OWNER_ALLOW_ADMINS` | Allows server administrators to use `/bot` when `true`. Defaults to `false`. |
 | `CHECKLIST_ALLOWED_ROLE_IDS` | Comma-separated Discord role IDs allowed to use `/checklist`; bot owners are also allowed. Blank makes checklist management owner-only. |
@@ -1523,6 +1548,7 @@ updated from the authenticated local dashboard without rewriting `.env`.
 | `REMINDER_DELIVERY_GRACE_MINUTES` | Maximum age of a missed delivery that may be caught up after downtime. Defaults to `120`; valid runtime range is 1–1440 minutes. |
 | `REMINDER_EVENT_AUTO_SUBSCRIBE_CREATOR` | Automatically subscribes an event creator to the event defaults. Defaults to `true`. |
 | `EVENTS_HEADER_ASSET_ID` | Saved Embed/Message Editor asset used as the `/events` header. Blank uses the built-in Upcoming Events card. Supports `{count}` and `{next_event}` placeholders. |
+| `EVENTS_ARTWORK_STORAGE_CHANNEL_ID` | Private Discord forum, thread, or text channel used for artwork uploaded through the Events dashboard. Configure it from **Features → Events**. The bot retains the Discord attachment link and clears pending image bytes. |
 | `DISBOARD_BOT_USER_ID` | Official DISBOARD bot user ID trusted for verified success responses. |
 | `BUMP_REWARD_ROLE_ID` | Role granted after a verified bump for the external XP/reward handoff. |
 | `BUMP_SUCCESS_ASSET_ID` | Optional Embed/Message Editor asset sent after a verified bump. Supports `{user.feature}`, `{role.feature}`, `{member}`, `{points}`, and `{reward_status}`. |
@@ -1604,6 +1630,7 @@ updated from the authenticated local dashboard without rewriting `.env`.
 | `STATS_ALLOWED_ROLE_IDS` | Comma-separated Discord role IDs allowed to create and refresh stats pages. |
 | `STATS_IMAGE_TARGET_BYTES` | Maximum accepted size for each generated stats PNG. Defaults to `8000000` (8 MB); oversized pages are optimized or re-rendered within the documented minimum dimensions, and are never silently uploaded above the target. |
 | `VISUAL_ASSET_DIR` | Persistent normalized uploads for Visual Content Studio. Defaults to `data/visual-assets`; the bot and dashboard must use the same path. |
+| `VISUAL_ASSET_STORAGE_THREAD_ID` | Existing private Discord forum-post/thread ID used as the durable source for Visual Content Studio Asset Library images. Configure under **Features → Visual Content Studio**. |
 | `VISUAL_RENDER_CONCURRENCY` | Maximum concurrent centralized ranked/roster renders, clamped from `1` to `4`. Defaults to `2` for Raspberry Pi stability. |
 | `DASHBOARD_ENABLED` | Enables the local dashboard when `true`. |
 | `DASHBOARD_HOST` | Dashboard bind address. Use `0.0.0.0` for access from the local network. |
@@ -1642,6 +1669,19 @@ commands, and the explicitly enabled private context archives work correctly.
 Presence, typing, invite, integration, webhook, and other unrelated intents are
 not requested.
 
+For dashboard event publishing, grant the bot **Create Events** and **Manage
+Events**. Stage and Voice events also require access to the selected channel;
+keep normal **View Channel** and **Connect** permissions available there. The
+private artwork destination needs **View Channel**, **Attach Files**, and
+**Send Messages** or **Send Messages in Threads** as appropriate. The Events
+readiness panel reports live event and storage permissions, eligible channels,
+synchronization age, mappings, pending work, and recent failures.
+
+Visual Content Studio storage uses one existing private Discord forum
+post/thread. The bot needs **View Channel**, **Read Message History**, **Attach
+Files**, and **Send Messages in Threads** there, plus **Manage Threads** if it
+must reopen an archived post. The bot creates no forum structure itself.
+
 To test `/ask` in Discord after startup:
 
 ```text
@@ -1667,7 +1707,7 @@ edit `.env`, modify bank records, expose Discord or Gemini secrets, or provide
 public hosting.
 
 The responsive dashboard navigation uses capability-filtered groups: **Monitor**
-(Overview and Analytics), **Community** (Features and Streaks), **Operations**
+(Overview and Analytics), **Community** (Features, Streaks, and Events), **Operations**
 (Bot Operations and Reminders), **Content** (Visual Content Studio, Message
 Studio, Knowledge, and AI), **Finance** (Bank), and **System** (Settings,
 Dashboard Access, and Audit Log).
@@ -2019,10 +2059,21 @@ Each upload screen shows the exact recommended, minimum, maximum, aspect-ratio,
 transparency, file-size, fit, focal-point, and safe-area guidance for its
 destination before the file is saved. Still PNG, JPG, and WEBP uploads are
 content-validated, normalized once, stripped of metadata, and stored under
-generated keys in `VISUAL_ASSET_DIR`; SQLite contains metadata and dependency
+generated keys in `VISUAL_ASSET_DIR`. The live bot then posts that normalized
+copy to the configured private Discord forum post, records the attachment URL,
+and the dashboard switches to that link. The local normalized copy remains a
+fast renderer cache and can be rebuilt from the allowlisted Discord CDN source;
+SQLite contains metadata, message references, storage jobs, and dependency
 records rather than image BLOBs. Wrong-ratio crops and undersized uploads
 require explicit acknowledgement. Referenced assets cannot be archived or
-deleted.
+deleted. Permanently deleting an archived, unused asset queues deletion of its
+matching Discord message.
+
+Configure **Asset Library Storage Forum Post** under **Features → Visual
+Content Studio** and add `visual` to `ENABLED_MODULES`. On startup, the live bot
+queues every active legacy asset without a Discord source. Changing the
+destination queues those assets into the new post and removes each prior
+storage message only after its replacement is recorded.
 
 Live resolution follows built-in defaults → published global defaults → theme
 → published template overrides → variant → active schedule. Broken or missing
@@ -2206,6 +2257,7 @@ MESSAGE_CONTEXT_DB_PATH=/data/message_context.db
 STAFF_CONTEXT_DB_PATH=/data/staff_context.db
 BANK_DATABASE_PATH=/data/brobank.db
 VISUAL_ASSET_DIR=/data/visual-assets
+VISUAL_ASSET_STORAGE_THREAD_ID=your-private-forum-post-thread-id
 DASHBOARD_HOST=0.0.0.0
 DASHBOARD_COOKIE_SECURE=true
 ```

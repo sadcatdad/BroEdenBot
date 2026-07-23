@@ -1,0 +1,50 @@
+{% extends "base.html" %}
+{% block content %}
+<section class="events-heading">
+  <div><p class="eyebrow">Private community schedule</p><h1>Bro Eden Events</h1><p class="muted">Gatherings from Discord, with reminder timing that belongs to you.</p></div>
+  <div class="action-buttons">{% if can('features.manage') %}<a class="button secondary" href="{{ url_for('feature_detail', feature_key='events') }}">Event settings</a>{% endif %}{% if can_create %}<a class="button event-create-button" href="{{ url_for('events_new') }}">Create an event</a>{% endif %}</div>
+</section>
+{% if message %}<div class="notice success">{{ message }}</div>{% endif %}
+{% if error %}<div class="notice error">{{ error }}</div>{% endif %}
+{% if tracked_action %}<div class="notice" data-event-action-url="{{ url_for('events_action_status', action_id=tracked_action) }}">Checking event action #{{ tracked_action }}…</div>{% endif %}
+
+{% if next_event %}
+<section class="event-hero">
+  {% if next_event.image_url %}<img src="{{ next_event.image_url }}" alt="" loading="eager" referrerpolicy="no-referrer">{% endif %}
+  <div class="event-hero-shade"></div>
+  <div class="event-hero-copy"><p class="eyebrow">Next gathering · {{ next_event.entity_type|title }}</p><h2>{{ next_event.name }}</h2><p>{{ next_event.date_label }} · {{ next_event.time_label }} · {{ next_event.location }}</p><a class="button secondary" href="#event-{{ next_event.scheduled_event_id }}">See details</a></div>
+</section>
+{% else %}<section class="event-empty"><span aria-hidden="true">✦</span><h2>The next gathering is still taking shape</h2><p>When a Discord Scheduled Event is published, it will appear here automatically.</p></section>{% endif %}
+
+{% if events %}
+<div class="event-filter-row" role="group" aria-label="Filter events"><button class="event-filter active" type="button" data-event-filter="all">All</button><button class="event-filter" type="button" data-event-filter="stage">Stage</button><button class="event-filter" type="button" data-event-filter="voice">Voice</button><button class="event-filter" type="button" data-event-filter="external">Elsewhere</button></div>
+<section class="event-list" aria-label="Upcoming events">
+{% for event in events %}
+  {% if loop.changed(event.month_key) %}<h2 class="event-month">{{ event.month_label }}</h2>{% endif %}
+  <article class="event-card" id="event-{{ event.scheduled_event_id }}" data-event-type="{{ event.entity_type }}">
+    {% if event.image_url %}<img class="event-cover" src="{{ event.image_url }}" alt="Cover artwork for {{ event.name }}" loading="lazy" referrerpolicy="no-referrer">{% else %}<div class="event-cover event-cover-fallback" aria-hidden="true"><span>BE</span></div>{% endif %}
+    <div class="event-card-body">
+      <div class="event-card-top"><div><span class="status-chip {{ event.status }}">{{ event.status|title }}</span>{% if event.is_recurring %}<span class="status-chip recurring">Recurring · Discord managed</span>{% endif %}<h3>{{ event.name }}</h3></div><span class="event-type">{{ event.entity_type|title }}</span></div>
+      <div class="event-facts"><p><strong>{{ event.date_label }}</strong><span>{{ event.time_label }}</span></p><p><strong>{{ event.location or 'Discord' }}</strong><span>{{ event.interested_count }} interested on Discord</span></p><p><strong>{{ event.organizer_name or event.discord_creator_name or 'Bro Eden' }}</strong><span>Organizer</span></p></div>
+      {% if event.description %}<p class="event-description">{{ event.description }}</p>{% endif %}
+      <div class="event-actions"><a class="button secondary" href="{{ event.event_url }}" target="_blank" rel="noopener noreferrer">Open in Discord</a>
+      {% if can('events.subscribe') and event.reminder_status == 'upcoming' %}
+        {% if event.subscribed %}<form method="post" action="{{ url_for('events_unsubscribe', event_id=event.scheduled_event_id) }}"><input type="hidden" name="csrf" value="{{ csrf_token }}"><button class="button secondary" type="submit">Turn off DMs</button></form>
+        {% else %}<form method="post" action="{{ url_for('events_subscribe', event_id=event.scheduled_event_id) }}"><input type="hidden" name="csrf" value="{{ csrf_token }}"><button class="button" type="submit">Quick subscribe</button></form>{% endif %}
+      {% endif %}
+      {% if event.can_manage %}<a class="button secondary" href="{{ url_for('events_edit', event_id=event.scheduled_event_id) }}">Edit event</a>{% endif %}</div>
+      {% if event.subscribed %}<details class="event-reminder-settings"><summary>Customize reminders</summary><form method="post" action="{{ url_for('events_timing', event_id=event.scheduled_event_id) }}"><input type="hidden" name="csrf" value="{{ csrf_token }}"><fieldset><legend>Send me a DM</legend>{% for value, label in [(360, '6 hours before'), (60, '1 hour before'), (15, '15 minutes before'), (0, 'When it starts')] %}<label><input type="checkbox" name="timing" value="{{ value }}" {{ 'checked' if value in event.effective_offsets else '' }}> {{ label }}</label>{% endfor %}</fieldset><button class="button secondary" type="submit">Save timing</button></form></details>{% endif %}
+      {% if event.can_manage %}<details class="event-cancel"><summary>Cancel this event</summary><p>This marks the Discord event as cancelled. History remains available.</p><form method="post" action="{{ url_for('events_cancel', event_id=event.scheduled_event_id) }}"><input type="hidden" name="csrf" value="{{ csrf_token }}"><label>Type CANCEL to confirm<input name="confirmation" autocomplete="off" required></label><button class="button danger" type="submit">Cancel event</button></form></details>{% endif %}
+    </div>
+  </article>
+{% endfor %}
+</section>
+{% endif %}
+
+<section class="event-calendar card"><div class="event-calendar-heading"><div><p class="eyebrow">Month at a glance</p><h2>{{ event_calendar.label }}</h2></div><input type="month" aria-label="Choose calendar month" value="{{ '%04d-%02d'|format(event_calendar.year, event_calendar.month) }}" data-event-month></div><div class="event-calendar-grid"><div>Sun</div><div>Mon</div><div>Tue</div><div>Wed</div><div>Thu</div><div>Fri</div><div>Sat</div>{% for week in event_calendar.weeks %}{% for day in week %}<div class="calendar-day {{ 'empty' if not day.day else '' }}">{% if day.day %}<span>{{ day.day }}</span>{% for event in day.events[:3] %}<a href="#event-{{ event.scheduled_event_id }}">{{ event.name }}</a>{% endfor %}{% endif %}</div>{% endfor %}{% endfor %}</div></section>
+
+{% if can_create or can_manage_all %}<section class="card"><p class="eyebrow">{{ 'All Events' if can_manage_all else 'My Events' }}</p><h2>Publishing activity</h2><div class="status-list">{% for action in actions %}<div><span>#{{ action.id }} · {{ action.action|title }} · {{ action.requested_by_name }}</span><strong class="status-chip {{ action.status }}">{{ action.status|title }}</strong>{% if action.failure_reason %}<small class="warning-text">{{ action.failure_reason }}</small>{% endif %}</div>{% else %}<p class="muted">No dashboard event actions yet.</p>{% endfor %}</div></section>{% endif %}
+
+{% if can_manage_all %}<details class="card readiness-panel"><summary>Events readiness</summary><div class="status-list"><div><span>Events module</span><strong>{{ 'Ready' if readiness.events_module else 'Disabled' }}</strong></div><div><span>Reminders dependency</span><strong>{{ 'Ready' if readiness.reminders_module else 'Missing' }}</strong></div><div><span>Verified role mapping</span><strong>{{ 'Mapped' if readiness.verified_mapping else 'Needs mapping' }}</strong></div><div><span>Party Captain mapping</span><strong>{{ 'Mapped' if readiness.captain_mapping else 'Needs mapping' }}</strong></div><div><span>Artwork storage selected / writable</span><strong>{{ 'Selected' if readiness.storage_channel_configured else 'Needs setup' }} / {{ 'Ready' if readiness.storage_channel_ready else 'Needs attention' }}</strong></div><div><span>Eligible Stage/Voice channels</span><strong>{{ readiness.eligible_channel_count or readiness.eligible_channels }}</strong></div><div><span>Last Discord sync</span><strong>{{ readiness.last_success_at_utc|friendly_datetime }}</strong></div><div><span>Pending / failed actions</span><strong>{{ readiness.pending_actions or 0 }} / {{ readiness.failed_actions or 0 }}</strong></div><div><span>Create Events / Manage Events</span><strong>{{ 'Ready' if readiness.can_create_events else 'Missing' }} / {{ 'Ready' if readiness.can_manage_events else 'Missing' }}</strong></div>{% if readiness.last_error %}<p class="warning-text">{{ readiness.last_error }}</p>{% endif %}</div></details>{% endif %}
+<script src="{{ url_for('static', path='events.js') }}?v=events1" defer></script>
+{% endblock %}

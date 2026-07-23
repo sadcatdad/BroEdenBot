@@ -72,7 +72,7 @@ class DashboardRBACTests(unittest.TestCase):
 
     def test_system_roles_seed_capabilities_and_owner_has_all(self):
         roles = {item["role_key"]: item for item in list_roles()}
-        self.assertEqual(set(roles), {"owner", "administrator", "moderator", "party_captain", "viewer"})
+        self.assertEqual(set(roles), {"owner", "administrator", "moderator", "party_captain", "verified_events_member", "viewer"})
         owner_permissions = permissions_for_user(self.owner["id"])
         self.assertIn("access.manage", owner_permissions)
         self.assertIn("bot.restart", owner_permissions)
@@ -82,6 +82,11 @@ class DashboardRBACTests(unittest.TestCase):
             {"dashboard.view", "analytics.view", "bot.status.view"},
         )
         self.assertIn("events.create", roles["party_captain"]["permissions"])
+        self.assertIn("events.subscribe", roles["party_captain"]["permissions"])
+        self.assertEqual(
+            set(roles["verified_events_member"]["permissions"]),
+            {"events.view", "events.subscribe"},
+        )
         self.assertNotIn("ask.view", roles["party_captain"]["permissions"])
         self.assertNotIn("bank.view", roles["party_captain"]["permissions"])
 

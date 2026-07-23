@@ -1,0 +1,19 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="page-heading"><div><p class="eyebrow">Party Captain workspace</p><h1>{{ 'Edit event' if editing else 'Create an event' }}</h1><p class="muted">Publish a one-time Discord Scheduled Event. BroEdenBot will appear as its Discord creator; you remain the organizer here.</p></div><a class="button secondary" href="{{ url_for('events_page') }}">Back to Events</a></div>
+<form class="card stacked-form event-editor" method="post" enctype="multipart/form-data" action="{{ url_for('events_update', event_id=event.scheduled_event_id) if editing else url_for('events_create') }}" data-event-editor>
+  <input type="hidden" name="csrf" value="{{ csrf_token }}"><input type="hidden" name="submission_id" value="{{ submission_id }}">
+  <label>Event name<input name="name" minlength="2" maxlength="100" required value="{{ event.name or '' }}"></label>
+  <label>Description<textarea name="description" maxlength="900" rows="6">{{ event.description or '' }}</textarea><small>Bro Eden adds your organizer credit when publishing.</small></label>
+  <fieldset><legend>Event type</legend><div class="event-type-options">{% for value, label in [('stage', 'Stage'), ('voice', 'Voice'), ('external', 'External location')] %}<label><input type="radio" name="entity_type" value="{{ value }}" {{ 'checked' if event.entity_type == value or (not event.entity_type and value == 'stage') else '' }}> {{ label }}</label>{% endfor %}</div></fieldset>
+  <div data-channel-fields>
+    <label data-channel-group="stage">Stage channel<select name="channel_id" data-stage-channel><option value="">Choose a Stage channel</option>{% for channel in channels.stage %}<option value="{{ channel.id }}" {{ 'selected' if event.entity_type == 'stage' and event.channel_id|string == channel.id|string else '' }}>{{ channel.parent_name ~ ' / ' if channel.parent_name else '' }}{{ channel.name }}</option>{% endfor %}</select></label>
+    <label data-channel-group="voice">Voice channel<select data-voice-channel><option value="">Choose a voice channel</option>{% for channel in channels.voice %}<option value="{{ channel.id }}" {{ 'selected' if event.entity_type == 'voice' and event.channel_id|string == channel.id|string else '' }}>{{ channel.parent_name ~ ' / ' if channel.parent_name else '' }}{{ channel.name }}</option>{% endfor %}</select></label>
+    <label data-channel-group="external">Location<input data-location maxlength="100" value="{{ event.location or '' }}" placeholder="Community center, park, or link"></label>
+  </div>
+  <div class="form-grid"><label>Starts<input type="datetime-local" name="start_time" value="{{ event.start_time or '' }}" required></label><label>Ends <span class="muted">(required for external)</span><input type="datetime-local" name="end_time" value="{{ event.end_time or '' }}"></label></div>
+  <label>Cover artwork <span class="muted">(optional)</span><input type="file" name="artwork" accept="image/jpeg,image/png,image/webp" {{ 'disabled' if not artwork_storage_configured else '' }}><small>{% if artwork_storage_configured %}JPEG, PNG, or WebP up to 8 MiB. It is cropped to 16:9, posted to private Discord storage, and displayed here from that attachment link.{% else %}An owner must select Event Artwork Storage in the Events feature settings before dashboard uploads are available.{% endif %}</small></label>
+  <div class="action-buttons"><button class="button" type="submit">{{ 'Queue update' if editing else 'Publish to Discord' }}</button><a class="button secondary" href="{{ url_for('events_page') }}">Cancel</a></div>
+</form>
+<script src="{{ url_for('static', path='events.js') }}?v=events1" defer></script>
+{% endblock %}

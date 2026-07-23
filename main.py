@@ -36,6 +36,7 @@ COG_MODULE_REQUIREMENTS = {
     "bank.py": {"bank"},
     "checklist.py": {"checklists"},
     "disboard_bumps.py": {"bumps"},
+    "events.py": {"events"},
     "knowledge_sources.py": {"knowledge"},
     "leaderboards.py": {"stats"},
     "message_context.py": {"message_context"},
@@ -49,6 +50,7 @@ COG_MODULE_REQUIREMENTS = {
     "stats.py": {"stats"},
     "streaks.py": {"streaks"},
     "vc_stats.py": {"vc_stats", "vc_xp"},
+    "visual_assets.py": {"visual"},
 }
 
 
@@ -66,6 +68,8 @@ def configured_modules() -> Optional[Set[str]]:
 
 def cog_is_enabled(filename: str, enabled_modules: Optional[Set[str]]) -> bool:
     requirements = COG_MODULE_REQUIREMENTS.get(filename)
+    if filename == "events.py" and enabled_modules is not None:
+        return {"events", "reminders"}.issubset(enabled_modules)
     return requirements is None or enabled_modules is None or bool(
         requirements & enabled_modules
     )

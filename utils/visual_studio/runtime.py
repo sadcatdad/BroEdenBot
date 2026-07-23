@@ -60,13 +60,19 @@ def load_runtime_customization_sync(
         watermark = None
         if "background" in assets:
             try:
-                background = asset_bytes(assets["background"]["storage_key"])
+                background = asset_bytes(
+                    assets["background"]["storage_key"],
+                    assets["background"].get("discord_attachment_url"),
+                )
             except (OSError, ValueError) as exc:
                 warnings.append("Custom background was unavailable; the legacy background was used.")
                 logger.warning("Visual asset fallback template=%s slot=background error=%s", template_key, type(exc).__name__)
         if "header_graphic" in assets:
             try:
-                header = asset_bytes(assets["header_graphic"]["storage_key"])
+                header = asset_bytes(
+                    assets["header_graphic"]["storage_key"],
+                    assets["header_graphic"].get("discord_attachment_url"),
+                )
             except (OSError, ValueError) as exc:
                 warnings.append("Custom header was unavailable; the legacy header was used.")
                 logger.warning("Visual asset fallback template=%s slot=header_graphic error=%s", template_key, type(exc).__name__)
@@ -74,7 +80,10 @@ def load_runtime_customization_sync(
             if slot not in assets:
                 continue
             try:
-                value = asset_bytes(assets[slot]["storage_key"])
+                value = asset_bytes(
+                    assets[slot]["storage_key"],
+                    assets[slot].get("discord_attachment_url"),
+                )
             except (OSError, ValueError) as exc:
                 warnings.append("Custom {} was unavailable and was skipped.".format(slot))
                 logger.warning("Visual asset fallback template=%s slot=%s error=%s", template_key, slot, type(exc).__name__)

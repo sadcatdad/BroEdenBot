@@ -33,6 +33,7 @@ PERMISSIONS = (
     PermissionDefinition("streaks.view", "Community", "View streaks", "Read streak status and recovery history."),
     PermissionDefinition("streaks.manage", "Community", "Manage streaks", "Queue restores and record audited streak adjustments."),
     PermissionDefinition("events.view", "Community", "View events", "View event configuration and upcoming event operations."),
+    PermissionDefinition("events.subscribe", "Community", "Subscribe to events", "Manage personal BroEdenBot event reminder subscriptions."),
     PermissionDefinition("events.create", "Community", "Create events", "Create server events when the Events dashboard is available."),
     PermissionDefinition("events.edit_own", "Community", "Edit own events", "Edit events created by the current user."),
     PermissionDefinition("events.edit_all", "Community", "Edit all events", "Edit any server event."),
@@ -96,11 +97,16 @@ SYSTEM_ROLES = {
     },
     "party_captain": {
         "name": "Party Captain",
-        "description": "Limited event planning access, ready for the Events dashboard module.",
+        "description": "Private schedule access plus one-time event authoring and ownership-scoped management.",
         "permissions": {
-            "dashboard.view", "features.view", "events.view", "events.create",
+            "dashboard.view", "features.view", "events.view", "events.subscribe", "events.create",
             "events.edit_own",
         },
+    },
+    "verified_events_member": {
+        "name": "Verified Events Member",
+        "description": "Verified community-member access to the private Events schedule and DM reminders.",
+        "permissions": {"events.view", "events.subscribe"},
     },
     "viewer": {
         "name": "Analyst / Viewer",
@@ -115,6 +121,7 @@ LEGACY_ROLE_MAP = {
     "administrator": "administrator",
     "moderator": "moderator",
     "party_captain": "party_captain",
+    "verified_events_member": "verified_events_member",
     "viewer": "viewer",
     "analyst": "viewer",
 }

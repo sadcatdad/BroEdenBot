@@ -70,7 +70,7 @@ def validate_schema(path: Path) -> None:
             raise RuntimeError("Unexpected dashboard schema version: {}".format(version))
         permission_count = connection.execute("SELECT COUNT(*) FROM dashboard_permissions").fetchone()[0]
         role_count = connection.execute("SELECT COUNT(*) FROM dashboard_roles").fetchone()[0]
-        if permission_count < 1 or role_count < 5:
+        if permission_count < 1 or role_count < 6:
             raise RuntimeError("Dashboard permission or system-role seed is incomplete.")
 
 

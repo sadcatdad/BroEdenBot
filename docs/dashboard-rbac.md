@@ -29,7 +29,8 @@ Multiple roles combine additively. A per-user explicit deny removes an inherited
 | Owner | Every current capability; final active owner cannot be removed, disabled, or denied |
 | Administrator | Broad operations/content/settings and audit access, excluding `access.manage` |
 | Moderator | Dashboard/analytics plus selected staff, knowledge, voice, reminder, and event views; no infrastructure writes |
-| Party Captain | Overview, feature hub, event view/create/edit-own only |
+| Party Captain | Overview, feature hub, event view/subscribe/create/edit-own only |
+| Verified Events Member | Private Events schedule and personal DM subscription controls only |
 | Analyst / Viewer | Overview, bot-status summary, read-only analytics |
 
 Custom roles store a name, description, and selected capabilities. System roles are reseeded from code to keep their security meaning stable; custom roles are never overwritten.
@@ -48,6 +49,7 @@ An owner can also add direct dashboard roles and per-user allow/deny/inherit ove
 - Template context contains only server-computed capabilities; navigation/actions use `can()`.
 - Unauthorized page routes render 403 without page data. Unauthorized APIs return JSON 403.
 - No role, permission, or user claim supplied by a form or browser is trusted as the caller’s authority.
+- Event edits and cancellation re-check stored Discord/dashboard ownership in the handler; `events.edit_own` alone never authorizes another Captain's event.
 
 ## Storage
 

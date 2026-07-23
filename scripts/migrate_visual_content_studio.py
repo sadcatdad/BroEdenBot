@@ -40,6 +40,8 @@ def validate_schema(path: Path) -> None:
         "visual_template_variants",
         "visual_schedules",
         "visual_asset_usage",
+        "visual_asset_discord_storage",
+        "visual_asset_storage_jobs",
         "visual_global_settings",
         "visual_audit_log",
         "visual_schema_migrations",

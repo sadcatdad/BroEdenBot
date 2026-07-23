@@ -8,7 +8,8 @@ import tempfile
 import unittest
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from unittest.mock import patch
+from types import SimpleNamespace
+from unittest.mock import AsyncMock, patch
 
 from PIL import Image
 from fastapi.testclient import TestClient
@@ -44,8 +45,18 @@ from utils.visual_studio.repository import (
     set_schedule_enabled,
 )
 from utils.visual_studio.runtime import load_runtime_customization_sync
+from utils.visual_studio.discord_storage import (
+    claim_storage_job,
+    complete_upload_job,
+    pending_storage_jobs,
+    queue_asset_upload,
+    queue_missing_asset_uploads,
+    record_storage_receipt,
+    storage_overview,
+)
 from utils.visual_studio.storage import (
     archive_asset,
+    asset_bytes,
     asset_path,
     delete_asset,
     get_asset,
@@ -215,6 +226,190 @@ class VisualStudioTestCase(unittest.TestCase):
         )
         with Image.open(asset_path(get_asset(asset_id)["storage_key"])) as image:
             self.assertEqual(image.mode, "RGBA")
+
+    def test_discord_storage_jobs_are_idempotent_and_deletion_keeps_remote_reference(self):
+        asset_id, _ = save_asset(
+            png(1600, 900),
+            filename="leaderboard.png",
+            name="Leaderboard",
+            asset_type="background",
+            actor="owner",
+        )
+        first_job = queue_asset_upload(asset_id, "owner")
+        self.assertEqual(queue_asset_upload(asset_id, "owner"), first_job)
+        self.assertEqual(len(pending_storage_jobs()), 1)
+        self.assertTrue(claim_storage_job(first_job))
+        record_storage_receipt(
+            first_job,
+            storage_thread_id="1529677210233999452",
+            message_id="1600000000000000001",
+            attachment_url="https://cdn.discordapp.com/attachments/1/2/leaderboard.png",
+        )
+        complete_upload_job(first_job, asset_id)
+        stored = get_asset(asset_id)
+        self.assertEqual(
+            stored["discord_attachment_url"],
+            "https://cdn.discordapp.com/attachments/1/2/leaderboard.png",
+        )
+        self.assertEqual(storage_overview()["stored_assets"], 1)
+
+        archive_asset(asset_id, "owner")
+        self.assertTrue(delete_asset(asset_id, "owner"))
+        self.assertIsNone(get_asset(asset_id))
+        with sqlite3.connect(self.database) as connection:
+            connection.row_factory = sqlite3.Row
+            deletion = connection.execute(
+                """
+                SELECT * FROM visual_asset_storage_jobs
+                WHERE action = 'delete' ORDER BY id DESC LIMIT 1
+                """
+            ).fetchone()
+        self.assertEqual(deletion["storage_thread_id"], "1529677210233999452")
+        self.assertEqual(deletion["message_id"], "1600000000000000001")
+
+        from cogs.visual_assets import VisualAssetDiscordStorage
+
+        remote_message = SimpleNamespace(delete=AsyncMock())
+        remote_thread = SimpleNamespace(
+            archived=False,
+            fetch_message=AsyncMock(return_value=remote_message),
+        )
+        cog = VisualAssetDiscordStorage(SimpleNamespace())
+        with patch.object(
+            cog,
+            "_resolve_thread",
+            AsyncMock(return_value=remote_thread),
+        ):
+            asyncio.run(cog._delete(dict(deletion)))
+        remote_message.delete.assert_awaited_once()
+        with sqlite3.connect(self.database) as connection:
+            status_value = connection.execute(
+                "SELECT status FROM visual_asset_storage_jobs WHERE id = ?",
+                (deletion["id"],),
+            ).fetchone()[0]
+        self.assertEqual(status_value, "completed")
+
+    def test_existing_assets_are_backfilled_once(self):
+        first, _ = save_asset(
+            png(1600, 900),
+            filename="first.png",
+            name="First",
+            asset_type="background",
+            actor="owner",
+        )
+        second, _ = save_asset(
+            png(1500, 900),
+            filename="second.png",
+            name="Second",
+            asset_type="background",
+            actor="owner",
+        )
+        archive_asset(second, "owner")
+        self.assertEqual(queue_missing_asset_uploads(), 1)
+        self.assertEqual(queue_missing_asset_uploads(), 0)
+        self.assertEqual(pending_storage_jobs()[0]["asset_id"], first)
+
+    def test_destination_change_queues_asset_reroute(self):
+        asset_id, _ = save_asset(
+            png(1600, 900),
+            filename="move.png",
+            name="Move me",
+            asset_type="background",
+            actor="owner",
+        )
+        job_id = queue_asset_upload(
+            asset_id,
+            "owner",
+            "1529677210233999452",
+        )
+        self.assertTrue(claim_storage_job(job_id))
+        record_storage_receipt(
+            job_id,
+            storage_thread_id="1529677210233999452",
+            message_id="1600000000000000003",
+            attachment_url="https://cdn.discordapp.com/attachments/1/2/move.png",
+        )
+        complete_upload_job(job_id, asset_id)
+        self.assertEqual(
+            queue_missing_asset_uploads(
+                "visual-storage-backfill",
+                "1529677210233999999",
+            ),
+            1,
+        )
+        reroute = pending_storage_jobs()[0]
+        self.assertIn("1529677210233999999", reroute["idempotency_key"])
+
+    def test_renderer_cache_can_recover_from_discord_attachment(self):
+        key = "normalized/recovered.png"
+        payload = png(1600, 900)
+
+        class FakeHTTPResponse:
+            headers = {"Content-Type": "image/png"}
+
+            def read(self, limit=-1):
+                return payload
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *args):
+                return None
+
+        response = FakeHTTPResponse()
+        with patch("utils.visual_studio.storage.urllib.request.urlopen", return_value=response):
+            recovered = asset_bytes(
+                key,
+                "https://cdn.discordapp.com/attachments/1/2/recovered.png",
+            )
+        self.assertTrue(recovered.startswith(b"\x89PNG"))
+        self.assertEqual(asset_path(key).read_bytes(), recovered)
+
+    def test_storage_worker_posts_normalized_asset_and_records_discord_link(self):
+        from cogs.visual_assets import VisualAssetDiscordStorage
+
+        asset_id, _ = save_asset(
+            png(1600, 900),
+            filename="worker.png",
+            name="Worker asset",
+            asset_type="background",
+            actor="owner",
+        )
+        job_id = queue_asset_upload(asset_id, "owner")
+        self.assertTrue(claim_storage_job(job_id))
+        job = {
+            item["id"]: item
+            for item in pending_storage_jobs()
+        }.get(job_id)
+        if job is None:
+            with sqlite3.connect(self.database) as connection:
+                connection.row_factory = sqlite3.Row
+                job = dict(connection.execute(
+                    "SELECT * FROM visual_asset_storage_jobs WHERE id = ?",
+                    (job_id,),
+                ).fetchone())
+
+        attachment = SimpleNamespace(
+            url="https://cdn.discordapp.com/attachments/1/2/worker.png"
+        )
+        message = SimpleNamespace(
+            id=1600000000000000002,
+            attachments=[attachment],
+        )
+        thread = SimpleNamespace(archived=False, send=AsyncMock(return_value=message))
+        bot = SimpleNamespace()
+        cog = VisualAssetDiscordStorage(bot)
+        with patch.dict(
+            os.environ,
+            {"VISUAL_ASSET_STORAGE_THREAD_ID": "1529677210233999452"},
+            clear=False,
+        ), patch.object(cog, "_resolve_thread", AsyncMock(return_value=thread)):
+            asyncio.run(cog._upload(job))
+        thread.send.assert_awaited_once()
+        self.assertEqual(
+            get_asset(asset_id)["discord_attachment_url"],
+            "https://cdn.discordapp.com/attachments/1/2/worker.png",
+        )
 
     def test_referenced_asset_cannot_be_archived_or_deleted(self):
         asset_id, _ = save_asset(
@@ -421,6 +616,7 @@ class VisualStudioDashboardTests(unittest.TestCase):
                 "DASHBOARD_USERNAME": "owner",
                 "DASHBOARD_PASSWORD": "visual-test-password",
                 "DASHBOARD_SECRET_KEY": "visual-test-session-key",
+                "VISUAL_ASSET_STORAGE_THREAD_ID": "1529677210233999452",
             },
             clear=False,
         )
@@ -512,6 +708,25 @@ class VisualStudioDashboardTests(unittest.TestCase):
             follow_redirects=True,
         )
         self.assertIn("aspect ratio does not match", response.text)
+
+    def test_successful_upload_queues_discord_storage(self):
+        page = self.client.get("/visual/assets/upload")
+        csrf = re.search(r'name="csrf" value="([^"]+)"', page.text).group(1)
+        response = self.client.post(
+            "/visual/assets/upload",
+            data={
+                "csrf": csrf,
+                "name": "Discord-backed asset",
+                "asset_type": "background",
+            },
+            files={"file": ("wide.png", png(1600, 900), "image/png")},
+            follow_redirects=True,
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertIn("Discord storage job", response.text)
+        jobs = pending_storage_jobs()
+        self.assertEqual(len(jobs), 1)
+        self.assertEqual(jobs[0]["action"], "upload")
 
 
 if __name__ == "__main__":
