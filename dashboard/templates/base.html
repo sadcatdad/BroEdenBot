@@ -7,7 +7,7 @@
   <title>{{ page_title or "Login" }} · The Garden</title>
   {% if canonical_url %}<link rel="canonical" href="{{ canonical_url }}">{% endif %}
   <link rel="icon" type="image/png" href="{{ url_for('static', path='broeden-pride-icon.png') }}">
-  <link rel="stylesheet" href="{{ url_for('static', path='styles.css') }}?v=dashboard-audit1">
+  <link rel="stylesheet" href="{{ url_for('static', path='styles.css') }}?v=member-view1">
   <script src="{{ url_for('static', path='dashboard_nav.js') }}?v=dashboard-refresh1" defer></script>
   <script src="{{ url_for('static', path='discord_pickers.js') }}?v=picker-single-values2" defer></script>
 </head>
@@ -17,7 +17,7 @@
   <div class="app-shell">
     <aside class="site-sidebar" id="dashboard-navigation" aria-label="The Garden navigation">
       <div class="sidebar-heading">
-        <a class="brand" href="{{ url_for('home') if can('dashboard.view') else url_for('events_page') }}" aria-label="The Garden home">
+        <a class="brand" href="{{ url_for('events_page') if view_mode == 'member' else url_for('home') }}" aria-label="The Garden home">
           <img class="brand-logo" src="{{ url_for('static', path='broeden-pride-icon.png') }}" alt="">
           <span class="brand-copy"><strong>Bro Eden</strong><small>The Garden</small></span>
         </a>
@@ -26,7 +26,45 @@
         </button>
       </div>
 
+      {% if dashboard_view_available and member_view_available %}
+      <form method="post" action="{{ url_for('set_view_mode') }}" class="view-switcher">
+        <input type="hidden" name="csrf" value="{{ csrf_token }}">
+        <input type="hidden" name="mode" value="{{ 'dashboard' if view_mode == 'member' else 'member' }}">
+        <button class="view-switcher-button" type="submit">
+          <svg class="nav-icon" viewBox="0 0 24 24" aria-hidden="true">
+            {% if view_mode == 'member' %}
+            <path d="M4 13h6V4H4v9Zm0 7h6v-4H4v4Zm10 0h6v-9h-6v9Zm0-16v4h6V4h-6Z"/>
+            {% else %}
+            <path d="M12 4 4 8v5c0 4 3.2 6.7 8 8 4.8-1.3 8-4 8-8V8l-8-4Zm-3 9 2 2 4-5"/>
+            {% endif %}
+          </svg>
+          <span>{{ 'Dashboard' if view_mode == 'member' else 'Member View' }}</span>
+        </button>
+      </form>
+      {% endif %}
+
       <nav class="primary-nav">
+        {% if view_mode == 'member' %}
+        <div class="nav-group member-nav">
+          <p class="nav-group-label">My Garden</p>
+          <span class="nav-item nav-item-placeholder" aria-disabled="true">
+            <svg class="nav-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 12a4 4 0 1 0 0-8 4 4 0 0 0 0 8Zm-7 9a7 7 0 0 1 14 0M17 6h4m-2-2v4"/></svg>
+            <span>My <span class="bro-mark">BRO</span>file</span>
+            <small class="nav-soon">Soon</small>
+          </span>
+          <span class="nav-item nav-item-placeholder" aria-disabled="true">
+            <svg class="nav-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M16 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2m18 0v-2a4 4 0 0 0-3-3.7M8.5 11a4 4 0 1 0 0-8 4 4 0 0 0 0 8Zm8-1a3.5 3.5 0 0 0 0-6.8"/></svg>
+            <span><span class="bro-mark">BRO</span> Directory</span>
+            <small class="nav-soon">Soon</small>
+          </span>
+          {% if can('events.view') %}
+          <a class="nav-item {{ 'active' if current_path.startswith('/events') else '' }}" href="{{ url_for('events_page') }}" {% if current_path.startswith('/events') %}aria-current="page"{% endif %}>
+            <svg class="nav-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M6 3v3m12-3v3M4 9h16M5 5h14a1 1 0 0 1 1 1v14H4V6a1 1 0 0 1 1-1Zm3 8h3v3H8v-3Z"/></svg>
+            <span>Events</span>
+          </a>
+          {% endif %}
+        </div>
+        {% else %}
         {% if can('dashboard.view') or can('analytics.view') %}
         <div class="nav-group">
           <p class="nav-group-label">Monitor</p>
@@ -150,6 +188,7 @@
           {% endif %}
         </div>
         {% endif %}
+        {% endif %}
       </nav>
 
       {% if current_user %}
@@ -173,7 +212,7 @@
 
     <div class="app-workspace">
       <header class="mobile-header">
-        <a class="mobile-brand" href="{{ url_for('home') if can('dashboard.view') else url_for('events_page') }}" aria-label="The Garden home">
+        <a class="mobile-brand" href="{{ url_for('events_page') if view_mode == 'member' else url_for('home') }}" aria-label="The Garden home">
           <img src="{{ url_for('static', path='broeden-pride-icon.png') }}" alt="">
           <strong>The Garden</strong>
         </a>

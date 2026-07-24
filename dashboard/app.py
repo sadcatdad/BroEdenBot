@@ -104,6 +104,7 @@ from dashboard.users import (
     upsert_discord_user,
 )
 from dashboard.rbac import (
+    access_management_scope,
     access_overview,
     assign_direct_role,
     initialize_rbac_schema,
@@ -370,7 +371,7 @@ app = FastAPI(
 def required_permission(path: str, method: str) -> str | None:
     """Resolve the stable server-side capability for a dashboard request."""
     normalized_method = method.upper()
-    if path in {"/health", "/login", "/logout"} or path.startswith("/auth/discord/") or path.startswith("/static/"):
+    if path in {"/health", "/login", "/logout", "/view-mode"} or path.startswith("/auth/discord/") or path.startswith("/static/"):
         return None
     if path in {"/users", "/settings/users"} or path.startswith("/settings/access"):
         return "access.manage"
@@ -545,6 +546,15 @@ def template_context(request: Request, **values: Any) -> dict[str, Any]:
             str(item["key"]) for item in permission_catalog()
         ) if has_permission(request, permission)
     ) if is_authenticated(request) else []
+    dashboard_view_available = "dashboard.view" in permissions
+    member_view_available = "events.view" in permissions
+    requested_view = str(request.session.get("garden_view_mode") or "").casefold()
+    if requested_view == "member" and member_view_available:
+        view_mode = "member"
+    elif dashboard_view_available:
+        view_mode = "dashboard"
+    else:
+        view_mode = "member"
     return {
         "request": request,
         "current_path": request.url.path,
@@ -554,6 +564,9 @@ def template_context(request: Request, **values: Any) -> dict[str, Any]:
         "can_manage_users": is_admin(request),
         "permissions": permissions,
         "can": lambda permission: permission in permissions,
+        "view_mode": view_mode,
+        "dashboard_view_available": dashboard_view_available,
+        "member_view_available": member_view_available,
         "ai_dashboard_visible": ai_dashboard_visible(),
         "csrf_token": csrf_token(request),
         "canonical_url": canonical_dashboard_url(request),
@@ -807,6 +820,31 @@ async def logout(request: Request, csrf: str = Form(...)) -> RedirectResponse:
     )
 
 
+@app.post("/view-mode", name="set_view_mode")
+async def set_view_mode(request: Request) -> RedirectResponse:
+    if redirect := login_redirect(request):
+        return redirect
+    await require_action_csrf(request)
+    form = await request.form()
+    mode = str(form.get("mode") or "").strip().casefold()
+    if mode == "member":
+        if not has_permission(request, "events.view"):
+            raise HTTPException(status_code=403, detail="Member view is unavailable.")
+        request.session["garden_view_mode"] = "member"
+        destination = request.url_for("events_page")
+    elif mode == "dashboard":
+        if not has_permission(request, "dashboard.view"):
+            raise HTTPException(status_code=403, detail="Dashboard view is unavailable.")
+        request.session["garden_view_mode"] = "dashboard"
+        destination = request.url_for("home")
+    else:
+        raise HTTPException(status_code=400, detail="Unknown Garden view.")
+    return RedirectResponse(
+        url=destination,
+        status_code=status.HTTP_303_SEE_OTHER,
+    )
+
+
 @app.get("/users", response_class=HTMLResponse, name="users_legacy")
 async def users_redirect(request: Request) -> RedirectResponse:
     return RedirectResponse(
@@ -954,7 +992,7 @@ async def events_page(request: Request) -> HTMLResponse:
     readiness.update({
         "events_module": "events" in (os.getenv("ENABLED_MODULES", "").replace(",", " ").split()) or not os.getenv("ENABLED_MODULES", "").strip(),
         "reminders_module": "reminders" in (os.getenv("ENABLED_MODULES", "").replace(",", " ").split()) or not os.getenv("ENABLED_MODULES", "").strip(),
-        "verified_mapping": "Verified Events Member" in mapped_roles,
+        "verified_mapping": "Verified Member" in mapped_roles,
         "captain_mapping": "Party Captain" in mapped_roles,
         "eligible_channels": len(channels["stage"]) + len(channels["voice"]),
         "storage_channel_configured": _event_artwork_storage_configured(),
@@ -2646,7 +2684,10 @@ async def settings_access(request: Request) -> HTMLResponse:
         context=template_context(
             request,
             page_title="Dashboard Access",
-            access=access_overview(list_dashboard_users()),
+            access=access_overview(
+                list_dashboard_users(),
+                actor_user_id=int(current_user(request)["id"]),
+            ),
             discord_metadata=picker_metadata(),
             message=request.session.pop("access_message", None),
             error=request.session.pop("access_error", None),
@@ -2661,19 +2702,43 @@ def access_redirect(request: Request) -> RedirectResponse:
     )
 
 
+def access_scope(request: Request) -> dict[str, Any]:
+    user = current_user(request)
+    if not user.get("id"):
+        raise HTTPException(status_code=403, detail="Access administration is unavailable.")
+    return access_management_scope(int(user["id"]))
+
+
+def require_manageable_role(scope: dict[str, Any], role_id: int) -> None:
+    if int(role_id) not in set(scope["manageable_role_ids"]):
+        raise ValueError("Your role cannot manage that dashboard role.")
+
+
+def require_manageable_user(scope: dict[str, Any], user_id: int) -> None:
+    if int(user_id) not in set(scope["manageable_user_ids"]):
+        raise ValueError("Your role cannot manage that dashboard user.")
+
+
 @app.post("/settings/access/roles/save", name="access_role_save")
 async def access_role_save(request: Request) -> RedirectResponse:
     await require_action_csrf(request)
     form = await request.form()
     raw_role_id = str(form.get("role_id", "")).strip()
     try:
+        scope = access_scope(request)
         role_id = int(raw_role_id) if raw_role_id else None
+        if role_id is None and not scope["can_create_roles"]:
+            raise ValueError("Your role cannot create dashboard roles.")
+        if role_id is not None:
+            require_manageable_role(scope, role_id)
         save_custom_role(
             role_id=role_id,
             name=str(form.get("name", "")),
             description=str(form.get("description", "")),
             permissions=form.getlist("permissions"),
             changed_by=dashboard_user_label(request),
+            manageable_role_ids=scope["manageable_role_ids"],
+            allowed_permissions=scope["allowed_permissions"],
         )
     except (TypeError, ValueError) as exc:
         request.session["access_error"] = str(exc)
@@ -2688,9 +2753,12 @@ async def access_mapping_save(request: Request) -> RedirectResponse:
     form = await request.form()
     role_ids = re.findall(r"\d{17,20}", str(form.get("discord_role_ids", "")))
     try:
+        scope = access_scope(request)
+        dashboard_role_id = int(str(form.get("dashboard_role_id", "")).strip())
+        require_manageable_role(scope, dashboard_role_id)
         replace_discord_role_mappings(
             role_ids,
-            int(str(form.get("dashboard_role_id", "")).strip()),
+            dashboard_role_id,
             changed_by=dashboard_user_label(request),
         )
     except (TypeError, ValueError) as exc:
@@ -2710,12 +2778,17 @@ async def access_mapping_remove(
     request: Request, discord_role_id: str, dashboard_role_id: int,
 ) -> RedirectResponse:
     await require_action_csrf(request)
-    remove_discord_role_mapping(
-        discord_role_id,
-        dashboard_role_id,
-        changed_by=dashboard_user_label(request),
-    )
-    request.session["access_message"] = "Discord role mapping removed."
+    try:
+        require_manageable_role(access_scope(request), dashboard_role_id)
+        remove_discord_role_mapping(
+            discord_role_id,
+            dashboard_role_id,
+            changed_by=dashboard_user_label(request),
+        )
+    except ValueError as exc:
+        request.session["access_error"] = str(exc)
+    else:
+        request.session["access_message"] = "Discord role mapping removed."
     return access_redirect(request)
 
 
@@ -2724,7 +2797,10 @@ async def access_user_role(request: Request, user_id: int) -> RedirectResponse:
     await require_action_csrf(request)
     form = await request.form()
     try:
+        scope = access_scope(request)
+        require_manageable_user(scope, user_id)
         role_id = int(str(form.get("role_id", "")).strip())
+        require_manageable_role(scope, role_id)
         if str(form.get("action", "assign")).strip() == "remove":
             remove_direct_role(user_id, role_id, changed_by=dashboard_user_label(request))
             message = "Direct dashboard role removed."
@@ -2743,6 +2819,7 @@ async def access_user_status(request: Request, user_id: int) -> RedirectResponse
     await require_action_csrf(request)
     form = await request.form()
     try:
+        require_manageable_user(access_scope(request), user_id)
         set_user_status(
             user_id,
             str(form.get("status", "")),
@@ -2760,6 +2837,7 @@ async def access_user_permission(request: Request, user_id: int) -> RedirectResp
     await require_action_csrf(request)
     form = await request.form()
     try:
+        require_manageable_user(access_scope(request), user_id)
         set_user_permission_override(
             user_id,
             str(form.get("permission_key", "")),

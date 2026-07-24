@@ -34,7 +34,7 @@ For a module-by-module architecture and reliability map, see
 | `/remind event` | Roles in `REMINDER_EVENT_ALLOWED_ROLE_IDS`; blank falls back to `REMINDER_ALLOWED_ROLE_IDS` and configured staff/admin roles. |
 | `/remind manage` | Roles in `REMINDER_MANAGE_ALLOWED_ROLE_IDS`; blank allows all members to manage their own reminders. `REMINDER_MANAGE_ALL_ROLE_IDS` controls guild-wide management. |
 | `/remind subscriptions`, `/events`, and event **Remind Me** buttons | Roles in `REMINDER_SUBSCRIPTIONS_ALLOWED_ROLE_IDS`; blank allows all members. |
-| Dashboard `/events` schedule and DM controls | Signed-in current server members mapped to **Verified Events Member** (or a higher event-management dashboard role). |
+| Dashboard `/events` schedule and DM controls | Signed-in current server members mapped to **Verified Member** (or a higher event-management dashboard role). |
 | Dashboard event create/edit/cancel | **Party Captain** can create and manage their own one-time events. Owner/Administrator can manage all one-time events. Recurring Discord events are read-only. |
 | `/remind help`, `/timezone`, `/time` | All server members. |
 | ModAI commands and context menus | Administrators or roles listed in `MODAI_ALLOWED_ROLE_IDS` |
@@ -112,7 +112,7 @@ calendar, native **Open in Discord** links, and separate BroEdenBot DM controls.
 Quick Subscribe selects 15 minutes before plus start time; members can instead
 choose 6 hours, 1 hour, 15 minutes, and/or start time.
 
-Map the server's existing Verified Discord role to **Verified Events Member**
+Map the server's existing Verified Discord role to **Verified Member**
 under **Admin Dashboard → Access**. Map the Party Captain role to **Party Captain**. The
 Garden continues to re-check live guild membership, pending membership
 screening, and role IDs through Discord OAuth. Captains can publish one-time
@@ -1727,6 +1727,14 @@ live together in Dashboard Access. Older `/stats`, `/settings/knowledge`,
 `/imports`, `/users`, `/settings/features`, and `/settings/permissions` URLs
 redirect to their current locations so existing bookmarks remain usable.
 
+Verified Members use a separate member-facing menu containing **My BROfile**
+and **BRO Directory** placeholders plus **Events**; they do not see Overview,
+Analytics, or other back-end navigation. BRO is rendered as the branded
+rainbow wordmark in member labels. Roles that have both member Events access
+and `dashboard.view` receive a fixed menu switcher between **Member View** and
+**Dashboard**, allowing staff to preview the member experience without changing
+their effective permissions.
+
 ### Message Studio (Embed/Message Editor)
 
 The top-level **Message Studio** stores reusable Discord embed and message
@@ -1850,16 +1858,25 @@ seeded as a password-authenticated `owner`; only a salted PBKDF2 password hash
 is stored. Discord users are admitted only after the OAuth member endpoint
 verifies current membership and either a direct allowlist, compatibility
 allowed role, existing legacy link, or database-backed Discord role mapping
-grants access. Discord-derived assignments are replaced at login; losing the
-qualifying role denies the next login. Verified Discord sessions expire after
+  grants access. Discord-derived assignments are replaced at login and are
+  authoritative for mapped members; the compatibility Viewer fallback is not
+  combined into a mapped member's permissions. Losing the qualifying role denies
+  the next login. Verified Discord sessions expire after
 `DASHBOARD_DISCORD_REVERIFY_MINUTES`, forcing a fresh membership/role check.
 OAuth never auto-creates an Owner.
 
 Capability-based permissions are reloaded from SQLite on every request and are
 enforced by server middleware as well as permission-filtered navigation. The
-seeded roles are Owner, Administrator, Moderator, Party Captain, and Analyst /
-Viewer; owners can add custom roles, mappings, direct assignments, and per-user
-allow/deny overrides. The final active Owner cannot be removed or disabled.
+seeded roles are Owner, Administrator, Moderator, Party Captain, Verified
+Member, and Analyst / Viewer. Administrator defaults to the same capabilities
+as the password-authenticated Owner and can configure system/custom roles and
+users below Administrator. Owner remains the protected recovery role and can
+configure Administrator and every lower role. Administrators cannot delegate
+`access.manage` to a lower role. Role capability changes persist across restarts;
+defaults are seeded only for new roles and explicit one-time migrations. Owners
+and Administrators can add lower custom roles, mappings, direct assignments, and
+per-user allow/deny overrides within that hierarchy. The final active Owner
+cannot be removed or disabled.
 Significant actions are written to an append-only, secret-redacted audit log.
 
 Keep Cloudflare Access enabled as the outer gate, keep password login until

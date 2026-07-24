@@ -5,7 +5,9 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
+import dashboard.rbac as rbac_module
 from dashboard.rbac import (
+    access_management_scope,
     assign_direct_role,
     initialize_rbac_schema,
     list_audit_events,
@@ -14,6 +16,7 @@ from dashboard.rbac import (
     record_audit,
     remove_direct_role,
     replace_discord_role_mappings,
+    role_names_for_user,
     save_custom_role,
     set_user_permission_override,
     set_user_status,
@@ -76,10 +79,19 @@ class DashboardRBACTests(unittest.TestCase):
         owner_permissions = permissions_for_user(self.owner["id"])
         self.assertIn("access.manage", owner_permissions)
         self.assertIn("bot.restart", owner_permissions)
-        self.assertNotIn("access.manage", roles["administrator"]["permissions"])
+        self.assertEqual(
+            set(roles["administrator"]["permissions"]),
+            set(roles["owner"]["permissions"]),
+        )
         self.assertEqual(
             set(roles["viewer"]["permissions"]),
-            {"dashboard.view", "analytics.view", "bot.status.view"},
+            {
+                "dashboard.view",
+                "analytics.view",
+                "bot.status.view",
+                "events.view",
+                "events.subscribe",
+            },
         )
         self.assertIn("events.create", roles["party_captain"]["permissions"])
         self.assertIn("events.subscribe", roles["party_captain"]["permissions"])
@@ -87,6 +99,9 @@ class DashboardRBACTests(unittest.TestCase):
             set(roles["verified_events_member"]["permissions"]),
             {"events.view", "events.subscribe"},
         )
+        self.assertEqual(roles["verified_events_member"]["name"], "Verified Member")
+        self.assertIn("events.view", roles["viewer"]["permissions"])
+        self.assertIn("events.subscribe", roles["viewer"]["permissions"])
         self.assertNotIn("ask.view", roles["party_captain"]["permissions"])
         self.assertNotIn("bank.view", roles["party_captain"]["permissions"])
 
@@ -128,6 +143,81 @@ class DashboardRBACTests(unittest.TestCase):
                 (user["id"],),
             ).fetchone()[0]
         self.assertEqual(count, 0)
+
+    def test_discord_mapped_member_does_not_inherit_legacy_viewer_permissions(self):
+        discord_role = "777777777777777777"
+        verified = self.role("verified_events_member")
+        replace_discord_role_mappings(
+            [discord_role],
+            verified["id"],
+            changed_by="owner",
+        )
+        user = upsert_discord_user(
+            self.discord_identity("555555555555555555", [discord_role])
+        )
+        self.assertEqual(
+            permissions_for_user(user["id"]),
+            {"events.view", "events.subscribe"},
+        )
+        self.assertEqual(role_names_for_user(user["id"]), ["Verified Member"])
+
+    def test_administrator_can_configure_roles_below_administrator(self):
+        administrator_id = self.create_user("administrator")
+        with sqlite3.connect(self.database) as connection:
+            connection.execute(
+                "UPDATE dashboard_users SET role = 'admin' WHERE id = ?",
+                (administrator_id,),
+            )
+            connection.commit()
+        scope = access_management_scope(administrator_id)
+        roles = {item["role_key"]: item for item in list_roles()}
+        self.assertTrue(scope["can_create_roles"])
+        self.assertIn(roles["moderator"]["id"], scope["manageable_role_ids"])
+        self.assertNotIn(roles["administrator"]["id"], scope["manageable_role_ids"])
+        self.assertNotIn(roles["owner"]["id"], scope["manageable_role_ids"])
+        self.assertNotIn("access.manage", scope["allowed_permissions"])
+
+        save_custom_role(
+            role_id=roles["moderator"]["id"],
+            name="Moderator",
+            description=roles["moderator"]["description"],
+            permissions=["events.view", "events.subscribe", "knowledge.view"],
+            changed_by="administrator",
+            manageable_role_ids=scope["manageable_role_ids"],
+            allowed_permissions=scope["allowed_permissions"],
+        )
+        self.assertEqual(
+            set(self.role("moderator")["permissions"]),
+            {"events.view", "events.subscribe", "knowledge.view"},
+        )
+        with self.assertRaisesRegex(ValueError, "cannot be delegated"):
+            save_custom_role(
+                role_id=None,
+                name="Shadow Administrator",
+                description="Should not be creatable.",
+                permissions=["access.manage"],
+                changed_by="administrator",
+                manageable_role_ids=scope["manageable_role_ids"],
+                allowed_permissions=scope["allowed_permissions"],
+            )
+
+    def test_configured_system_role_permissions_survive_reinitialization(self):
+        moderator = self.role("moderator")
+        save_custom_role(
+            role_id=moderator["id"],
+            name=moderator["name"],
+            description=moderator["description"],
+            permissions=["events.view", "events.subscribe"],
+            changed_by="owner",
+            manageable_role_ids={moderator["id"]},
+            allowed_permissions={"events.view", "events.subscribe"},
+        )
+        rbac_module._INITIALIZED_PATHS.discard(str(self.database))
+        initialize_rbac_schema()
+        self.assertEqual(
+            set(self.role("moderator")["permissions"]),
+            {"events.view", "events.subscribe"},
+        )
 
     def test_removed_direct_allowlist_access_is_rejected(self):
         user_id = "555555555555555555"
