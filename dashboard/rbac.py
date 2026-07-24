@@ -39,6 +39,9 @@ PERMISSIONS = (
     PermissionDefinition("events.edit_all", "Community", "Edit all events", "Edit any server event."),
     PermissionDefinition("events.publish", "Community", "Publish events", "Publish or approve server events."),
     PermissionDefinition("events.delete", "Community", "Delete events", "Delete server events."),
+    PermissionDefinition("brofiles.view", "Community", "View BROfiles", "Browse published member BROfiles and the BRO Directory."),
+    PermissionDefinition("brofiles.edit", "Community", "Edit own BROfile", "Create and customize the signed-in member's own BROfile."),
+    PermissionDefinition("brofiles.manage", "Community", "Manage BROfiles", "Manage role-driven BROfile badge mappings and profile infrastructure."),
     PermissionDefinition("operations.view", "Operations", "View operations", "Read bot, service, database, and task status."),
     PermissionDefinition("operations.manage", "Operations", "Manage operations", "Run narrow maintenance and backup actions."),
     PermissionDefinition("bot.status.view", "Operations", "View bot status", "Read bot and dashboard service health."),
@@ -93,6 +96,7 @@ SYSTEM_ROLES = {
             "events.subscribe", "operations.view", "bot.status.view", "reminders.view",
             "content.view", "knowledge.view", "ai.view", "ask.view",
             "staff_tools.view", "checklists.view", "rulecards.view", "voice.view",
+            "brofiles.view", "brofiles.edit",
         },
     },
     "party_captain": {
@@ -100,20 +104,22 @@ SYSTEM_ROLES = {
         "description": "Private schedule access plus one-time event authoring and ownership-scoped management.",
         "permissions": {
             "dashboard.view", "features.view", "events.view", "events.subscribe", "events.create",
-            "events.edit_own",
+            "events.edit_own", "brofiles.view", "brofiles.edit",
         },
     },
     "verified_events_member": {
         "name": "Verified Member",
         "description": "Verified BRO access to member-facing Garden experiences, including Events and personal reminders.",
-        "permissions": {"events.view", "events.subscribe"},
+        "permissions": {
+            "events.view", "events.subscribe", "brofiles.view", "brofiles.edit",
+        },
     },
     "viewer": {
         "name": "Analyst / Viewer",
         "description": "Read-only overview and aggregate analytics access.",
         "permissions": {
             "dashboard.view", "analytics.view", "bot.status.view",
-            "events.view", "events.subscribe",
+            "events.view", "events.subscribe", "brofiles.view", "brofiles.edit",
         },
     },
 }
@@ -369,6 +375,42 @@ def initialize_rbac_schema() -> None:
                 VALUES (?, ?)
                 """,
                 (member_baseline_migration, now),
+            )
+        brofile_access_migration = "2026_07_brofile_foundation_access"
+        if connection.execute(
+            "SELECT 1 FROM dashboard_rbac_migrations WHERE migration_key = ?",
+            (brofile_access_migration,),
+        ).fetchone() is None:
+            for role_key in (
+                "owner",
+                "administrator",
+                "moderator",
+                "party_captain",
+                "viewer",
+                "verified_events_member",
+            ):
+                role_id = int(
+                    connection.execute(
+                        "SELECT id FROM dashboard_roles WHERE role_key = ?",
+                        (role_key,),
+                    ).fetchone()[0]
+                )
+                permission_keys = ["brofiles.view", "brofiles.edit"]
+                if role_key in {"owner", "administrator"}:
+                    permission_keys.append("brofiles.manage")
+                connection.executemany(
+                    """
+                    INSERT OR IGNORE INTO dashboard_role_permissions(role_id, permission_key)
+                    VALUES (?, ?)
+                    """,
+                    [(role_id, permission_key) for permission_key in permission_keys],
+                )
+            connection.execute(
+                """
+                INSERT INTO dashboard_rbac_migrations(migration_key, applied_at)
+                VALUES (?, ?)
+                """,
+                (brofile_access_migration, now),
             )
         if _table_exists(connection, "dashboard_users"):
             for row in connection.execute(

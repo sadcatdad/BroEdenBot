@@ -35,8 +35,8 @@ not gain Overview or Analytics accidentally.
 | Administrator | Every current capability by default, including access management for roles below Administrator |
 | Moderator | Dashboard/analytics plus selected staff, knowledge, voice, reminder, and member-event views; no infrastructure writes |
 | Party Captain | Overview, feature hub, event view/subscribe/create/edit-own only |
-| Verified Member | Member-facing Garden access, currently the private Events schedule and personal DM subscription controls |
-| Analyst / Viewer | Overview, bot-status summary, read-only analytics, and the member Events surface |
+| Verified Member | Member-facing Garden access: My BROfile, BRO Directory, private Events schedule, and personal DM subscription controls |
+| Analyst / Viewer | Overview, bot-status summary, read-only analytics, and the member BROfile/Events surfaces |
 
 Custom roles store a name, description, and selected capabilities. Owners can
 configure Administrator and all lower system/custom roles. Administrators can
@@ -52,10 +52,13 @@ changes use one-time migration records instead of reseeding permissions.
 
 An owner can also add direct dashboard roles and per-user allow/deny/inherit overrides. The UI shows each effective permission and access source. Mapping changes do not impersonate Discord: login remains the authoritative membership refresh.
 
-Users with both `events.view` and `dashboard.view` can switch between a fixed
+Users with member permissions and `dashboard.view` can switch between a fixed
 **Member View** and **Dashboard** control in the sidebar. Member View shows only
-My BROfile and BRO Directory placeholders plus Events. The switch changes
-navigation presentation only; server-side capabilities remain unchanged.
+the working My BROfile, BRO Directory, and Events destinations available to
+that role. `brofiles.view` permits published-profile browsing,
+`brofiles.edit` permits self-owned profile changes, and `brofiles.manage`
+protects role-badge administration. The switch changes navigation presentation
+only; server-side capabilities remain unchanged.
 
 ## Enforcement
 

@@ -99,6 +99,7 @@ from dashboard.streaks_manager import (
 )
 from dashboard.users import (
     authenticate_password,
+    get_user_by_id,
     initialize_dashboard_users,
     list_dashboard_users,
     upsert_discord_user,
@@ -249,6 +250,21 @@ from utils.visual_studio.discord_storage import (
     queue_asset_upload,
     storage_overview,
 )
+from utils.brofiles import (
+    MAX_MEDIA_BYTES,
+    badge_for_member,
+    delete_badge_mapping,
+    get_brofile,
+    identity_from_dashboard_user,
+    initialize_brofile_schema,
+    list_badge_mappings,
+    list_directory_brofiles,
+    media_path as brofile_media_path,
+    remove_brofile_media,
+    save_badge_mapping,
+    save_brofile_media,
+    update_brofile,
+)
 
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
@@ -357,6 +373,7 @@ if dashboard_enabled():
     initialize_streak_dashboard_schema()
     initialize_embed_templates_schema()
     initialize_visual_studio_schema()
+    initialize_brofile_schema()
     from utils.events import initialize_events_schema
     initialize_events_schema()
 
@@ -399,6 +416,12 @@ def required_permission(path: str, method: str) -> str | None:
         if path.endswith(("/subscribe", "/timing", "/unsubscribe")):
             return "events.subscribe"
         return "events.edit_own"
+    if path.startswith("/my-brofile"):
+        return "brofiles.edit"
+    if path.startswith("/brofiles/badges") and normalized_method != "GET":
+        return "brofiles.manage"
+    if path.startswith("/brofiles"):
+        return "brofiles.view"
     if path.startswith("/analytics") or path.startswith("/stats"):
         return "analytics.manage" if normalized_method != "GET" else "analytics.view"
     if path.startswith("/operations/reminders"):
@@ -547,7 +570,9 @@ def template_context(request: Request, **values: Any) -> dict[str, Any]:
         ) if has_permission(request, permission)
     ) if is_authenticated(request) else []
     dashboard_view_available = "dashboard.view" in permissions
-    member_view_available = "events.view" in permissions
+    member_view_available = bool(
+        {"events.view", "brofiles.view"} & set(permissions)
+    )
     requested_view = str(request.session.get("garden_view_mode") or "").casefold()
     if requested_view == "member" and member_view_available:
         view_mode = "member"
@@ -629,11 +654,19 @@ def login_response(
     )
 
 
+def authenticated_landing_url(request: Request) -> Any:
+    if has_permission(request, "dashboard.view"):
+        return request.url_for("home")
+    if has_permission(request, "events.view"):
+        return request.url_for("events_page")
+    return request.url_for("my_brofile_page")
+
+
 @app.get("/login", response_class=HTMLResponse, name="login_page")
 async def login_page(request: Request) -> HTMLResponse:
     if is_authenticated(request) and dashboard_enabled():
         return RedirectResponse(
-            url=request.url_for("home") if has_permission(request, "dashboard.view") else request.url_for("events_page"),
+            url=authenticated_landing_url(request),
             status_code=status.HTTP_303_SEE_OTHER,
         )
     return login_response(request)
@@ -662,7 +695,7 @@ async def login(
                 target_id="password",
             )
             return RedirectResponse(
-                url=request.url_for("home") if has_permission(request, "dashboard.view") else request.url_for("events_page"),
+                url=authenticated_landing_url(request),
                 status_code=status.HTTP_303_SEE_OTHER,
             )
         error = "Invalid username or password."
@@ -805,7 +838,7 @@ async def discord_callback(
         after={"access_source": user.get("access_source")},
     )
     return RedirectResponse(
-        url=request.url_for("home") if has_permission(request, "dashboard.view") else request.url_for("events_page"),
+        url=authenticated_landing_url(request),
         status_code=status.HTTP_303_SEE_OTHER,
     )
 
@@ -828,10 +861,17 @@ async def set_view_mode(request: Request) -> RedirectResponse:
     form = await request.form()
     mode = str(form.get("mode") or "").strip().casefold()
     if mode == "member":
-        if not has_permission(request, "events.view"):
+        if not (
+            has_permission(request, "events.view")
+            or has_permission(request, "brofiles.view")
+        ):
             raise HTTPException(status_code=403, detail="Member view is unavailable.")
         request.session["garden_view_mode"] = "member"
-        destination = request.url_for("events_page")
+        destination = (
+            request.url_for("events_page")
+            if has_permission(request, "events.view")
+            else request.url_for("my_brofile_page")
+        )
     elif mode == "dashboard":
         if not has_permission(request, "dashboard.view"):
             raise HTTPException(status_code=403, detail="Dashboard view is unavailable.")
@@ -1207,6 +1247,383 @@ async def events_action_status(request: Request, action_id: int) -> JSONResponse
     if not has_permission(request, "events.edit_all") and int(action.get("requested_by_dashboard_user_id") or 0) != int(user.get("id") or 0):
         raise HTTPException(status_code=403, detail="This event action belongs to another organizer.")
     return JSONResponse(action)
+
+
+def _brofile_guild_id() -> str:
+    return str(get_setting("GUILD_ID", "") or os.getenv("GUILD_ID", "")).strip()
+
+
+def _brofile_current_subject(
+    request: Request,
+) -> tuple[dict[str, Any], str, dict[str, str]]:
+    session_user = current_user(request)
+    database_user = get_user_by_id(int(session_user.get("id") or 0)) or {}
+    user_id = str(database_user.get("discord_user_id") or "").strip()
+    identity = identity_from_dashboard_user(database_user)
+    return database_user, user_id, identity
+
+
+def _brofile_redirect(request: Request) -> RedirectResponse:
+    return RedirectResponse(
+        url=request.url_for("my_brofile_page"),
+        status_code=status.HTTP_303_SEE_OTHER,
+    )
+
+
+@app.get("/brofiles", response_class=HTMLResponse, name="brofile_directory")
+async def brofile_directory(request: Request) -> HTMLResponse:
+    if redirect := login_redirect(request):
+        return redirect
+    guild_id = _brofile_guild_id()
+    _database_user, viewer_id, viewer_identity = _brofile_current_subject(request)
+    profiles = list_directory_brofiles(guild_id) if guild_id else []
+    for profile in profiles:
+        profile["badge"] = badge_for_member(guild_id, str(profile["user_id"]))
+    viewer_profile = get_brofile(guild_id, viewer_id) if guild_id and viewer_id else None
+    can_manage_badges = has_permission(request, "brofiles.manage")
+    badge_assets = list_assets(asset_type="badge") if can_manage_badges else []
+    role_options = roles_metadata() if can_manage_badges else []
+    role_names = {
+        str(role["id"]): str(role.get("name") or role["id"])
+        for role in role_options
+    }
+    badge_mappings = (
+        list_badge_mappings(guild_id)
+        if guild_id and can_manage_badges
+        else []
+    )
+    for mapping in badge_mappings:
+        mapping["role_name"] = role_names.get(
+            str(mapping["role_id"]),
+            "Unknown role {}".format(mapping["role_id"]),
+        )
+    return templates.TemplateResponse(
+        request=request,
+        name="brofile_directory.html",
+        context=template_context(
+            request,
+            page_title="BRO Directory",
+            profiles=profiles,
+            viewer_id=viewer_id,
+            viewer_identity=viewer_identity,
+            viewer_profile=viewer_profile,
+            connected=bool(viewer_id),
+            can_manage_badges=can_manage_badges,
+            role_options=role_options,
+            badge_assets=badge_assets,
+            badge_mappings=badge_mappings,
+            message=request.session.pop("brofile_directory_message", None),
+            error=request.session.pop("brofile_directory_error", None),
+        ),
+    )
+
+
+@app.get("/my-brofile", response_class=HTMLResponse, name="my_brofile_page")
+async def my_brofile_page(request: Request) -> HTMLResponse:
+    if redirect := login_redirect(request):
+        return redirect
+    guild_id = _brofile_guild_id()
+    _database_user, user_id, identity = _brofile_current_subject(request)
+    profile = None
+    badge = None
+    if guild_id and user_id:
+        profile = get_brofile(
+            guild_id,
+            user_id,
+            create=True,
+            identity=identity,
+        )
+        badge = badge_for_member(guild_id, user_id)
+    return templates.TemplateResponse(
+        request=request,
+        name="brofile.html",
+        context=template_context(
+            request,
+            page_title="My BROfile",
+            profile=profile,
+            identity=identity,
+            selected_user_id=user_id,
+            badge=badge,
+            editing=True,
+            connected=bool(user_id),
+            message=request.session.pop("brofile_message", None),
+            error=request.session.pop("brofile_error", None),
+        ),
+    )
+
+
+@app.post("/my-brofile", name="my_brofile_update")
+async def my_brofile_update(request: Request) -> RedirectResponse:
+    if redirect := login_redirect(request):
+        return redirect
+    await require_action_csrf(request)
+    guild_id = _brofile_guild_id()
+    _database_user, user_id, identity = _brofile_current_subject(request)
+    if not guild_id or not user_id:
+        raise HTTPException(
+            status_code=403,
+            detail="A connected Discord server identity is required to edit a BROfile.",
+        )
+    form = await request.form()
+    try:
+        update_brofile(
+            guild_id,
+            user_id,
+            identity=identity,
+            tagline=form.get("tagline", ""),
+            about=form.get("about", ""),
+            interests=form.get("interests", ""),
+            skills=form.get("skills", ""),
+            favorite_things=form.get("favorite_things", ""),
+            proudest_moment=form.get("proudest_moment", ""),
+            directory_visible=str(form.get("directory_visible", "")) == "yes",
+            accent_color=form.get("accent_color", ""),
+            background_color_start=form.get("background_color_start", ""),
+            background_color_end=form.get("background_color_end", ""),
+        )
+        request.session["brofile_message"] = "Your BROfile details and colors were saved."
+    except (sqlite3.Error, ValueError) as exc:
+        request.session["brofile_error"] = str(exc)
+    return _brofile_redirect(request)
+
+
+@app.post(
+    "/my-brofile/media/{media_type}/upload",
+    name="my_brofile_media_upload",
+)
+async def my_brofile_media_upload(
+    request: Request,
+    media_type: str,
+) -> RedirectResponse:
+    if redirect := login_redirect(request):
+        return redirect
+    await require_action_csrf(request)
+    if media_type not in {"banner", "spotlight"}:
+        raise HTTPException(status_code=404, detail="Unknown BROfile image type.")
+    guild_id = _brofile_guild_id()
+    database_user, user_id, identity = _brofile_current_subject(request)
+    if not guild_id or not user_id:
+        raise HTTPException(
+            status_code=403,
+            detail="A connected Discord server identity is required to upload BROfile images.",
+        )
+    form = await request.form()
+    upload = form.get("image")
+    try:
+        if upload is None or not hasattr(upload, "read"):
+            raise ValueError("Choose a PNG, JPG, or WEBP image.")
+        data = await upload.read(MAX_MEDIA_BYTES + 1)
+        save_brofile_media(
+            guild_id,
+            user_id,
+            media_type,
+            data=data,
+            filename=str(getattr(upload, "filename", "brofile-image")),
+            uploaded_by=str(
+                database_user.get("discord_username")
+                or database_user.get("username")
+                or user_id
+            ),
+            identity=identity,
+        )
+        request.session["brofile_message"] = "{} image updated.".format(
+            media_type.title()
+        )
+    except (OSError, sqlite3.Error, ValueError) as exc:
+        request.session["brofile_error"] = str(exc)
+    return _brofile_redirect(request)
+
+
+@app.post(
+    "/my-brofile/media/{media_type}/remove",
+    name="my_brofile_media_remove",
+)
+async def my_brofile_media_remove(
+    request: Request,
+    media_type: str,
+) -> RedirectResponse:
+    if redirect := login_redirect(request):
+        return redirect
+    await require_action_csrf(request)
+    if media_type not in {"banner", "spotlight"}:
+        raise HTTPException(status_code=404, detail="Unknown BROfile image type.")
+    guild_id = _brofile_guild_id()
+    _database_user, user_id, _identity = _brofile_current_subject(request)
+    if not guild_id or not user_id:
+        raise HTTPException(status_code=403, detail="A connected Discord identity is required.")
+    try:
+        removed = remove_brofile_media(guild_id, user_id, media_type)
+        request.session["brofile_message"] = (
+            "{} image removed.".format(media_type.title())
+            if removed
+            else "That BROfile image was already empty."
+        )
+    except (OSError, sqlite3.Error, ValueError) as exc:
+        request.session["brofile_error"] = str(exc)
+    return _brofile_redirect(request)
+
+
+@app.get(
+    "/brofiles/{user_id}/media/{media_type}",
+    name="brofile_media_image",
+)
+async def brofile_media_image(
+    request: Request,
+    user_id: str,
+    media_type: str,
+) -> Response:
+    if redirect := login_redirect(request):
+        return redirect
+    if media_type not in {"banner", "spotlight"}:
+        raise HTTPException(status_code=404, detail="BROfile image not found.")
+    guild_id = _brofile_guild_id()
+    profile = get_brofile(guild_id, user_id) if guild_id else None
+    _database_user, viewer_id, _identity = _brofile_current_subject(request)
+    if not profile or (
+        not profile.get("directory_visible") and str(user_id) != str(viewer_id)
+    ):
+        raise HTTPException(status_code=404, detail="BROfile image not found.")
+    media = (profile.get("media") or {}).get(media_type)
+    if not media:
+        raise HTTPException(status_code=404, detail="BROfile image not found.")
+    try:
+        data = brofile_media_path(str(media["storage_key"])).read_bytes()
+    except (OSError, ValueError) as exc:
+        raise HTTPException(status_code=404, detail="BROfile image not found.") from exc
+    etag = '"{}"'.format(str(media["checksum"])[:24])
+    if request.headers.get("if-none-match") == etag:
+        return Response(status_code=304, headers={"ETag": etag})
+    return Response(
+        content=data,
+        media_type="image/png",
+        headers={
+            "Cache-Control": "private, max-age=300",
+            "ETag": etag,
+        },
+    )
+
+
+@app.get(
+    "/brofiles/badges/{mapping_id}/image",
+    name="brofile_badge_image",
+)
+async def brofile_badge_image(request: Request, mapping_id: int) -> Response:
+    if redirect := login_redirect(request):
+        return redirect
+    guild_id = _brofile_guild_id()
+    mapping = next(
+        (
+            item
+            for item in list_badge_mappings(guild_id)
+            if int(item["id"]) == int(mapping_id) and int(item["active"])
+        ),
+        None,
+    )
+    if mapping is None:
+        raise HTTPException(status_code=404, detail="BROfile badge not found.")
+    asset = get_asset(int(mapping["asset_id"]))
+    if asset is None or asset.get("archived_at"):
+        raise HTTPException(status_code=404, detail="BROfile badge not found.")
+    try:
+        data = asset_bytes(
+            str(asset["storage_key"]),
+            asset.get("discord_attachment_url"),
+        )
+    except (OSError, ValueError) as exc:
+        raise HTTPException(status_code=404, detail="BROfile badge not found.") from exc
+    return Response(
+        content=data,
+        media_type="image/png",
+        headers={"Cache-Control": "private, max-age=300"},
+    )
+
+
+@app.post("/brofiles/badges", name="brofile_badge_save")
+async def brofile_badge_save(request: Request) -> RedirectResponse:
+    if redirect := login_redirect(request):
+        return redirect
+    await require_action_csrf(request)
+    guild_id = _brofile_guild_id()
+    form = await request.form()
+    role_id = str(form.get("role_id", "")).strip()
+    known_role_ids = {str(role["id"]) for role in roles_metadata()}
+    try:
+        if role_id not in known_role_ids:
+            raise ValueError("Choose a role from the latest Discord role snapshot.")
+        save_badge_mapping(
+            guild_id,
+            role_id=role_id,
+            label=form.get("label", ""),
+            asset_id=form.get("asset_id", ""),
+            priority=form.get("priority", "0"),
+        )
+        request.session["brofile_directory_message"] = "BROfile role badge mapping saved."
+    except (sqlite3.Error, ValueError) as exc:
+        request.session["brofile_directory_error"] = str(exc)
+    return RedirectResponse(
+        url="{}#badge-mappings".format(request.url_for("brofile_directory")),
+        status_code=status.HTTP_303_SEE_OTHER,
+    )
+
+
+@app.post(
+    "/brofiles/badges/{mapping_id}/delete",
+    name="brofile_badge_delete",
+)
+async def brofile_badge_delete(
+    request: Request,
+    mapping_id: int,
+) -> RedirectResponse:
+    if redirect := login_redirect(request):
+        return redirect
+    await require_action_csrf(request)
+    deleted = delete_badge_mapping(_brofile_guild_id(), mapping_id)
+    request.session["brofile_directory_message"] = (
+        "BROfile badge mapping removed."
+        if deleted
+        else "That BROfile badge mapping was already absent."
+    )
+    return RedirectResponse(
+        url="{}#badge-mappings".format(request.url_for("brofile_directory")),
+        status_code=status.HTTP_303_SEE_OTHER,
+    )
+
+
+@app.get(
+    "/brofiles/{user_id}",
+    response_class=HTMLResponse,
+    name="brofile_detail",
+)
+async def brofile_detail(request: Request, user_id: str) -> HTMLResponse:
+    if redirect := login_redirect(request):
+        return redirect
+    guild_id = _brofile_guild_id()
+    profile = get_brofile(guild_id, user_id) if guild_id else None
+    if not profile or not profile.get("directory_visible"):
+        raise HTTPException(status_code=404, detail="BROfile not found.")
+    return templates.TemplateResponse(
+        request=request,
+        name="brofile.html",
+        context=template_context(
+            request,
+            page_title="{} · BROfile".format(
+                profile.get("display_name") or profile.get("username") or "Member"
+            ),
+            profile=profile,
+            identity={
+                "user_id": str(profile["user_id"]),
+                "username": str(profile.get("username") or "member"),
+                "display_name": str(profile.get("display_name") or "BRO"),
+                "avatar_url": str(profile.get("avatar_url") or ""),
+            },
+            selected_user_id=str(profile["user_id"]),
+            badge=badge_for_member(guild_id, user_id),
+            editing=False,
+            connected=True,
+            message=None,
+            error=None,
+        ),
+    )
 
 
 @app.get("/streaks", response_class=HTMLResponse, name="streaks_page")

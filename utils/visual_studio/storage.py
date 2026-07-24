@@ -51,6 +51,16 @@ MIME_BY_FORMAT = {
 }
 
 
+def _brofile_badge_usage_count(
+    connection: Any,
+    asset_id: int,
+) -> int:
+    """Count active role-badge references without coupling schema startup."""
+    from utils.brofiles import badge_asset_usage_count
+
+    return badge_asset_usage_count(connection, asset_id)
+
+
 def visual_asset_directory() -> Path:
     configured = os.getenv("VISUAL_ASSET_DIR", "").strip()
     path = Path(configured).expanduser() if configured else PROJECT_ROOT / "data" / "visual-assets"
@@ -433,10 +443,15 @@ def list_assets(
             tuple(parameters),
         ).fetchall()
     result = []
-    for row in rows:
-        value = dict(row)
-        value["metadata"] = json.loads(value.get("metadata_json") or "{}")
-        result.append(value)
+    with _connect() as usage_connection:
+        for row in rows:
+            value = dict(row)
+            value["metadata"] = json.loads(value.get("metadata_json") or "{}")
+            value["usage_count"] = (
+                int(value.get("usage_count") or 0)
+                + _brofile_badge_usage_count(usage_connection, int(value["id"]))
+            )
+            result.append(value)
     return result
 
 
@@ -480,8 +495,21 @@ def get_asset(asset_id: int) -> Optional[Dict[str, Any]]:
         ]
     value = dict(row)
     value["metadata"] = json.loads(value.get("metadata_json") or "{}")
+    brofile_usage_count = 0
+    with _connect() as connection:
+        brofile_usage_count = _brofile_badge_usage_count(connection, asset_id)
+    if brofile_usage_count:
+        usages.append(
+            {
+                "usage_slot": "BROfile role badge",
+                "external_type": "brofile_badge",
+                "reference_count": brofile_usage_count,
+            }
+        )
     value["usages"] = usages
-    value["usage_count"] = len(usages)
+    value["usage_count"] = (
+        len(usages) - (1 if brofile_usage_count else 0) + brofile_usage_count
+    )
     return value
 
 
@@ -500,7 +528,13 @@ def rename_asset(asset_id: int, name: str, actor: str) -> None:
 
 def archive_asset(asset_id: int, actor: str, *, restore: bool = False) -> None:
     with _connect() as connection:
-        if not restore and connection.execute("SELECT 1 FROM visual_asset_usage WHERE asset_id=? LIMIT 1", (asset_id,)).fetchone():
+        if not restore and (
+            connection.execute(
+                "SELECT 1 FROM visual_asset_usage WHERE asset_id=? LIMIT 1",
+                (asset_id,),
+            ).fetchone()
+            or _brofile_badge_usage_count(connection, asset_id)
+        ):
             raise ValueError("This asset is actively referenced. Remove or replace it before archiving.")
         archived_at = None if restore else utcnow()
         connection.execute("UPDATE visual_assets SET archived_at=?,updated_at=? WHERE id=?", (archived_at, utcnow(), asset_id))
@@ -518,7 +552,13 @@ def delete_asset(asset_id: int, actor: str) -> bool:
             raise ValueError("Asset was not found.")
         if not row["archived_at"]:
             raise ValueError("Archive the asset before permanently deleting it.")
-        if connection.execute("SELECT 1 FROM visual_asset_usage WHERE asset_id=? LIMIT 1", (asset_id,)).fetchone():
+        if (
+            connection.execute(
+                "SELECT 1 FROM visual_asset_usage WHERE asset_id=? LIMIT 1",
+                (asset_id,),
+            ).fetchone()
+            or _brofile_badge_usage_count(connection, asset_id)
+        ):
             raise ValueError("This asset is still referenced and cannot be deleted.")
         from .discord_storage import prepare_asset_deletion
 

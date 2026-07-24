@@ -1,0 +1,100 @@
+{% extends "base.html" %}
+{% block content %}
+<section class="brofile-directory-page">
+  <header class="page-heading">
+    <div>
+      <p class="eyebrow">The people behind the usernames</p>
+      <h1><span class="bro-mark">BRO</span> Directory</h1>
+      <p class="muted">Meet the community through member-made BROfiles. Profiles only appear here when their owner chooses to publish.</p>
+    </div>
+  </header>
+
+  {% if message %}<div class="alert success">{{ message }}</div>{% endif %}
+  {% if error %}<div class="alert error">{{ error }}</div>{% endif %}
+
+  <section class="brofile-directory-yours">
+    <div>
+      <p class="eyebrow">Your space</p>
+      <h2>{{ viewer_identity.display_name|display_name if connected else 'Create your BROfile' }}</h2>
+      <p class="muted">{% if connected %}@{{ viewer_identity.username|display_name }} · {{ 'Published in the directory' if viewer_profile and viewer_profile.directory_visible else 'Not published yet' }}{% else %}Connect Discord to claim your member profile.{% endif %}</p>
+    </div>
+    <div class="action-buttons">
+      {% if viewer_profile and viewer_profile.directory_visible %}<a class="button secondary" href="{{ url_for('brofile_detail', user_id=viewer_id) }}">View profile</a>{% endif %}
+      <a class="button" href="{{ url_for('my_brofile_page') }}">{{ 'Edit My BROfile' if viewer_profile else 'Create My BROfile' }}</a>
+    </div>
+  </section>
+
+  <section class="brofile-directory-list">
+    <header class="split-heading">
+      <div><p class="eyebrow">Community</p><h2>Published BROfiles</h2></div>
+      {% if profiles %}<label class="brofile-directory-search"><span>Find a BRO</span><input type="search" placeholder="Search names or interests" data-brofile-search></label>{% endif %}
+    </header>
+    {% if profiles %}
+    <div class="brofile-directory-grid" data-brofile-grid>
+      {% for item in profiles %}
+      <a class="brofile-directory-card" href="{{ url_for('brofile_detail', user_id=item.user_id) }}" data-search="{{ item.display_name }} {{ item.username }} {{ item.tagline }} {{ item.interests }} {{ item.skills }}" style="--brofile-accent:{{ item.accent_color }};--brofile-bg-start:{{ item.background_color_start }};--brofile-bg-end:{{ item.background_color_end }}">
+        <div class="brofile-directory-avatar">{% if item.avatar_url %}<img src="{{ item.avatar_url }}" alt="" referrerpolicy="no-referrer">{% else %}{{ item.display_name[:1]|upper }}{% endif %}</div>
+        <div><h3>{{ item.display_name|display_name }}</h3><p>@{{ item.username|display_name }}</p><span>{{ item.tagline or item.interests or "View BROfile" }}</span></div>
+        {% if item.badge %}<img class="brofile-directory-badge" src="{{ url_for('brofile_badge_image', mapping_id=item.badge.id) }}" alt="{{ item.badge.label }}" title="{{ item.badge.label }}">{% else %}<strong aria-hidden="true">→</strong>{% endif %}
+      </a>
+      {% endfor %}
+    </div>
+    <p class="empty-state" hidden data-brofile-empty>No published BROfiles match that search.</p>
+    {% else %}
+    <div class="empty-state">The directory is ready. The first published BROfile will appear here.</div>
+    {% endif %}
+  </section>
+
+  {% if can_manage_badges %}
+  <section class="card brofile-badge-manager" id="badge-mappings">
+    <header class="split-heading">
+      <div><p class="eyebrow">Role recognition</p><h2>BROfile badge mappings</h2><p class="muted">A member receives the highest-priority badge whose mapped Discord role they currently hold. Role membership refreshes when they sign in with Discord.</p></div>
+      <a class="button secondary small" href="{{ url_for('visual_asset_upload') }}">Upload badge graphic</a>
+    </header>
+    {% if role_options and badge_assets %}
+    <form method="post" action="{{ url_for('brofile_badge_save') }}" class="brofile-badge-form">
+      <input type="hidden" name="csrf" value="{{ csrf_token }}">
+      <label>Discord role<select name="role_id" required><option value="">Choose role</option>{% for role in role_options %}<option value="{{ role.id }}">{{ role.name }}</option>{% endfor %}</select></label>
+      <label>Badge graphic<select name="asset_id" required><option value="">Choose Asset Library badge</option>{% for asset in badge_assets %}<option value="{{ asset.id }}">{{ asset.name }} · {{ asset.width }} × {{ asset.height }}</option>{% endfor %}</select></label>
+      <label>Accessible label<input name="label" maxlength="60" placeholder="Founding BRO" required></label>
+      <label>Priority<input type="number" name="priority" min="-1000" max="1000" value="0" required><small>Higher wins when a member has multiple badge roles.</small></label>
+      <button class="button" type="submit">Save mapping</button>
+    </form>
+    {% elif not role_options %}
+    <div class="alert warning">Refresh Discord metadata before mapping a role to a badge.</div>
+    {% else %}
+    <div class="alert warning">Upload an Asset Library image with type <strong>Badge</strong> before creating a role mapping.</div>
+    {% endif %}
+
+    {% if badge_mappings %}
+    <div class="brofile-badge-list">
+      {% for mapping in badge_mappings %}
+      <article>
+        <img src="{{ url_for('brofile_badge_image', mapping_id=mapping.id) }}" alt="">
+        <div><strong>{{ mapping.label }}</strong><span>{{ mapping.role_name }} · priority {{ mapping.priority }}</span><small>{{ mapping.asset_name or 'Missing asset' }}</small></div>
+        <form method="post" action="{{ url_for('brofile_badge_delete', mapping_id=mapping.id) }}"><input type="hidden" name="csrf" value="{{ csrf_token }}"><button class="button danger small" type="submit">Remove</button></form>
+      </article>
+      {% endfor %}
+    </div>
+    {% endif %}
+  </section>
+  {% endif %}
+</section>
+<script>
+  (() => {
+    const input = document.querySelector("[data-brofile-search]");
+    const cards = [...document.querySelectorAll("[data-brofile-grid] > a")];
+    const empty = document.querySelector("[data-brofile-empty]");
+    input?.addEventListener("input", () => {
+      const query = input.value.trim().toLocaleLowerCase();
+      let visible = 0;
+      cards.forEach(card => {
+        const matches = !query || (card.dataset.search || "").toLocaleLowerCase().includes(query);
+        card.hidden = !matches;
+        if (matches) visible += 1;
+      });
+      if (empty) empty.hidden = visible !== 0;
+    });
+  })();
+</script>
+{% endblock %}

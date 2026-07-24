@@ -35,6 +35,11 @@ maintenance.
   `dashboard/static/broeden-pride-icon.png` — Responsive grouped application
   navigation, accessible mobile menu/focus behavior, shared visual tokens, and
   the Bro Eden pride branding used in the sidebar, mobile header, and login.
+- `utils/brofiles.py`, `dashboard/templates/brofile*.html`, and the
+  `/my-brofile` / `/brofiles` routes — Opt-in member profile storage,
+  normalized member-only banner/spotlight media, published directory cards,
+  Discord-identity snapshots, and priority-based Discord role badges backed by
+  staff-managed Asset Library badge graphics.
 - `dashboard/templates/embeds.html`, `dashboard/templates/embed_edit.html`, and
   `dashboard/static/embed_editor.js` — Searchable saved-asset inventory,
   Discord-style live editor/preview, ordered multi-embed creation, Unicode
@@ -160,6 +165,9 @@ maintenance.
 - `scripts/migrate_visual_content_studio.py` — Explicit idempotent schema and
   asset-directory migration, copied-database validation, backup, quick-check,
   and deployment verification command.
+- `scripts/migrate_brofiles.py` — SQLite-aware backup, additive My BROfile
+  schema/RBAC initialization, persistent media-directory setup, quick-check,
+  foreign-key validation, and validate-only deployment command.
 - `scripts/import_discord_history.py` — Streaming metadata-only history import,
   dedupe, batching, and optional archiving.
 - `scripts/import_staff_context.py` — Separate streaming CSV importer for

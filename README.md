@@ -36,6 +36,7 @@ For a module-by-module architecture and reliability map, see
 | `/remind subscriptions`, `/events`, and event **Remind Me** buttons | Roles in `REMINDER_SUBSCRIPTIONS_ALLOWED_ROLE_IDS`; blank allows all members. |
 | Dashboard `/events` schedule and DM controls | Signed-in current server members mapped to **Verified Member** (or a higher event-management dashboard role). |
 | Dashboard event create/edit/cancel | **Party Captain** can create and manage their own one-time events. Owner/Administrator can manage all one-time events. Recurring Discord events are read-only. |
+| The Garden **My BROfile** and **BRO Directory** | Signed-in current server members with `brofiles.edit` / `brofiles.view`; the built-in Verified Member and higher roles receive both. Owners/Administrators manage role-badge mappings. |
 | `/remind help`, `/timezone`, `/time` | All server members. |
 | ModAI commands and context menus | Administrators or roles listed in `MODAI_ALLOWED_ROLE_IDS` |
 | Staff-note commands | Administrators or roles listed in `STAFF_NOTES_ALLOWED_ROLE_IDS` |
@@ -128,6 +129,57 @@ there by the bot, and then displayed from the Discord attachment link; the
 temporary database bytes are cleared when the action finishes. Full setup,
 permissions, migration, validation, and recovery guidance is
 in [`docs/events.md`](docs/events.md).
+
+## The Garden: My BROfile
+
+The authenticated member view now includes **My BROfile** and the **BRO
+Directory**. A member can customize a short headline, About section, interests,
+skills and talents, favorite things, a proud moment, three card colors, a wide
+banner, and a square spotlight image. The profile uses their verified Discord
+username, display name, and avatar rather than asking them to create a second
+identity. New profiles remain private drafts until the member explicitly
+selects **Show my BROfile in the BRO Directory**; turning visibility off keeps
+the draft and media but removes all other-member profile and image access.
+
+Member banners and spotlight images accept still PNG, JPG, or WEBP files up to
+8 MB. They are decoded, center-cropped, normalized to PNG, and stored under
+`VISUAL_ASSET_DIR/brofiles` on the shared persistent volume. They do not enter
+the staff Asset Library. Banner output is 1600 × 500; spotlight output is
+900 × 900.
+
+Owners and Administrators configure role recognition from the bottom of the
+BRO Directory:
+
+1. Upload a transparent graphic to **Visual Content Studio → Asset Library**
+   with asset type **Badge**.
+2. Open **BRO Directory → BROfile badge mappings**.
+3. Map the graphic to a role from the latest Discord metadata snapshot, add an
+   accessible label, and choose a priority.
+
+A member receives the highest-priority active badge for a mapped Discord role
+they currently hold. Their role snapshot refreshes at Discord sign-in. Active
+badge assets cannot be archived or permanently deleted until the mapping is
+removed or replaced. The badge appears in the top-right of the BROfile card and
+on directory tiles.
+
+The schema is additive: `brofiles`, `brofile_media`, and `brofile_badges`.
+Dashboard startup initializes it idempotently. For a controlled deployment,
+back up and validate explicitly:
+
+```bash
+.venv/bin/python scripts/migrate_brofiles.py \
+  --database /path/to/data.db \
+  --asset-dir /path/to/visual-assets \
+  --backup-dir /path/to/backups
+
+.venv/bin/python scripts/migrate_brofiles.py \
+  --database /path/to/data.db \
+  --validate-only
+```
+
+The initial foundation is intentionally web-first. It does not add music,
+artist, songbook, performance, queue, ranking, or new Discord command
+semantics.
 
 ## DISBOARD bump rewards
 
@@ -1730,13 +1782,13 @@ live together in Dashboard Access. Older `/stats`, `/settings/knowledge`,
 `/imports`, `/users`, `/settings/features`, and `/settings/permissions` URLs
 redirect to their current locations so existing bookmarks remain usable.
 
-Verified Members use a separate member-facing menu containing **My BROfile**
-and **BRO Directory** placeholders plus **Events**; they do not see Overview,
-Analytics, or other back-end navigation. BRO is rendered as the branded
-rainbow wordmark in member labels. Roles that have both member Events access
+Verified Members use a separate member-facing menu containing the working
+**My BROfile**, **BRO Directory**, and **Events** surfaces; they do not see
+Overview, Analytics, or other back-end navigation. BRO is rendered as the
+branded rainbow wordmark in member labels. Roles that have both member access
 and `dashboard.view` receive a fixed menu switcher between **Member View** and
-**Dashboard**, allowing staff to preview the member experience without changing
-their effective permissions.
+**Dashboard**, allowing staff to preview the member experience without
+changing their effective permissions.
 
 ### Message Studio (Embed/Message Editor)
 

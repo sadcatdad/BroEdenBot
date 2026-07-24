@@ -1,0 +1,141 @@
+{% extends "base.html" %}
+{% block content %}
+<section class="brofile-page">
+  <header class="page-heading brofile-page-heading">
+    <div>
+      <p class="eyebrow">{{ 'Your corner of The Garden' if editing else 'Community BROfile' }}</p>
+      <h1>{% if editing %}My <span class="bro-mark">BRO</span>file{% else %}{{ identity.display_name|display_name }}'s <span class="bro-mark">BRO</span>file{% endif %}</h1>
+      <p class="muted">{{ 'Shape how the community gets to know you. Your Discord identity and eligible role badge stay in sync automatically.' if editing else 'A little more about one of the people who makes Bro Eden feel like home.' }}</p>
+    </div>
+    <div class="action-buttons">
+      <a class="button secondary" href="{{ url_for('brofile_directory') }}">BRO Directory</a>
+      {% if not editing and current_user.discord_user_id|string == selected_user_id|string %}<a class="button" href="{{ url_for('my_brofile_page') }}">Edit My BROfile</a>{% endif %}
+    </div>
+  </header>
+
+  {% if message %}<div class="alert success">{{ message }}</div>{% endif %}
+  {% if error %}<div class="alert error">{{ error }}</div>{% endif %}
+
+  {% if not connected %}
+  <section class="card brofile-connect-card">
+    <div class="brofile-connect-icon" aria-hidden="true">✦</div>
+    <div>
+      <p class="eyebrow">Discord connection required</p>
+      <h2>Connect your Bro Eden identity</h2>
+      <p>Your BROfile belongs to your Discord account. Sign in with Discord so The Garden can use your username, avatar, and current server roles without asking you to duplicate them.</p>
+    </div>
+    <a class="button" href="{{ url_for('discord_login') }}">Continue with Discord</a>
+  </section>
+  {% else %}
+  {% set media = profile.media or {} %}
+  <article class="brofile-card" style="--brofile-accent:{{ profile.accent_color }};--brofile-bg-start:{{ profile.background_color_start }};--brofile-bg-end:{{ profile.background_color_end }}">
+    <div class="brofile-banner">
+      {% if media.banner %}<img src="{{ url_for('brofile_media_image', user_id=selected_user_id, media_type='banner') }}?v={{ profile.revision }}" alt="Custom BROfile banner">{% endif %}
+      <span class="brofile-card-label"><span class="bro-mark">BRO</span> Eden member</span>
+      {% if badge %}
+      <figure class="brofile-role-badge" title="{{ badge.label }}">
+        <img src="{{ url_for('brofile_badge_image', mapping_id=badge.id) }}" alt="{{ badge.label }}">
+        <figcaption>{{ badge.label }}</figcaption>
+      </figure>
+      {% endif %}
+    </div>
+    <header class="brofile-identity">
+      <div class="brofile-avatar">
+        {% if identity.avatar_url %}<img src="{{ identity.avatar_url }}" alt="{{ identity.display_name }}'s Discord avatar" referrerpolicy="no-referrer">{% else %}{{ identity.display_name[:1]|upper }}{% endif %}
+      </div>
+      <div>
+        <h2>{{ identity.display_name|display_name }}</h2>
+        <p>@{{ identity.username|display_name }}</p>
+        {% if profile.tagline %}<strong>{{ profile.tagline }}</strong>{% endif %}
+      </div>
+      {% if editing %}<span class="brofile-visibility {{ 'published' if profile.directory_visible else 'private' }}">{{ 'Published' if profile.directory_visible else 'Only you can see this draft' }}</span>{% endif %}
+    </header>
+
+    <div class="brofile-content">
+      <section class="brofile-story">
+        <div class="brofile-spotlight">
+          {% if media.spotlight %}<img src="{{ url_for('brofile_media_image', user_id=selected_user_id, media_type='spotlight') }}?v={{ profile.revision }}" alt="{{ identity.display_name }}'s custom spotlight image">{% else %}<div><span aria-hidden="true">✦</span><strong>Your spotlight</strong><small>Add a square image that feels like you.</small></div>{% endif %}
+        </div>
+        <div class="brofile-about">
+          <p class="eyebrow">About this BRO</p>
+          <p>{{ profile.about or "This BRO is still putting their story together." }}</p>
+        </div>
+      </section>
+      <section class="brofile-details">
+        <header><p class="eyebrow">The good stuff</p><h3>Get to know me</h3></header>
+        <dl>
+          <div><dt>Interests</dt><dd>{{ profile.interests or "Still exploring" }}</dd></div>
+          <div><dt>Skills &amp; talents</dt><dd>{{ profile.skills or "Full of surprises" }}</dd></div>
+          <div><dt>Favorite things</dt><dd>{{ profile.favorite_things or "Ask me in chat" }}</dd></div>
+          <div><dt>A moment I'm proud of</dt><dd>{{ profile.proudest_moment or "More good things are on the way" }}</dd></div>
+        </dl>
+      </section>
+    </div>
+  </article>
+
+  {% if editing %}
+  <div class="brofile-editor-layout">
+    <section class="card brofile-editor-card">
+      <header><p class="eyebrow">Profile details</p><h2>Tell the Garden about you</h2></header>
+      <form method="post" action="{{ url_for('my_brofile_update') }}" class="stack">
+        <input type="hidden" name="csrf" value="{{ csrf_token }}">
+        <label>Short headline<input name="tagline" maxlength="90" value="{{ profile.tagline }}" placeholder="Cozy gamer, plant dad, and professional yapper"></label>
+        <label>About me<textarea name="about" maxlength="500" rows="6" placeholder="Share whatever helps other BROs get to know you.">{{ profile.about }}</textarea><small>Up to 500 characters.</small></label>
+        <div class="form-grid">
+          <label>Interests<textarea name="interests" maxlength="220" rows="4" placeholder="Games, art, fitness, travel...">{{ profile.interests }}</textarea></label>
+          <label>Skills &amp; talents<textarea name="skills" maxlength="220" rows="4" placeholder="Cooking, coding, making people laugh...">{{ profile.skills }}</textarea></label>
+          <label>Favorite things<textarea name="favorite_things" maxlength="220" rows="4" placeholder="Comfort shows, foods, places, hobbies...">{{ profile.favorite_things }}</textarea></label>
+          <label>A moment I'm proud of<textarea name="proudest_moment" maxlength="220" rows="4" placeholder="A personal win, big or small.">{{ profile.proudest_moment }}</textarea></label>
+        </div>
+        <fieldset class="brofile-color-controls">
+          <legend>Card colors</legend>
+          <div class="brofile-color-grid">
+            <label>Accent<input type="color" name="accent_color" value="{{ profile.accent_color }}"></label>
+            <label>Background start<input type="color" name="background_color_start" value="{{ profile.background_color_start }}"></label>
+            <label>Background end<input type="color" name="background_color_end" value="{{ profile.background_color_end }}"></label>
+          </div>
+        </fieldset>
+        <label class="checkbox-label brofile-publish-toggle"><input type="checkbox" name="directory_visible" value="yes" {% if profile.directory_visible %}checked{% endif %}> Show my BROfile in the BRO Directory</label>
+        <p class="muted">Turning this off keeps your saved draft and images but removes the profile from other members' directory and profile views.</p>
+        <button class="button" type="submit">Save My BROfile</button>
+      </form>
+    </section>
+
+    <section class="card brofile-editor-card">
+      <header><p class="eyebrow">Personal artwork</p><h2>Banner &amp; spotlight</h2><p class="muted">Images are validated, cropped, and stored separately from the staff Asset Library.</p></header>
+      <div class="brofile-media-editors">
+        <form method="post" action="{{ url_for('my_brofile_media_upload', media_type='banner') }}" enctype="multipart/form-data" class="stack">
+          <input type="hidden" name="csrf" value="{{ csrf_token }}">
+          <label>Wide banner<input type="file" name="image" accept="image/png,image/jpeg,image/webp" required><small>Best at 1600 × 500 px. PNG, JPG, or WEBP up to 8 MB.</small></label>
+          <button class="button secondary" type="submit">{{ 'Replace' if media.banner else 'Upload' }} banner</button>
+        </form>
+        {% if media.banner %}<form method="post" action="{{ url_for('my_brofile_media_remove', media_type='banner') }}"><input type="hidden" name="csrf" value="{{ csrf_token }}"><button class="button danger small" type="submit">Remove banner</button></form>{% endif %}
+        <form method="post" action="{{ url_for('my_brofile_media_upload', media_type='spotlight') }}" enctype="multipart/form-data" class="stack">
+          <input type="hidden" name="csrf" value="{{ csrf_token }}">
+          <label>Square spotlight<input type="file" name="image" accept="image/png,image/jpeg,image/webp" required><small>Best at 900 × 900 px. PNG, JPG, or WEBP up to 8 MB.</small></label>
+          <button class="button secondary" type="submit">{{ 'Replace' if media.spotlight else 'Upload' }} spotlight</button>
+        </form>
+        {% if media.spotlight %}<form method="post" action="{{ url_for('my_brofile_media_remove', media_type='spotlight') }}"><input type="hidden" name="csrf" value="{{ csrf_token }}"><button class="button danger small" type="submit">Remove spotlight</button></form>{% endif %}
+      </div>
+    </section>
+  </div>
+  <script>
+    (() => {
+      const card = document.querySelector(".brofile-card");
+      if (!card) return;
+      const colors = {
+        accent_color: "--brofile-accent",
+        background_color_start: "--brofile-bg-start",
+        background_color_end: "--brofile-bg-end"
+      };
+      Object.entries(colors).forEach(([name, property]) => {
+        document.querySelector(`input[type="color"][name="${name}"]`)?.addEventListener("input", event => {
+          card.style.setProperty(property, event.target.value);
+        });
+      });
+    })();
+  </script>
+  {% endif %}
+  {% endif %}
+</section>
+{% endblock %}
