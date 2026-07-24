@@ -398,7 +398,7 @@ class DashboardNavigationMetadataTests(unittest.TestCase):
         self.assertIn(".settings-menu-item", styles)
         self.assertIn("text-decoration: none", styles)
         base_template = (root / "dashboard/templates/base.html").read_text()
-        self.assertIn("styles.css') }}?v=member-view1", base_template)
+        self.assertIn("styles.css') }}?v=member-events2", base_template)
         self.assertIn("dashboard_nav.js') }}?v=dashboard-refresh1", base_template)
         self.assertIn(".embed-fields-card[hidden]", styles)
         self.assertIn("discord_pickers.js') }}?v=picker-single-values2", base_template)
@@ -425,6 +425,28 @@ class DashboardNavigationMetadataTests(unittest.TestCase):
         self.assertIn("data-setting-message-editor", settings_message_script)
         self.assertIn("insertAtCursor", settings_message_script)
         self.assertIn("setting-emoji-option", settings_message_script)
+
+    def test_member_events_use_two_column_grid_and_text_other_label(self):
+        root = Path(__file__).resolve().parent.parent
+        template = (root / "dashboard/templates/events.html").read_text()
+        styles = (root / "dashboard/static/styles.css").read_text()
+        self.assertIn(
+            'class="event-list {{ \'member-event-grid\' if view_mode == \'member\' else \'\' }}"',
+            template,
+        )
+        self.assertIn(
+            'data-event-filter="external">Text/Other</button>',
+            template,
+        )
+        self.assertNotIn(">Elsewhere</button>", template)
+        self.assertIn(
+            ".member-event-grid { grid-template-columns: repeat(2, minmax(0, 1fr));",
+            styles,
+        )
+        self.assertIn(
+            ".member-event-grid .event-cover { height: auto; min-height: 0; aspect-ratio: 16 / 9; }",
+            styles,
+        )
 
     def test_category_selection_matches_child_channels(self):
         self.assertTrue(
