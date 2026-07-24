@@ -57,8 +57,11 @@ Users with member permissions and `dashboard.view` can switch between a fixed
 the working My BROfile, BRO Directory, and Events destinations available to
 that role. `brofiles.view` permits published-profile browsing,
 `brofiles.edit` permits self-owned profile changes, and `brofiles.manage`
-protects role-badge administration. The switch changes navigation presentation
-only; server-side capabilities remain unchanged.
+protects the separate Dashboard **BROfile Management** space: searchable
+15-member pages, staff visibility holds, typed-confirmation deletion, private
+upload-thread configuration, and role-badge administration. Staff visibility
+holds are separate from a member's own directory preference. The switch changes
+navigation presentation only; server-side capabilities remain unchanged.
 
 ## Enforcement
 

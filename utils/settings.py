@@ -193,6 +193,15 @@ SETTING_DEFINITIONS = (
         single=True,
     ),
     SettingDefinition(
+        "BROFILE_ASSET_STORAGE_THREAD_ID",
+        "brofiles",
+        "csv_ids",
+        "Existing private Discord forum post/thread used as durable storage for member BROfile banner and spotlight uploads. Paste the thread ID; each profile image is stored as its own message inside that post.",
+        title="BROfile Upload Storage Forum Post",
+        single=True,
+        visible=False,
+    ),
+    SettingDefinition(
         "MESSAGE_CONTEXT_ALLOWED_ROLE_IDS",
         "permissions",
         "csv_ids",

@@ -3,13 +3,13 @@
 <section class="brofile-page">
   <header class="page-heading brofile-page-heading">
     <div>
-      <p class="eyebrow">{{ 'Your corner of The Garden' if editing else 'Community BROfile' }}</p>
+      <p class="eyebrow">{% if editing %}Your corner of The Garden{% else %}Community <span class="bro-mark">BRO</span>file{% endif %}</p>
       <h1>{% if editing %}My <span class="bro-mark">BRO</span>file{% else %}{{ identity.display_name|display_name }}'s <span class="bro-mark">BRO</span>file{% endif %}</h1>
-      <p class="muted">{{ 'Shape how the community gets to know you. Your Discord identity and eligible role badge stay in sync automatically.' if editing else 'A little more about one of the people who makes Bro Eden feel like home.' }}</p>
+      <p class="muted">{{ 'Shape how the community gets to know you. Your Discord identity and eligible role badge stay in sync automatically.' if editing else 'A little more about one of the people who makes BRO EDEN feel like home.' }}</p>
     </div>
     <div class="action-buttons">
-      <a class="button secondary" href="{{ url_for('brofile_directory') }}">BRO Directory</a>
-      {% if not editing and current_user.discord_user_id|string == selected_user_id|string %}<a class="button" href="{{ url_for('my_brofile_page') }}">Edit My BROfile</a>{% endif %}
+      <a class="button secondary" href="{{ url_for('brofile_directory') }}"><span class="bro-mark">BRO</span>&nbsp;Directory</a>
+      {% if not editing and current_user.discord_user_id|string == selected_user_id|string %}<a class="button" href="{{ url_for('my_brofile_page') }}">Edit My&nbsp;<span class="bro-mark">BRO</span>file</a>{% endif %}
     </div>
   </header>
 
@@ -21,8 +21,8 @@
     <div class="brofile-connect-icon" aria-hidden="true">✦</div>
     <div>
       <p class="eyebrow">Discord connection required</p>
-      <h2>Connect your Bro Eden identity</h2>
-      <p>Your BROfile belongs to your Discord account. Sign in with Discord so The Garden can use your username, avatar, and current server roles without asking you to duplicate them.</p>
+      <h2>Connect your BRO EDEN identity</h2>
+      <p>Your <span class="bro-mark">BRO</span>file belongs to your Discord account. Sign in with Discord so The Garden can use your username, avatar, and current server roles without asking you to duplicate them.</p>
     </div>
     <a class="button" href="{{ url_for('discord_login') }}">Continue with Discord</a>
   </section>
@@ -48,7 +48,7 @@
         <p>@{{ identity.username|display_name }}</p>
         {% if profile.tagline %}<strong>{{ profile.tagline }}</strong>{% endif %}
       </div>
-      {% if editing %}<span class="brofile-visibility {{ 'published' if profile.directory_visible else 'private' }}">{{ 'Published' if profile.directory_visible else 'Only you can see this draft' }}</span>{% endif %}
+      {% if editing %}<span class="brofile-visibility {{ 'moderated' if profile.moderation_hidden_at else ('published' if profile.directory_visible else 'private') }}">{% if profile.moderation_hidden_at %}Hidden by staff{% elif profile.directory_visible %}Published{% else %}Only you can see this draft{% endif %}</span>{% endif %}
     </header>
 
     <div class="brofile-content">
@@ -57,8 +57,8 @@
           {% if media.spotlight %}<img src="{{ url_for('brofile_media_image', user_id=selected_user_id, media_type='spotlight') }}?v={{ profile.revision }}" alt="{{ identity.display_name }}'s custom spotlight image">{% else %}<div><span aria-hidden="true">✦</span><strong>Your spotlight</strong><small>Add a square image that feels like you.</small></div>{% endif %}
         </div>
         <div class="brofile-about">
-          <p class="eyebrow">About this BRO</p>
-          <p>{{ profile.about or "This BRO is still putting their story together." }}</p>
+          <p class="eyebrow">About this <span class="bro-mark">BRO</span></p>
+          <p>{% if profile.about %}{{ profile.about }}{% else %}This <span class="bro-mark">BRO</span> is still putting their story together.{% endif %}</p>
         </div>
       </section>
       <section class="brofile-details">
@@ -74,13 +74,16 @@
   </article>
 
   {% if editing %}
+  {% if profile.moderation_hidden_at %}
+  <div class="alert warning"><strong>Staff visibility hold:</strong> this <span class="bro-mark">BRO</span>file is saved but cannot appear in the member directory until staff restore it.</div>
+  {% endif %}
   <div class="brofile-editor-layout">
     <section class="card brofile-editor-card">
       <header><p class="eyebrow">Profile details</p><h2>Tell the Garden about you</h2></header>
       <form method="post" action="{{ url_for('my_brofile_update') }}" class="stack">
         <input type="hidden" name="csrf" value="{{ csrf_token }}">
         <label>Short headline<input name="tagline" maxlength="90" value="{{ profile.tagline }}" placeholder="Cozy gamer, plant dad, and professional yapper"></label>
-        <label>About me<textarea name="about" maxlength="500" rows="6" placeholder="Share whatever helps other BROs get to know you.">{{ profile.about }}</textarea><small>Up to 500 characters.</small></label>
+        <label>About me<textarea name="about" maxlength="500" rows="6" placeholder="Share whatever helps other members get to know you.">{{ profile.about }}</textarea><small>Up to 500 characters.</small></label>
         <div class="form-grid">
           <label>Interests<textarea name="interests" maxlength="220" rows="4" placeholder="Games, art, fitness, travel...">{{ profile.interests }}</textarea></label>
           <label>Skills &amp; talents<textarea name="skills" maxlength="220" rows="4" placeholder="Cooking, coding, making people laugh...">{{ profile.skills }}</textarea></label>
@@ -95,26 +98,35 @@
             <label>Background end<input type="color" name="background_color_end" value="{{ profile.background_color_end }}"></label>
           </div>
         </fieldset>
-        <label class="checkbox-label brofile-publish-toggle"><input type="checkbox" name="directory_visible" value="yes" {% if profile.directory_visible %}checked{% endif %}> Show my BROfile in the BRO Directory</label>
+        <label class="checkbox-label brofile-publish-toggle"><input type="checkbox" name="directory_visible" value="yes" {% if profile.directory_visible %}checked{% endif %}> Show my <span class="bro-mark">BRO</span>file in the <span class="bro-mark">BRO</span> Directory</label>
         <p class="muted">Turning this off keeps your saved draft and images but removes the profile from other members' directory and profile views.</p>
-        <button class="button" type="submit">Save My BROfile</button>
+        <button class="button" type="submit">Save My&nbsp;<span class="bro-mark">BRO</span>file</button>
       </form>
     </section>
 
     <section class="card brofile-editor-card">
-      <header><p class="eyebrow">Personal artwork</p><h2>Banner &amp; spotlight</h2><p class="muted">Images are validated, cropped, and stored separately from the staff Asset Library.</p></header>
+      <header><p class="eyebrow">Personal artwork</p><h2>Banner &amp; spotlight</h2><p class="muted">Images are validated, cropped, and queued to the private <span class="bro-mark">BRO</span>file storage thread configured by staff.</p></header>
+      {% if not storage_module_enabled %}
+      <div class="alert warning">Image uploads are paused until staff enable the visual storage worker.</div>
+      {% elif not storage_thread_id %}
+      <div class="alert warning">Image uploads are paused until staff configure the <span class="bro-mark">BRO</span>file storage forum post.</div>
+      {% else %}
+      <div class="alert success">New images will be stored in the private Discord forum post/thread configured by staff.</div>
+      {% endif %}
       <div class="brofile-media-editors">
         <form method="post" action="{{ url_for('my_brofile_media_upload', media_type='banner') }}" enctype="multipart/form-data" class="stack">
           <input type="hidden" name="csrf" value="{{ csrf_token }}">
           <label>Wide banner<input type="file" name="image" accept="image/png,image/jpeg,image/webp" required><small>Best at 1600 × 500 px. PNG, JPG, or WEBP up to 8 MB.</small></label>
-          <button class="button secondary" type="submit">{{ 'Replace' if media.banner else 'Upload' }} banner</button>
+          <button class="button secondary" type="submit" {{ 'disabled' if not storage_thread_id or not storage_module_enabled else '' }}>{{ 'Replace' if media.banner else 'Upload' }} banner</button>
         </form>
+        {% if media.banner %}<p class="muted">Banner storage: <span class="status-chip {{ media.banner.discord_sync_status or 'pending' }}">{{ (media.banner.discord_sync_status or 'pending')|replace('_', ' ')|title }}</span></p>{% endif %}
         {% if media.banner %}<form method="post" action="{{ url_for('my_brofile_media_remove', media_type='banner') }}"><input type="hidden" name="csrf" value="{{ csrf_token }}"><button class="button danger small" type="submit">Remove banner</button></form>{% endif %}
         <form method="post" action="{{ url_for('my_brofile_media_upload', media_type='spotlight') }}" enctype="multipart/form-data" class="stack">
           <input type="hidden" name="csrf" value="{{ csrf_token }}">
           <label>Square spotlight<input type="file" name="image" accept="image/png,image/jpeg,image/webp" required><small>Best at 900 × 900 px. PNG, JPG, or WEBP up to 8 MB.</small></label>
-          <button class="button secondary" type="submit">{{ 'Replace' if media.spotlight else 'Upload' }} spotlight</button>
+          <button class="button secondary" type="submit" {{ 'disabled' if not storage_thread_id or not storage_module_enabled else '' }}>{{ 'Replace' if media.spotlight else 'Upload' }} spotlight</button>
         </form>
+        {% if media.spotlight %}<p class="muted">Spotlight storage: <span class="status-chip {{ media.spotlight.discord_sync_status or 'pending' }}">{{ (media.spotlight.discord_sync_status or 'pending')|replace('_', ' ')|title }}</span></p>{% endif %}
         {% if media.spotlight %}<form method="post" action="{{ url_for('my_brofile_media_remove', media_type='spotlight') }}"><input type="hidden" name="csrf" value="{{ csrf_token }}"><button class="button danger small" type="submit">Remove spotlight</button></form>{% endif %}
       </div>
     </section>

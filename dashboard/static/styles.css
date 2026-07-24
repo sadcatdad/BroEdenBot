@@ -1397,6 +1397,7 @@ details summary { color: var(--muted); cursor: pointer; }
 }
 .brofile-visibility.published { color: #baf5d7; background: rgba(72,190,128,.16); }
 .brofile-visibility.private { color: #f5d7aa; background: rgba(218,157,67,.16); }
+.brofile-visibility.moderated { color: #ffc2c8; background: rgba(234,86,99,.18); }
 .brofile-content {
   display: grid;
   grid-template-columns: minmax(17rem, .8fr) minmax(24rem, 1.25fr);
@@ -1506,8 +1507,98 @@ details summary { color: var(--muted); cursor: pointer; }
 .brofile-directory-avatar img { width: 100%; height: 100%; object-fit: cover; }
 .brofile-directory-card h3 { margin: 0; font-size: 1.05rem; }
 .brofile-directory-card p { margin: .12rem 0; color: rgba(255,255,255,.62); font-size: .78rem; }
-.brofile-directory-card span { display: -webkit-box; overflow: hidden; color: rgba(255,255,255,.85); font-size: .8rem; -webkit-box-orient: vertical; -webkit-line-clamp: 2; }
+.brofile-directory-card > div > span { display: -webkit-box; overflow: hidden; color: rgba(255,255,255,.85); font-size: .8rem; -webkit-box-orient: vertical; -webkit-line-clamp: 2; }
 .brofile-directory-badge { width: 3.6rem; max-height: 3.6rem; object-fit: contain; filter: drop-shadow(0 .3rem .45rem rgba(0,0,0,.4)); }
+.brofile-management-page,
+.brofile-delete-page { display: grid; gap: 1.25rem; }
+.brofile-management-metrics {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: .8rem;
+}
+.brofile-management-metrics .metric-card {
+  display: grid;
+  gap: .1rem;
+  min-width: 0;
+  padding: 1rem;
+  background:
+    radial-gradient(circle at 100% 0, rgba(240,59,159,.12), transparent 60%),
+    var(--panel);
+  border: 1px solid var(--border-soft);
+  border-radius: .9rem;
+  box-shadow: var(--shadow-card);
+}
+.brofile-management-metrics .metric-card > span {
+  color: var(--muted);
+  font-size: .72rem;
+  font-weight: 800;
+  letter-spacing: .07em;
+  text-transform: uppercase;
+}
+.brofile-management-metrics .metric-card > strong {
+  margin-block: .1rem;
+  font-size: clamp(1.7rem, 3vw, 2.35rem);
+  line-height: 1;
+}
+.brofile-management-metrics .metric-card > small { color: var(--muted); }
+.brofile-management-metrics .bro-mark { font-size: inherit; }
+.brofile-storage-manager,
+.brofile-member-manager,
+.brofile-delete-confirmation { display: grid; gap: 1rem; padding: clamp(1rem, 3vw, 1.5rem); scroll-margin-top: 1rem; }
+.brofile-storage-manager h2,
+.brofile-member-manager h2,
+.brofile-delete-confirmation h2 { margin: 0; }
+.brofile-storage-form {
+  display: grid;
+  grid-template-columns: minmax(18rem, 1fr) auto;
+  align-items: end;
+  gap: .8rem;
+}
+.brofile-management-search {
+  display: grid;
+  grid-template-columns: minmax(14rem, 1fr) auto auto;
+  align-items: end;
+  gap: .55rem;
+}
+.brofile-management-list { display: grid; gap: .65rem; }
+.brofile-management-row {
+  display: grid;
+  grid-template-columns: auto minmax(12rem, 1.2fr) minmax(11rem, .8fr) auto;
+  align-items: center;
+  gap: .9rem;
+  padding: .85rem;
+  background: var(--panel-soft);
+  border: 1px solid var(--border);
+  border-radius: .9rem;
+}
+.brofile-management-avatar {
+  display: grid;
+  width: 3.6rem;
+  height: 3.6rem;
+  overflow: hidden;
+  place-items: center;
+  color: #0c1713;
+  background: var(--accent);
+  border: .12rem solid rgba(255,255,255,.78);
+  border-radius: .9rem;
+  font-size: 1.2rem;
+  font-weight: 900;
+}
+.brofile-management-avatar img { width: 100%; height: 100%; object-fit: cover; }
+.brofile-management-identity,
+.brofile-management-statuses { display: grid; gap: .14rem; min-width: 0; }
+.brofile-management-identity > span,
+.brofile-management-identity > small,
+.brofile-management-statuses > small { overflow-wrap: anywhere; color: var(--muted); }
+.brofile-management-identity code { font-size: .7rem; }
+.brofile-management-statuses .status-chip { justify-self: start; }
+.brofile-management-actions { display: flex; align-items: center; justify-content: flex-end; gap: .42rem; }
+.brofile-management-actions form { margin: 0; }
+.brofile-pagination { display: flex; align-items: center; justify-content: center; gap: .8rem; padding-top: .5rem; }
+.brofile-delete-confirmation { width: min(100%, 44rem); margin-inline: auto; }
+.brofile-delete-identity { display: flex; align-items: center; gap: .9rem; }
+.brofile-delete-identity h2,
+.brofile-delete-identity p { margin: 0; }
 .brofile-badge-manager { display: grid; gap: 1rem; padding: clamp(1rem, 3vw, 1.5rem); scroll-margin-top: 1rem; }
 .brofile-badge-manager h2 { margin: 0; }
 .brofile-badge-form { display: grid; grid-template-columns: 1fr 1fr 1fr .6fr auto; align-items: end; gap: .75rem; }
@@ -1531,6 +1622,10 @@ details summary { color: var(--muted); cursor: pointer; }
   .brofile-content { grid-template-columns: 1fr; }
   .brofile-directory-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .brofile-badge-form { grid-template-columns: 1fr 1fr; }
+  .brofile-management-row { grid-template-columns: auto minmax(0, 1fr) auto; }
+  .brofile-management-statuses { grid-column: 2; }
+  .brofile-management-actions { grid-column: 3; grid-row: 1 / span 2; flex-direction: column; align-items: stretch; }
+  .brofile-management-metrics { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 }
 @media (max-width: 680px) {
   .brofile-connect-card,
@@ -1551,4 +1646,15 @@ details summary { color: var(--muted); cursor: pointer; }
   .brofile-directory-yours { align-items: flex-start; flex-direction: column; }
   .brofile-directory-list > .split-heading { align-items: stretch; flex-direction: column; }
   .brofile-directory-search { width: 100%; }
+  .brofile-storage-form,
+  .brofile-management-search,
+  .brofile-management-row { grid-template-columns: 1fr; }
+  .brofile-management-row { align-items: start; }
+  .brofile-management-statuses,
+  .brofile-management-actions { grid-column: 1; grid-row: auto; }
+  .brofile-management-actions { flex-flow: row wrap; justify-content: flex-start; }
+  .brofile-management-actions form { display: contents; }
+  .brofile-management-page .split-heading { align-items: stretch; flex-direction: column; }
+  .brofile-pagination { justify-content: space-between; }
+  .brofile-management-metrics { grid-template-columns: 1fr; }
 }

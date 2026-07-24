@@ -8,7 +8,7 @@ import sqlite3
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Optional
-from urllib.parse import urlsplit, urlunsplit
+from urllib.parse import urlencode, urlsplit, urlunsplit
 
 import uvicorn
 from dotenv import load_dotenv
@@ -253,17 +253,25 @@ from utils.visual_studio.discord_storage import (
 from utils.brofiles import (
     MAX_MEDIA_BYTES,
     badge_for_member,
+    delete_brofile,
     delete_badge_mapping,
     get_brofile,
     identity_from_dashboard_user,
     initialize_brofile_schema,
     list_badge_mappings,
+    list_brofiles_for_management,
     list_directory_brofiles,
     media_path as brofile_media_path,
     remove_brofile_media,
     save_badge_mapping,
     save_brofile_media,
+    set_brofile_moderation_hidden,
     update_brofile,
+)
+from utils.brofile_storage import (
+    queue_media_upload as queue_brofile_media_upload,
+    queue_missing_media_uploads,
+    storage_overview as brofile_storage_overview,
 )
 
 
@@ -418,6 +426,8 @@ def required_permission(path: str, method: str) -> str | None:
         return "events.edit_own"
     if path.startswith("/my-brofile"):
         return "brofiles.edit"
+    if path.startswith("/brofiles/manage"):
+        return "brofiles.manage"
     if path.startswith("/brofiles/badges") and normalized_method != "GET":
         return "brofiles.manage"
     if path.startswith("/brofiles"):
@@ -569,12 +579,19 @@ def template_context(request: Request, **values: Any) -> dict[str, Any]:
             str(item["key"]) for item in permission_catalog()
         ) if has_permission(request, permission)
     ) if is_authenticated(request) else []
-    dashboard_view_available = "dashboard.view" in permissions
+    dashboard_view_available = bool(
+        {"dashboard.view", "brofiles.manage"} & set(permissions)
+    )
     member_view_available = bool(
         {"events.view", "brofiles.view"} & set(permissions)
     )
     requested_view = str(request.session.get("garden_view_mode") or "").casefold()
-    if requested_view == "member" and member_view_available:
+    if (
+        request.url.path.startswith("/brofiles/manage")
+        and "brofiles.manage" in permissions
+    ):
+        view_mode = "dashboard"
+    elif requested_view == "member" and member_view_available:
         view_mode = "member"
     elif dashboard_view_available:
         view_mode = "dashboard"
@@ -657,6 +674,8 @@ def login_response(
 def authenticated_landing_url(request: Request) -> Any:
     if has_permission(request, "dashboard.view"):
         return request.url_for("home")
+    if has_permission(request, "brofiles.manage"):
+        return request.url_for("brofile_management")
     if has_permission(request, "events.view"):
         return request.url_for("events_page")
     return request.url_for("my_brofile_page")
@@ -873,10 +892,17 @@ async def set_view_mode(request: Request) -> RedirectResponse:
             else request.url_for("my_brofile_page")
         )
     elif mode == "dashboard":
-        if not has_permission(request, "dashboard.view"):
+        if not (
+            has_permission(request, "dashboard.view")
+            or has_permission(request, "brofiles.manage")
+        ):
             raise HTTPException(status_code=403, detail="Dashboard view is unavailable.")
         request.session["garden_view_mode"] = "dashboard"
-        destination = request.url_for("home")
+        destination = (
+            request.url_for("home")
+            if has_permission(request, "dashboard.view")
+            else request.url_for("brofile_management")
+        )
     else:
         raise HTTPException(status_code=400, detail="Unknown Garden view.")
     return RedirectResponse(
@@ -1270,6 +1296,26 @@ def _brofile_redirect(request: Request) -> RedirectResponse:
     )
 
 
+def _brofile_management_redirect(
+    request: Request,
+    *,
+    query: str = "",
+    page: int = 1,
+    fragment: str = "",
+) -> RedirectResponse:
+    url = str(request.url_for("brofile_management"))
+    parameters = {}
+    if str(query or "").strip():
+        parameters["q"] = str(query).strip()
+    if int(page) > 1:
+        parameters["page"] = str(int(page))
+    if parameters:
+        url = "{}?{}".format(url, urlencode(parameters))
+    if fragment:
+        url = "{}#{}".format(url, str(fragment).lstrip("#"))
+    return RedirectResponse(url=url, status_code=status.HTTP_303_SEE_OTHER)
+
+
 @app.get("/brofiles", response_class=HTMLResponse, name="brofile_directory")
 async def brofile_directory(request: Request) -> HTMLResponse:
     if redirect := login_redirect(request):
@@ -1280,23 +1326,6 @@ async def brofile_directory(request: Request) -> HTMLResponse:
     for profile in profiles:
         profile["badge"] = badge_for_member(guild_id, str(profile["user_id"]))
     viewer_profile = get_brofile(guild_id, viewer_id) if guild_id and viewer_id else None
-    can_manage_badges = has_permission(request, "brofiles.manage")
-    badge_assets = list_assets(asset_type="badge") if can_manage_badges else []
-    role_options = roles_metadata() if can_manage_badges else []
-    role_names = {
-        str(role["id"]): str(role.get("name") or role["id"])
-        for role in role_options
-    }
-    badge_mappings = (
-        list_badge_mappings(guild_id)
-        if guild_id and can_manage_badges
-        else []
-    )
-    for mapping in badge_mappings:
-        mapping["role_name"] = role_names.get(
-            str(mapping["role_id"]),
-            "Unknown role {}".format(mapping["role_id"]),
-        )
     return templates.TemplateResponse(
         request=request,
         name="brofile_directory.html",
@@ -1308,13 +1337,258 @@ async def brofile_directory(request: Request) -> HTMLResponse:
             viewer_identity=viewer_identity,
             viewer_profile=viewer_profile,
             connected=bool(viewer_id),
-            can_manage_badges=can_manage_badges,
-            role_options=role_options,
-            badge_assets=badge_assets,
-            badge_mappings=badge_mappings,
             message=request.session.pop("brofile_directory_message", None),
             error=request.session.pop("brofile_directory_error", None),
         ),
+    )
+
+
+@app.get(
+    "/brofiles/manage",
+    response_class=HTMLResponse,
+    name="brofile_management",
+)
+async def brofile_management(
+    request: Request,
+    q: str = "",
+    page: int = 1,
+) -> HTMLResponse:
+    if redirect := login_redirect(request):
+        return redirect
+    guild_id = _brofile_guild_id()
+    page_data = list_brofiles_for_management(
+        guild_id,
+        query=q,
+        page=page,
+        page_size=15,
+    )
+    role_options = roles_metadata()
+    role_names = {
+        str(role["id"]): str(role.get("name") or role["id"])
+        for role in role_options
+    }
+    badge_mappings = list_badge_mappings(guild_id)
+    for mapping in badge_mappings:
+        mapping["role_name"] = role_names.get(
+            str(mapping["role_id"]),
+            "Unknown role {}".format(mapping["role_id"]),
+        )
+    return templates.TemplateResponse(
+        request=request,
+        name="brofile_management.html",
+        context=template_context(
+            request,
+            page_title="BROfile Management",
+            page_data=page_data,
+            role_options=role_options,
+            badge_assets=list_assets(asset_type="badge"),
+            badge_mappings=badge_mappings,
+            storage_thread_id=str(
+                get_setting("BROFILE_ASSET_STORAGE_THREAD_ID", "") or ""
+            ).strip(),
+            storage=brofile_storage_overview(),
+            storage_module_enabled=feature_snapshot(
+                FEATURES_BY_KEY["visual"]
+            )["enabled"],
+            message=request.session.pop("brofile_management_message", None),
+            error=request.session.pop("brofile_management_error", None),
+        ),
+    )
+
+
+@app.post(
+    "/brofiles/manage/storage",
+    name="brofile_management_storage",
+)
+async def brofile_management_storage(request: Request) -> RedirectResponse:
+    if redirect := login_redirect(request):
+        return redirect
+    await require_action_csrf(request)
+    form = await request.form()
+    thread_id = str(form.get("storage_thread_id", "")).strip()
+    user = current_user(request)
+    try:
+        normalized = set_setting(
+            "BROFILE_ASSET_STORAGE_THREAD_ID",
+            thread_id,
+            changed_by=str(user.get("username") or "dashboard"),
+        )
+        queued = (
+            queue_missing_media_uploads(
+                str(user.get("username") or "dashboard"),
+                normalized,
+            )
+            if normalized
+            else 0
+        )
+        request.session["brofile_management_message"] = (
+            "BROfile upload storage saved. {} existing image{} queued for storage.".format(
+                queued,
+                "" if queued == 1 else "s",
+            )
+            if normalized
+            else "BROfile upload storage was cleared. New image uploads are paused."
+        )
+    except (KeyError, sqlite3.Error, ValueError) as exc:
+        request.session["brofile_management_error"] = str(exc)
+    return _brofile_management_redirect(request, fragment="upload-storage")
+
+
+@app.post(
+    "/brofiles/manage/{user_id}/visibility",
+    name="brofile_management_visibility",
+)
+async def brofile_management_visibility(
+    request: Request,
+    user_id: str,
+) -> RedirectResponse:
+    if redirect := login_redirect(request):
+        return redirect
+    await require_action_csrf(request)
+    form = await request.form()
+    hidden = str(form.get("hidden", "")) == "yes"
+    query = str(form.get("return_query", ""))
+    raw_page = str(form.get("return_page", "1") or "1")
+    page = max(1, int(raw_page)) if raw_page.isdigit() else 1
+    user = current_user(request)
+    actor = str(user.get("username") or "dashboard")
+    try:
+        before = get_brofile(_brofile_guild_id(), user_id)
+        profile = set_brofile_moderation_hidden(
+            _brofile_guild_id(),
+            user_id,
+            hidden=hidden,
+            changed_by=actor,
+            reason=form.get("reason", ""),
+        )
+        record_audit(
+            actor_user_id=user.get("id"),
+            actor_label=actor,
+            action=(
+                "brofiles.profile.hidden"
+                if hidden
+                else "brofiles.profile.restored"
+            ),
+            target_type="brofile",
+            target_id=user_id,
+            before={
+                "moderation_hidden_at": (
+                    before.get("moderation_hidden_at") if before else None
+                )
+            },
+            after={
+                "moderation_hidden_at": profile.get("moderation_hidden_at")
+            },
+        )
+        request.session["brofile_management_message"] = (
+            "BROfile hidden from the member directory."
+            if hidden
+            else "BROfile moderation hold removed."
+        )
+    except (sqlite3.Error, ValueError) as exc:
+        request.session["brofile_management_error"] = str(exc)
+    return _brofile_management_redirect(
+        request,
+        query=query,
+        page=page,
+        fragment="member-brofiles",
+    )
+
+
+@app.get(
+    "/brofiles/manage/{user_id}/delete",
+    response_class=HTMLResponse,
+    name="brofile_management_delete_confirm",
+)
+async def brofile_management_delete_confirm(
+    request: Request,
+    user_id: str,
+    q: str = "",
+    page: int = 1,
+) -> HTMLResponse:
+    if redirect := login_redirect(request):
+        return redirect
+    profile = get_brofile(_brofile_guild_id(), user_id)
+    if profile is None:
+        raise HTTPException(status_code=404, detail="BROfile not found.")
+    return templates.TemplateResponse(
+        request=request,
+        name="brofile_delete_confirm.html",
+        context=template_context(
+            request,
+            page_title="Delete BROfile",
+            profile=profile,
+            return_query=q,
+            return_page=max(1, page),
+            error=request.session.pop("brofile_delete_error", None),
+        ),
+    )
+
+
+@app.post(
+    "/brofiles/manage/{user_id}/delete",
+    name="brofile_management_delete",
+)
+async def brofile_management_delete(
+    request: Request,
+    user_id: str,
+) -> RedirectResponse:
+    if redirect := login_redirect(request):
+        return redirect
+    await require_action_csrf(request)
+    form = await request.form()
+    query = str(form.get("return_query", ""))
+    raw_page = str(form.get("return_page", "1") or "1")
+    page = max(1, int(raw_page)) if raw_page.isdigit() else 1
+    if str(form.get("confirmation", "")).strip() != "DELETE":
+        request.session["brofile_delete_error"] = (
+            "Type DELETE exactly to confirm permanent removal."
+        )
+        url = str(
+            request.url_for(
+                "brofile_management_delete_confirm",
+                user_id=user_id,
+            )
+        )
+        parameters = {}
+        if query:
+            parameters["q"] = query
+        if page > 1:
+            parameters["page"] = str(page)
+        if parameters:
+            url = "{}?{}".format(url, urlencode(parameters))
+        return RedirectResponse(url=url, status_code=status.HTTP_303_SEE_OTHER)
+    user = current_user(request)
+    actor = str(user.get("username") or "dashboard")
+    try:
+        deleted = delete_brofile(
+            _brofile_guild_id(),
+            user_id,
+            changed_by=actor,
+        )
+        if deleted is None:
+            raise ValueError("BROfile was already deleted.")
+        record_audit(
+            actor_user_id=user.get("id"),
+            actor_label=actor,
+            action="brofiles.profile.deleted",
+            target_type="brofile",
+            target_id=user_id,
+            before={
+                "username": deleted.get("username"),
+                "display_name": deleted.get("display_name"),
+            },
+        )
+        request.session["brofile_management_message"] = (
+            "BROfile permanently deleted. Stored Discord images are queued for cleanup."
+        )
+    except (OSError, sqlite3.Error, ValueError) as exc:
+        request.session["brofile_management_error"] = str(exc)
+    return _brofile_management_redirect(
+        request,
+        query=query,
+        page=page,
+        fragment="member-brofiles",
     )
 
 
@@ -1346,6 +1620,12 @@ async def my_brofile_page(request: Request) -> HTMLResponse:
             badge=badge,
             editing=True,
             connected=bool(user_id),
+            storage_thread_id=str(
+                get_setting("BROFILE_ASSET_STORAGE_THREAD_ID", "") or ""
+            ).strip(),
+            storage_module_enabled=feature_snapshot(
+                FEATURES_BY_KEY["visual"]
+            )["enabled"],
             message=request.session.pop("brofile_message", None),
             error=request.session.pop("brofile_error", None),
         ),
@@ -1410,10 +1690,21 @@ async def my_brofile_media_upload(
     form = await request.form()
     upload = form.get("image")
     try:
+        storage_thread_id = str(
+            get_setting("BROFILE_ASSET_STORAGE_THREAD_ID", "") or ""
+        ).strip()
+        if not feature_snapshot(FEATURES_BY_KEY["visual"])["enabled"]:
+            raise ValueError(
+                "BROfile image uploads are paused until the visual module is enabled."
+            )
+        if not storage_thread_id.isdigit():
+            raise ValueError(
+                "BROfile image uploads are paused until staff configure the storage forum post."
+            )
         if upload is None or not hasattr(upload, "read"):
             raise ValueError("Choose a PNG, JPG, or WEBP image.")
         data = await upload.read(MAX_MEDIA_BYTES + 1)
-        save_brofile_media(
+        profile = save_brofile_media(
             guild_id,
             user_id,
             media_type,
@@ -1425,6 +1716,18 @@ async def my_brofile_media_upload(
                 or user_id
             ),
             identity=identity,
+        )
+        media = (profile.get("media") or {}).get(media_type)
+        if not media:
+            raise ValueError("BROfile image metadata was not saved.")
+        queue_brofile_media_upload(
+            int(media["id"]),
+            str(
+                database_user.get("discord_username")
+                or database_user.get("username")
+                or user_id
+            ),
+            storage_thread_id,
         )
         request.session["brofile_message"] = "{} image updated.".format(
             media_type.title()
@@ -1448,11 +1751,20 @@ async def my_brofile_media_remove(
     if media_type not in {"banner", "spotlight"}:
         raise HTTPException(status_code=404, detail="Unknown BROfile image type.")
     guild_id = _brofile_guild_id()
-    _database_user, user_id, _identity = _brofile_current_subject(request)
+    database_user, user_id, _identity = _brofile_current_subject(request)
     if not guild_id or not user_id:
         raise HTTPException(status_code=403, detail="A connected Discord identity is required.")
     try:
-        removed = remove_brofile_media(guild_id, user_id, media_type)
+        removed = remove_brofile_media(
+            guild_id,
+            user_id,
+            media_type,
+            changed_by=str(
+                database_user.get("discord_username")
+                or database_user.get("username")
+                or user_id
+            ),
+        )
         request.session["brofile_message"] = (
             "{} image removed.".format(media_type.title())
             if removed
@@ -1480,7 +1792,11 @@ async def brofile_media_image(
     profile = get_brofile(guild_id, user_id) if guild_id else None
     _database_user, viewer_id, _identity = _brofile_current_subject(request)
     if not profile or (
-        not profile.get("directory_visible") and str(user_id) != str(viewer_id)
+        (
+            not profile.get("directory_visible")
+            or profile.get("moderation_hidden_at")
+        )
+        and str(user_id) != str(viewer_id)
     ):
         raise HTTPException(status_code=404, detail="BROfile image not found.")
     media = (profile.get("media") or {}).get(media_type)
@@ -1557,13 +1873,10 @@ async def brofile_badge_save(request: Request) -> RedirectResponse:
             asset_id=form.get("asset_id", ""),
             priority=form.get("priority", "0"),
         )
-        request.session["brofile_directory_message"] = "BROfile role badge mapping saved."
+        request.session["brofile_management_message"] = "BROfile role badge mapping saved."
     except (sqlite3.Error, ValueError) as exc:
-        request.session["brofile_directory_error"] = str(exc)
-    return RedirectResponse(
-        url="{}#badge-mappings".format(request.url_for("brofile_directory")),
-        status_code=status.HTTP_303_SEE_OTHER,
-    )
+        request.session["brofile_management_error"] = str(exc)
+    return _brofile_management_redirect(request, fragment="badge-mappings")
 
 
 @app.post(
@@ -1578,15 +1891,12 @@ async def brofile_badge_delete(
         return redirect
     await require_action_csrf(request)
     deleted = delete_badge_mapping(_brofile_guild_id(), mapping_id)
-    request.session["brofile_directory_message"] = (
+    request.session["brofile_management_message"] = (
         "BROfile badge mapping removed."
         if deleted
         else "That BROfile badge mapping was already absent."
     )
-    return RedirectResponse(
-        url="{}#badge-mappings".format(request.url_for("brofile_directory")),
-        status_code=status.HTTP_303_SEE_OTHER,
-    )
+    return _brofile_management_redirect(request, fragment="badge-mappings")
 
 
 @app.get(
@@ -1599,7 +1909,11 @@ async def brofile_detail(request: Request, user_id: str) -> HTMLResponse:
         return redirect
     guild_id = _brofile_guild_id()
     profile = get_brofile(guild_id, user_id) if guild_id else None
-    if not profile or not profile.get("directory_visible"):
+    if (
+        not profile
+        or not profile.get("directory_visible")
+        or profile.get("moderation_hidden_at")
+    ):
         raise HTTPException(status_code=404, detail="BROfile not found.")
     return templates.TemplateResponse(
         request=request,

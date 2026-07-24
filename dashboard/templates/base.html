@@ -7,7 +7,7 @@
   <title>{{ page_title or "Login" }} · The Garden</title>
   {% if canonical_url %}<link rel="canonical" href="{{ canonical_url }}">{% endif %}
   <link rel="icon" type="image/png" href="{{ url_for('static', path='broeden-pride-icon.png') }}">
-  <link rel="stylesheet" href="{{ url_for('static', path='styles.css') }}?v=brofile-foundation1">
+  <link rel="stylesheet" href="{{ url_for('static', path='styles.css') }}?v=brofile-management2">
   <script src="{{ url_for('static', path='dashboard_nav.js') }}?v=dashboard-refresh1" defer></script>
   <script src="{{ url_for('static', path='discord_pickers.js') }}?v=picker-single-values2" defer></script>
 </head>
@@ -19,7 +19,7 @@
       <div class="sidebar-heading">
         <a class="brand" href="{{ (url_for('events_page') if can('events.view') else url_for('my_brofile_page')) if view_mode == 'member' else url_for('home') }}" aria-label="The Garden home">
           <img class="brand-logo" src="{{ url_for('static', path='broeden-pride-icon.png') }}" alt="">
-          <span class="brand-copy"><strong>Bro Eden</strong><small>The Garden</small></span>
+          <span class="brand-copy"><strong>BRO EDEN</strong><small>The Garden</small></span>
         </a>
         <button class="icon-button nav-close" type="button" data-nav-close aria-label="Close navigation">
           <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m6 6 12 12M18 6 6 18"/></svg>
@@ -85,7 +85,7 @@
         </div>
         {% endif %}
 
-        {% if can('features.view') or can('streaks.view') or can('events.view') %}
+        {% if can('features.view') or can('streaks.view') or can('events.view') or can('brofiles.manage') %}
         <div class="nav-group">
           <p class="nav-group-label">Community</p>
           {% if can('features.view') %}
@@ -104,6 +104,12 @@
           <a class="nav-item {{ 'active' if current_path.startswith('/events') else '' }}" href="{{ url_for('events_page') }}" {% if current_path.startswith('/events') %}aria-current="page"{% endif %}>
             <svg class="nav-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M6 3v3m12-3v3M4 9h16M5 5h14a1 1 0 0 1 1 1v14H4V6a1 1 0 0 1 1-1Zm3 8h3v3H8v-3Z"/></svg>
             <span>Events</span>
+          </a>
+          {% endif %}
+          {% if can('brofiles.manage') %}
+          <a class="nav-item {{ 'active' if current_path.startswith('/brofiles/manage') else '' }}" href="{{ url_for('brofile_management') }}" {% if current_path.startswith('/brofiles/manage') %}aria-current="page"{% endif %}>
+            <svg class="nav-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 12a4 4 0 1 0 0-8 4 4 0 0 0 0 8Zm-8 9a8 8 0 0 1 16 0M18 8h4m-2-2v4M17 15h5m-2.5-2.5v5"/></svg>
+            <span><span class="bro-mark">BRO</span>file Management</span>
           </a>
           {% endif %}
         </div>

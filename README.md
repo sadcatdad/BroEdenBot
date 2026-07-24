@@ -36,7 +36,7 @@ For a module-by-module architecture and reliability map, see
 | `/remind subscriptions`, `/events`, and event **Remind Me** buttons | Roles in `REMINDER_SUBSCRIPTIONS_ALLOWED_ROLE_IDS`; blank allows all members. |
 | Dashboard `/events` schedule and DM controls | Signed-in current server members mapped to **Verified Member** (or a higher event-management dashboard role). |
 | Dashboard event create/edit/cancel | **Party Captain** can create and manage their own one-time events. Owner/Administrator can manage all one-time events. Recurring Discord events are read-only. |
-| The Garden **My BROfile** and **BRO Directory** | Signed-in current server members with `brofiles.edit` / `brofiles.view`; the built-in Verified Member and higher roles receive both. Owners/Administrators manage role-badge mappings. |
+| The Garden **My BROfile**, **BRO Directory**, and **BROfile Management** | Signed-in current server members with `brofiles.edit` / `brofiles.view`; the built-in Verified Member and higher roles receive both member surfaces. `brofiles.manage` protects staff search/pagination, hide/delete moderation, upload storage, and role-badge mappings. |
 | `/remind help`, `/timezone`, `/time` | All server members. |
 | ModAI commands and context menus | Administrators or roles listed in `MODAI_ALLOWED_ROLE_IDS` |
 | Staff-note commands | Administrators or roles listed in `STAFF_NOTES_ALLOWED_ROLE_IDS` |
@@ -140,17 +140,32 @@ selects **Show my BROfile in the BRO Directory**; turning visibility off keeps
 the draft and media but removes all other-member profile and image access.
 
 Member banners and spotlight images accept still PNG, JPG, or WEBP files up to
-8 MB. They are decoded, center-cropped, normalized to PNG, and stored under
-`VISUAL_ASSET_DIR/brofiles` on the shared persistent volume. They do not enter
-the staff Asset Library. Banner output is 1600 × 500; spotlight output is
-900 × 900.
+8 MB. They are decoded, center-cropped, normalized to PNG under
+`VISUAL_ASSET_DIR/brofiles`, and queued for durable storage in the private
+Discord forum post/thread configured by `BROFILE_ASSET_STORAGE_THREAD_ID`.
+They do not enter the staff Asset Library. Banner output is 1600 × 500;
+spotlight output is 900 × 900. The shared `visual` worker stores, backfills,
+reroutes, and refreshes those Discord attachments; removing media or deleting a
+profile queues its stored Discord message for cleanup.
 
-Owners and Administrators configure role recognition from the bottom of the
-BRO Directory:
+Owners, Administrators, and custom staff roles granted `brofiles.manage` use
+the role-based **Dashboard → BROfile Management** space. It provides a
+server-side searchable list of every saved profile, 15 profiles per page, a
+staff visibility hold, permanent deletion behind a typed `DELETE`
+confirmation, upload-storage readiness, and role badge configuration. A staff
+visibility hold is separate from a member's publish preference, so the member
+cannot re-publish until staff restore the profile.
+
+Configure private member-image storage in that space using an existing Discord
+forum post/thread ID—not its parent forum channel. New uploads pause until the
+destination and `visual` module are ready. Changing the destination queues
+existing profile images for safe rerouting.
+
+Configure role recognition from **BROfile Management**:
 
 1. Upload a transparent graphic to **Visual Content Studio → Asset Library**
    with asset type **Badge**.
-2. Open **BRO Directory → BROfile badge mappings**.
+2. Open **Dashboard → BROfile Management → BROfile badge mappings**.
 3. Map the graphic to a role from the latest Discord metadata snapshot, add an
    accessible label, and choose a priority.
 
@@ -160,9 +175,10 @@ badge assets cannot be archived or permanently deleted until the mapping is
 removed or replaced. The badge appears in the top-right of the BROfile card and
 on directory tiles.
 
-The schema is additive: `brofiles`, `brofile_media`, and `brofile_badges`.
-Dashboard startup initializes it idempotently. For a controlled deployment,
-back up and validate explicitly:
+The schema is additive: `brofiles`, `brofile_media`, `brofile_badges`, and
+`brofile_media_storage_jobs`, including moderation and Discord-receipt columns.
+Dashboard and bot startup initialize it idempotently. For a controlled
+deployment, back up and validate explicitly:
 
 ```bash
 .venv/bin/python scripts/migrate_brofiles.py \
@@ -1684,6 +1700,7 @@ updated from the authenticated local dashboard without rewriting `.env`.
 | `STATS_IMAGE_TARGET_BYTES` | Maximum accepted size for each generated stats PNG. Defaults to `8000000` (8 MB); oversized pages are optimized or re-rendered within the documented minimum dimensions, and are never silently uploaded above the target. |
 | `VISUAL_ASSET_DIR` | Persistent normalized uploads for Visual Content Studio. Defaults to `data/visual-assets`; the bot and dashboard must use the same path. |
 | `VISUAL_ASSET_STORAGE_THREAD_ID` | Existing private Discord forum-post/thread ID used as the durable source for Visual Content Studio Asset Library images. Configure under **Features → Visual Content Studio**. |
+| `BROFILE_ASSET_STORAGE_THREAD_ID` | Existing private Discord forum-post/thread ID used for member BROfile banners and spotlight images. Configure under **BROfile Management**. |
 | `VISUAL_RENDER_CONCURRENCY` | Maximum concurrent centralized ranked/roster renders, clamped from `1` to `4`. Defaults to `2` for Raspberry Pi stability. |
 | `DASHBOARD_ENABLED` | Enables the local dashboard when `true`. |
 | `DASHBOARD_HOST` | Dashboard bind address. Use `0.0.0.0` for access from the local network. |
@@ -2341,6 +2358,7 @@ STAFF_CONTEXT_DB_PATH=/data/staff_context.db
 BANK_DATABASE_PATH=/data/brobank.db
 VISUAL_ASSET_DIR=/data/visual-assets
 VISUAL_ASSET_STORAGE_THREAD_ID=your-private-forum-post-thread-id
+BROFILE_ASSET_STORAGE_THREAD_ID=your-private-brofile-forum-post-thread-id
 DASHBOARD_HOST=0.0.0.0
 DASHBOARD_COOKIE_SECURE=true
 DASHBOARD_PUBLIC_URL=https://garden.broeden.com
