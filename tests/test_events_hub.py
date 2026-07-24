@@ -298,6 +298,74 @@ class EventsReconciliationTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(tuple(await cursor.fetchone()), ("cancelled", "removed"))
         await cursor.close()
 
+    async def test_reconciliation_prefers_and_refreshes_creator_server_nickname(self):
+        member = SimpleNamespace(
+            nick="Captain Garden",
+            display_name="Captain Garden",
+            name="captain.account",
+        )
+        self.guild.get_member.return_value = member
+
+        await self.cog.refresh_guild(self.guild)
+        cursor = await self.database.execute(
+            """
+            SELECT e.discord_creator_name, o.organizer_name
+            FROM dashboard_scheduled_events e
+            JOIN dashboard_event_ownership o
+              ON o.scheduled_event_id = e.scheduled_event_id
+            WHERE e.scheduled_event_id = '900'
+            """
+        )
+        self.assertEqual(
+            tuple(await cursor.fetchone()),
+            ("Captain Garden", "Captain Garden"),
+        )
+        await cursor.close()
+
+        member.nick = "Captain Renamed"
+        member.display_name = "Captain Renamed"
+        await self.cog.refresh_guild(self.guild)
+        cursor = await self.database.execute(
+            """
+            SELECT e.discord_creator_name, o.organizer_name
+            FROM dashboard_scheduled_events e
+            JOIN dashboard_event_ownership o
+              ON o.scheduled_event_id = e.scheduled_event_id
+            WHERE e.scheduled_event_id = '900'
+            """
+        )
+        self.assertEqual(
+            tuple(await cursor.fetchone()),
+            ("Captain Renamed", "Captain Renamed"),
+        )
+        await cursor.close()
+
+        await self.database.execute(
+            """
+            UPDATE dashboard_event_ownership
+            SET dashboard_user_id = 77, organizer_name = 'Garden Organizer'
+            WHERE scheduled_event_id = '900'
+            """
+        )
+        await self.database.commit()
+        member.nick = "Captain Changed Again"
+        member.display_name = "Captain Changed Again"
+        await self.cog.refresh_guild(self.guild)
+        cursor = await self.database.execute(
+            """
+            SELECT e.discord_creator_name, o.organizer_name
+            FROM dashboard_scheduled_events e
+            JOIN dashboard_event_ownership o
+              ON o.scheduled_event_id = e.scheduled_event_id
+            WHERE e.scheduled_event_id = '900'
+            """
+        )
+        self.assertEqual(
+            tuple(await cursor.fetchone()),
+            ("Captain Changed Again", "Garden Organizer"),
+        )
+        await cursor.close()
+
 
 if __name__ == "__main__":
     unittest.main()

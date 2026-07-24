@@ -56,6 +56,11 @@ Retries reuse the recorded Discord upload receipt rather than creating a second
 forum post. Reconciliation refreshes the attachment URL from its source message
 so signed Discord links remain current.
 Recurring Discord events are mirrored and subscribable but read-only.
+For Discord-created events, reconciliation resolves the creator against the
+guild member list and displays their current server nickname when available,
+falling back to their Discord display name when no nickname is set or the member
+is not cached. Existing mirrored organizer labels refresh when the nickname
+changes.
 
 BroEdenBot is the Discord-visible creator for events published through The Garden. The
 human Captain is retained as the organizer in the event ownership table, UI,
