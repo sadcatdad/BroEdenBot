@@ -12,19 +12,19 @@
 <section class="event-hero">
   {% if next_event.image_url %}<img src="{{ next_event.image_url }}" alt="" loading="eager" referrerpolicy="no-referrer">{% endif %}
   <div class="event-hero-shade"></div>
-  <div class="event-hero-copy"><p class="eyebrow">Next gathering · {{ next_event.entity_type|title }}</p><h2>{{ next_event.name }}</h2><p>{{ next_event.date_label }} · {{ next_event.time_label }} · {{ next_event.location }}</p><a class="button secondary" href="#event-{{ next_event.scheduled_event_id }}">See details</a></div>
+  <div class="event-hero-copy"><p class="eyebrow">Next gathering · {{ 'Text/Other' if next_event.entity_type == 'external' else (next_event.entity_type|title) }}</p><h2>{{ next_event.name }}</h2><p>{{ next_event.date_label }} · {{ next_event.time_label }} · {{ next_event.location }}</p><a class="button secondary" href="#event-{{ next_event.scheduled_event_id }}">See details</a></div>
 </section>
 {% else %}<section class="event-empty"><span aria-hidden="true">✦</span><h2>The next gathering is still taking shape</h2><p>When a Discord Scheduled Event is published, it will appear here automatically.</p></section>{% endif %}
 
 {% if events %}
-<div class="event-filter-row" role="group" aria-label="Filter events"><button class="event-filter active" type="button" data-event-filter="all">All</button><button class="event-filter" type="button" data-event-filter="stage">Stage</button><button class="event-filter" type="button" data-event-filter="voice">Voice</button><button class="event-filter" type="button" data-event-filter="external">Elsewhere</button></div>
-<section class="event-list" aria-label="Upcoming events">
+<div class="event-filter-row" role="group" aria-label="Filter events"><button class="event-filter active" type="button" data-event-filter="all">All</button><button class="event-filter" type="button" data-event-filter="stage">Stage</button><button class="event-filter" type="button" data-event-filter="voice">Voice</button><button class="event-filter" type="button" data-event-filter="external">Text/Other</button></div>
+<section class="event-list {{ 'member-event-grid' if view_mode == 'member' else '' }}" aria-label="Upcoming events">
 {% for event in events %}
   {% if loop.changed(event.month_key) %}<h2 class="event-month">{{ event.month_label }}</h2>{% endif %}
   <article class="event-card" id="event-{{ event.scheduled_event_id }}" data-event-type="{{ event.entity_type }}">
     {% if event.image_url %}<img class="event-cover" src="{{ event.image_url }}" alt="Cover artwork for {{ event.name }}" loading="lazy" referrerpolicy="no-referrer">{% else %}<div class="event-cover event-cover-fallback" aria-hidden="true"><span>BE</span></div>{% endif %}
     <div class="event-card-body">
-      <div class="event-card-top"><div><span class="status-chip {{ event.status }}">{{ event.status|title }}</span>{% if event.is_recurring %}<span class="status-chip recurring">Recurring · Discord managed</span>{% endif %}<h3>{{ event.name }}</h3></div><span class="event-type">{{ event.entity_type|title }}</span></div>
+      <div class="event-card-top"><div><span class="status-chip {{ event.status }}">{{ event.status|title }}</span>{% if event.is_recurring %}<span class="status-chip recurring">Recurring · Discord managed</span>{% endif %}<h3>{{ event.name }}</h3></div><span class="event-type">{{ 'Text/Other' if event.entity_type == 'external' else (event.entity_type|title) }}</span></div>
       <div class="event-facts"><p><strong>{{ event.date_label }}</strong><span>{{ event.time_label }}</span></p><p><strong>{{ event.location or 'Discord' }}</strong><span>{{ event.interested_count }} interested on Discord</span></p><p><strong>{{ event.organizer_name or event.discord_creator_name or 'Bro Eden' }}</strong><span>Organizer</span></p></div>
       {% if event.description %}<p class="event-description">{{ event.description }}</p>{% endif %}
       <div class="event-actions"><a class="button secondary" href="{{ event.event_url }}" target="_blank" rel="noopener noreferrer">Open in Discord</a>

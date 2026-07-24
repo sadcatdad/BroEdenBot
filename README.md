@@ -116,7 +116,8 @@ Map the server's existing Verified Discord role to **Verified Member**
 under **Admin Dashboard → Access**. Map the Party Captain role to **Party Captain**. The
 Garden continues to re-check live guild membership, pending membership
 screening, and role IDs through Discord OAuth. Captains can publish one-time
-Stage, Voice, or external events and edit/cancel only their own. Discord-created
+Stage, Voice, or Text/Other events and edit/cancel only their own. Text/Other is
+the member-facing label for Discord's external-location event type. Discord-created
 recurring events remain visible and subscribable but read-only. The Garden writes
 are queued in SQLite for the bot process; FastAPI never receives or uses the bot
 token. Owners select a private forum, thread, or text channel as **Event Artwork
