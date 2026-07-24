@@ -111,6 +111,8 @@ Eden-styled next-gathering hero, type filters, month-grouped cards, an HTML
 calendar, native **Open in Discord** links, and separate BroEdenBot DM controls.
 Quick Subscribe selects 15 minutes before plus start time; members can instead
 choose 6 hours, 1 hour, 15 minutes, and/or start time.
+Discord-created event cards show the host's current server nickname when one is
+available, with the Discord display name retained as a fallback.
 
 Map the server's existing Verified Discord role to **Verified Member**
 under **Admin Dashboard → Access**. Map the Party Captain role to **Party Captain**. The

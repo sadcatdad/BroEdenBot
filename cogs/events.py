@@ -144,8 +144,27 @@ class EventsSync(commands.Cog):
         return reminder_id
 
     @staticmethod
-    def _snapshot_payload(event: discord.ScheduledEvent, raw: Optional[dict[str, Any]] = None) -> dict[str, Any]:
+    def _snapshot_payload(
+        event: discord.ScheduledEvent,
+        raw: Optional[dict[str, Any]] = None,
+        guild: Optional[discord.Guild] = None,
+    ) -> dict[str, Any]:
         creator = getattr(event, "creator", None)
+        creator_id = str(
+            getattr(event, "creator_id", "")
+            or getattr(creator, "id", "")
+            or ""
+        )
+        member = None
+        if guild is not None and creator_id.isdigit():
+            member = guild.get_member(int(creator_id))
+        creator_name = (
+            getattr(member, "nick", None)
+            or getattr(member, "display_name", None)
+            or getattr(creator, "display_name", None)
+            or getattr(creator, "name", None)
+            or ""
+        )
         channel = getattr(event, "channel", None)
         cover = getattr(event, "cover_image", None)
         recurrence = (raw or {}).get("recurrence_rule") or getattr(event, "recurrence_rule", None)
@@ -161,8 +180,8 @@ class EventsSync(commands.Cog):
             "end_at_utc": event.end_time.astimezone(timezone.utc).isoformat() if event.end_time else None,
             "event_url": str(event.url),
             "image_url": str(cover.url) if cover is not None else None,
-            "discord_creator_id": str(getattr(event, "creator_id", "") or getattr(creator, "id", "") or "") or None,
-            "discord_creator_name": str(getattr(creator, "display_name", "") or getattr(creator, "name", "") or "") or None,
+            "discord_creator_id": creator_id or None,
+            "discord_creator_name": str(creator_name) or None,
             "interested_count": int(getattr(event, "user_count", 0) or 0),
             "recurrence_json": json.dumps(recurrence, default=str, separators=(",", ":")) if recurrence is not None else None,
             "status": status,
@@ -196,7 +215,11 @@ class EventsSync(commands.Cog):
                 seen: set[str] = set()
                 now = utc_text()
                 for event in events:
-                    payload = self._snapshot_payload(event, raw_by_id.get(str(event.id)))
+                    payload = self._snapshot_payload(
+                        event,
+                        raw_by_id.get(str(event.id)),
+                        guild,
+                    )
                     event_id = payload["scheduled_event_id"]
                     seen.add(event_id)
                     reminder_id = await self._upsert_reminder(guild, payload)
@@ -237,10 +260,15 @@ class EventsSync(commands.Cog):
                     if payload["discord_creator_id"] and str(payload["discord_creator_id"]) != str(getattr(self.bot.user, "id", "")):
                         await self.bot.db.execute(
                             """
-                            INSERT OR IGNORE INTO dashboard_event_ownership (
+                            INSERT INTO dashboard_event_ownership (
                                 scheduled_event_id, discord_user_id, organizer_name,
                                 created_at_utc, updated_at_utc
                             ) VALUES (?, ?, ?, ?, ?)
+                            ON CONFLICT (scheduled_event_id) DO UPDATE SET
+                                discord_user_id = excluded.discord_user_id,
+                                organizer_name = excluded.organizer_name,
+                                updated_at_utc = excluded.updated_at_utc
+                            WHERE dashboard_event_ownership.dashboard_user_id IS NULL
                             """,
                             (event_id, payload["discord_creator_id"], payload["discord_creator_name"] or "", now, now),
                         )
