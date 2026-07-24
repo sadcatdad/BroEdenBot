@@ -1,0 +1,37 @@
+{% extends "base.html" %}
+{% block content %}
+<section class="brofile-delete-page">
+  <header class="page-heading">
+    <div>
+      <p class="eyebrow">Permanent action</p>
+      <h1>Delete <span class="bro-mark">BRO</span>file?</h1>
+      <p class="muted">This confirmation exists to prevent accidental profile removal.</p>
+    </div>
+    <a class="button secondary" href="{{ url_for('brofile_management') }}?{{ {'q': return_query, 'page': return_page}|urlencode }}#member-brofiles">Cancel</a>
+  </header>
+
+  {% if error %}<div class="alert error">{{ error }}</div>{% endif %}
+
+  <section class="card brofile-delete-confirmation">
+    <div class="brofile-delete-identity">
+      <div class="brofile-management-avatar">{% if profile.avatar_url %}<img src="{{ profile.avatar_url }}" alt="" referrerpolicy="no-referrer">{% else %}{{ (profile.display_name or profile.username)[:1]|upper }}{% endif %}</div>
+      <div><h2>{{ (profile.display_name or profile.username)|display_name }}</h2><p>@{{ profile.username|display_name }} · <code>{{ profile.user_id }}</code></p></div>
+    </div>
+    <div class="alert error">
+      This permanently removes the saved <span class="bro-mark">BRO</span>file, banner, and spotlight image. Any stored Discord image messages will be queued for deletion. This cannot be undone.
+    </div>
+    <form method="post" action="{{ url_for('brofile_management_delete', user_id=profile.user_id) }}" class="stack">
+      <input type="hidden" name="csrf" value="{{ csrf_token }}">
+      <input type="hidden" name="return_query" value="{{ return_query }}">
+      <input type="hidden" name="return_page" value="{{ return_page }}">
+      <label>Type <code>DELETE</code> to confirm
+        <input name="confirmation" autocomplete="off" required pattern="DELETE">
+      </label>
+      <div class="action-buttons">
+        <a class="button secondary" href="{{ url_for('brofile_management') }}?{{ {'q': return_query, 'page': return_page}|urlencode }}#member-brofiles">Keep&nbsp;<span class="bro-mark">BRO</span>file</a>
+        <button class="button danger" type="submit">Permanently delete&nbsp;<span class="bro-mark">BRO</span>file</button>
+      </div>
+    </form>
+  </section>
+</section>
+{% endblock %}

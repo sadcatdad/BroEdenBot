@@ -89,12 +89,20 @@ also refreshes signed attachment links from the source message.
 | Key | Type | Default | Dashboard |
 |---|---|---|---|
 | `VISUAL_ASSET_STORAGE_THREAD_ID` | `csv_ids` | blank | single forum-post/thread ID on Visual Content Studio |
+| `BROFILE_ASSET_STORAGE_THREAD_ID` | `csv_ids` | blank | single forum-post/thread ID on BROfile Management |
 
 Set this to an existing private forum post/thread, not its parent forum
 channel. With `visual` in `ENABLED_MODULES`, the live bot backfills active
 assets, posts new normalized uploads, refreshes attachment links, and processes
 message deletion jobs. Changing the value reroutes active assets to the new
 thread after their replacements are safely recorded.
+
+`BROFILE_ASSET_STORAGE_THREAD_ID` is configured separately under **BROfile
+Management**. It uses the same `visual` bot worker but keeps member banners and
+spotlight images outside the staff Asset Library. Uploads are paused until the
+private destination is configured; existing images are backfilled or rerouted
+after a destination change, and profile/media deletion queues the source
+Discord message for cleanup.
 
 ### Activity streaks
 

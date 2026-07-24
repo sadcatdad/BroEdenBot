@@ -95,9 +95,9 @@ maintenance.
 - `cogs/events.py` — Discord Scheduled Event gateway/reconciliation mirror and
   the bot-owned worker for queued dashboard create/edit/cancel/confirmation actions.
 - `cogs/visual_assets.py` — Live-bot worker that stores normalized Visual
-  Content Studio assets in a configured Discord forum post, refreshes links,
-  backfills/reroutes active assets, and removes remote messages after permanent
-  dashboard deletion.
+  Content Studio assets and member BROfile media in their separately configured
+  Discord forum posts, refreshes links, backfills/reroutes active assets, and
+  removes remote messages after permanent dashboard deletion.
 - `utils/events.py` — Additive event snapshot, organizer ownership, Discord-backed artwork references, sync status,
   idempotent action queue, and canonical reminder subscription bridge.
 - `dashboard/events_manager.py` — Event form, channel, timezone, artwork, card,
@@ -109,6 +109,9 @@ maintenance.
 - `utils/visual_studio/discord_storage.py` — Idempotent Asset Library
   upload/delete queue, Discord receipts/references, retry state, backfill, and
   readiness counts.
+- `utils/brofile_storage.py` — Idempotent member BROfile media upload/delete
+  queue, Discord receipts, retry state, destination rerouting, link refresh,
+  and readiness counts.
 - `dashboard/reminders_manager.py` — Guild-scoped reminder read models and
   queued dashboard actions used by Operations → Reminders.
 - `scripts/migrate_reminders.py` — Explicit idempotent migration and validation

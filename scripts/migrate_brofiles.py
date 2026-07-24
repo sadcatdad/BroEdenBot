@@ -32,7 +32,13 @@ def quick_check(path: Path) -> None:
 
 
 def validate_schema(path: Path) -> None:
-    required_tables = {"brofiles", "brofile_media", "brofile_badges", "visual_assets"}
+    required_tables = {
+        "brofiles",
+        "brofile_media",
+        "brofile_badges",
+        "brofile_media_storage_jobs",
+        "visual_assets",
+    }
     required_permissions = {"brofiles.view", "brofiles.edit", "brofiles.manage"}
     with sqlite3.connect(str(path)) as connection:
         tables = {
@@ -62,6 +68,40 @@ def validate_schema(path: Path) -> None:
             raise RuntimeError(
                 "Missing My BROfile permissions: {}".format(
                     ", ".join(sorted(missing_permissions))
+                )
+            )
+        profile_columns = {
+            row[1]
+            for row in connection.execute("PRAGMA table_info(brofiles)")
+        }
+        required_profile_columns = {
+            "moderation_hidden_at",
+            "moderation_hidden_by",
+            "moderation_hidden_reason",
+        }
+        missing_profile_columns = required_profile_columns - profile_columns
+        if missing_profile_columns:
+            raise RuntimeError(
+                "Missing BROfile moderation columns: {}".format(
+                    ", ".join(sorted(missing_profile_columns))
+                )
+            )
+        media_columns = {
+            row[1]
+            for row in connection.execute("PRAGMA table_info(brofile_media)")
+        }
+        required_media_columns = {
+            "discord_storage_thread_id",
+            "discord_message_id",
+            "discord_attachment_url",
+            "discord_sync_status",
+            "discord_last_error",
+        }
+        missing_media_columns = required_media_columns - media_columns
+        if missing_media_columns:
+            raise RuntimeError(
+                "Missing BROfile Discord storage columns: {}".format(
+                    ", ".join(sorted(missing_media_columns))
                 )
             )
         migration = connection.execute(

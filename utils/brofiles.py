@@ -54,6 +54,22 @@ def _now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
+def _ensure_column(
+    connection: sqlite3.Connection,
+    table: str,
+    column: str,
+    declaration: str,
+) -> None:
+    existing = {
+        str(row["name"])
+        for row in connection.execute("PRAGMA table_info({})".format(table))
+    }
+    if column not in existing:
+        connection.execute(
+            "ALTER TABLE {} ADD COLUMN {} {}".format(table, column, declaration)
+        )
+
+
 def initialize_brofile_schema() -> None:
     """Create the additive BROfile schema once for the active database."""
     database_key = str(settings_database_path().expanduser().resolve())
@@ -96,6 +112,11 @@ def initialize_brofile_schema() -> None:
                 file_size INTEGER NOT NULL,
                 checksum TEXT NOT NULL,
                 uploaded_by TEXT,
+                discord_storage_thread_id TEXT,
+                discord_message_id TEXT,
+                discord_attachment_url TEXT,
+                discord_sync_status TEXT,
+                discord_last_error TEXT,
                 created_at TEXT NOT NULL,
                 updated_at TEXT NOT NULL,
                 UNIQUE (guild_id, user_id, media_type),
@@ -116,12 +137,60 @@ def initialize_brofile_schema() -> None:
                 UNIQUE (guild_id, role_id)
             );
 
+            CREATE TABLE IF NOT EXISTS brofile_media_storage_jobs (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                media_id INTEGER NOT NULL,
+                action TEXT NOT NULL CHECK(action IN ('upload', 'delete')),
+                idempotency_key TEXT NOT NULL UNIQUE,
+                requested_by TEXT,
+                status TEXT NOT NULL DEFAULT 'pending'
+                    CHECK(status IN ('pending', 'processing', 'completed', 'failed', 'superseded')),
+                attempt_count INTEGER NOT NULL DEFAULT 0,
+                storage_thread_id TEXT,
+                message_id TEXT,
+                attachment_url TEXT,
+                result_message TEXT,
+                failure_reason TEXT,
+                requested_at TEXT NOT NULL,
+                processed_at TEXT
+            );
+
             CREATE INDEX IF NOT EXISTS idx_brofiles_directory
             ON brofiles(guild_id, directory_visible, display_name);
+            CREATE INDEX IF NOT EXISTS idx_brofiles_management
+            ON brofiles(guild_id, updated_at DESC);
             CREATE INDEX IF NOT EXISTS idx_brofile_badges_priority
             ON brofile_badges(guild_id, active, priority DESC, id);
+            CREATE INDEX IF NOT EXISTS idx_brofile_media_storage_jobs_pending
+            ON brofile_media_storage_jobs(status, id);
             """
         )
+        _ensure_column(
+            connection,
+            "brofiles",
+            "moderation_hidden_at",
+            "TEXT",
+        )
+        _ensure_column(
+            connection,
+            "brofiles",
+            "moderation_hidden_by",
+            "TEXT",
+        )
+        _ensure_column(
+            connection,
+            "brofiles",
+            "moderation_hidden_reason",
+            "TEXT NOT NULL DEFAULT ''",
+        )
+        for column, declaration in (
+            ("discord_storage_thread_id", "TEXT"),
+            ("discord_message_id", "TEXT"),
+            ("discord_attachment_url", "TEXT"),
+            ("discord_sync_status", "TEXT"),
+            ("discord_last_error", "TEXT"),
+        ):
+            _ensure_column(connection, "brofile_media", column, declaration)
         connection.commit()
     _INITIALIZED_DATABASES.add(database_key)
 
@@ -302,12 +371,125 @@ def list_directory_brofiles(guild_id: str, limit: int = 500) -> List[Dict[str, A
             """
             SELECT * FROM brofiles
             WHERE guild_id = ? AND directory_visible = 1
+              AND moderation_hidden_at IS NULL
             ORDER BY display_name COLLATE NOCASE, username COLLATE NOCASE
             LIMIT ?
             """,
             (str(guild_id), bounded_limit),
         ).fetchall()
     return [dict(row) for row in rows]
+
+
+def list_brofiles_for_management(
+    guild_id: str,
+    *,
+    query: Any = "",
+    page: int = 1,
+    page_size: int = 15,
+) -> Dict[str, Any]:
+    """Return a bounded searchable page of every saved member BROfile."""
+    initialize_brofile_schema()
+    clean_query = " ".join(str(query or "").split())[:120]
+    bounded_page_size = max(1, min(int(page_size), 100))
+    clauses = ["guild_id = ?"]
+    parameters: List[Any] = [str(guild_id)]
+    if clean_query:
+        clauses.append(
+            """
+            (
+                display_name LIKE ? COLLATE NOCASE
+                OR username LIKE ? COLLATE NOCASE
+                OR user_id LIKE ?
+                OR tagline LIKE ? COLLATE NOCASE
+            )
+            """
+        )
+        pattern = "%{}%".format(clean_query)
+        parameters.extend((pattern, pattern, pattern, pattern))
+    where = " AND ".join(clauses)
+    with _connect() as connection:
+        total = int(
+            connection.execute(
+                "SELECT COUNT(*) FROM brofiles WHERE {}".format(where),
+                tuple(parameters),
+            ).fetchone()[0]
+        )
+        pages = max(1, (total + bounded_page_size - 1) // bounded_page_size)
+        current_page = max(1, min(int(page), pages))
+        rows = connection.execute(
+            """
+            SELECT brofiles.*,
+                   (
+                       SELECT COUNT(*) FROM brofile_media media
+                       WHERE media.guild_id = brofiles.guild_id
+                         AND media.user_id = brofiles.user_id
+                   ) AS media_count
+            FROM brofiles
+            WHERE {}
+            ORDER BY updated_at DESC, display_name COLLATE NOCASE,
+                     username COLLATE NOCASE
+            LIMIT ? OFFSET ?
+            """.format(where),
+            tuple(
+                parameters
+                + [
+                    bounded_page_size,
+                    (current_page - 1) * bounded_page_size,
+                ]
+            ),
+        ).fetchall()
+    return {
+        "items": [dict(row) for row in rows],
+        "query": clean_query,
+        "page": current_page,
+        "page_size": bounded_page_size,
+        "pages": pages,
+        "total": total,
+    }
+
+
+def set_brofile_moderation_hidden(
+    guild_id: str,
+    user_id: str,
+    *,
+    hidden: bool,
+    changed_by: str,
+    reason: Any = "",
+) -> Dict[str, Any]:
+    """Apply or clear a staff moderation hold independently of member privacy."""
+    initialize_brofile_schema()
+    with _connect() as connection:
+        existing = connection.execute(
+            """
+            SELECT user_id FROM brofiles
+            WHERE guild_id = ? AND user_id = ?
+            """,
+            (str(guild_id), str(user_id)),
+        ).fetchone()
+        if existing is None:
+            raise ValueError("BROfile was not found.")
+        now = _now()
+        connection.execute(
+            """
+            UPDATE brofiles
+            SET moderation_hidden_at = ?,
+                moderation_hidden_by = ?,
+                moderation_hidden_reason = ?,
+                revision = revision + 1,
+                updated_at = ?
+            WHERE guild_id = ? AND user_id = ?
+            """,
+            (
+                now if hidden else None,
+                str(changed_by or "")[:120] if hidden else None,
+                str(reason or "").strip()[:300] if hidden else "",
+                now,
+                str(guild_id),
+                str(user_id),
+            ),
+        )
+        connection.commit()
+    return get_brofile(guild_id, user_id) or {}
 
 
 def _member_role_ids(connection: sqlite3.Connection, user_id: str) -> set[str]:
@@ -612,7 +794,13 @@ def save_brofile_media(
     return get_brofile(guild_id, user_id) or {}
 
 
-def remove_brofile_media(guild_id: str, user_id: str, media_type: str) -> bool:
+def remove_brofile_media(
+    guild_id: str,
+    user_id: str,
+    media_type: str,
+    *,
+    changed_by: str = "member",
+) -> bool:
     if media_type not in MEDIA_SIZES:
         raise ValueError("Unknown BROfile image type.")
     initialize_brofile_schema()
@@ -620,7 +808,7 @@ def remove_brofile_media(guild_id: str, user_id: str, media_type: str) -> bool:
     with _connect() as connection:
         row = connection.execute(
             """
-            SELECT storage_key FROM brofile_media
+            SELECT id, storage_key FROM brofile_media
             WHERE guild_id = ? AND user_id = ? AND media_type = ?
             """,
             (str(guild_id), str(user_id), media_type),
@@ -628,6 +816,9 @@ def remove_brofile_media(guild_id: str, user_id: str, media_type: str) -> bool:
         if row is None:
             return False
         storage_key = str(row["storage_key"])
+        from utils.brofile_storage import prepare_media_deletion
+
+        prepare_media_deletion(connection, int(row["id"]), changed_by)
         connection.execute(
             """
             DELETE FROM brofile_media
@@ -649,3 +840,56 @@ def remove_brofile_media(guild_id: str, user_id: str, media_type: str) -> bool:
     except (OSError, ValueError):
         pass
     return True
+
+
+def delete_brofile(
+    guild_id: str,
+    user_id: str,
+    *,
+    changed_by: str,
+) -> Optional[Dict[str, Any]]:
+    """Permanently remove a BROfile, its local media, and queue remote cleanup."""
+    initialize_brofile_schema()
+    storage_keys: List[str] = []
+    deleted_profile: Optional[Dict[str, Any]] = None
+    with _connect() as connection:
+        profile = connection.execute(
+            """
+            SELECT * FROM brofiles
+            WHERE guild_id = ? AND user_id = ?
+            """,
+            (str(guild_id), str(user_id)),
+        ).fetchone()
+        if profile is None:
+            return None
+        deleted_profile = dict(profile)
+        media_rows = connection.execute(
+            """
+            SELECT id, storage_key FROM brofile_media
+            WHERE guild_id = ? AND user_id = ?
+            """,
+            (str(guild_id), str(user_id)),
+        ).fetchall()
+        from utils.brofile_storage import prepare_media_deletion
+
+        for media in media_rows:
+            prepare_media_deletion(
+                connection,
+                int(media["id"]),
+                changed_by,
+            )
+            storage_keys.append(str(media["storage_key"]))
+        connection.execute(
+            """
+            DELETE FROM brofiles
+            WHERE guild_id = ? AND user_id = ?
+            """,
+            (str(guild_id), str(user_id)),
+        )
+        connection.commit()
+    for storage_key in storage_keys:
+        try:
+            _media_path(storage_key).unlink(missing_ok=True)
+        except (OSError, ValueError):
+            pass
+    return deleted_profile

@@ -1,0 +1,145 @@
+{% extends "base.html" %}
+{% block content %}
+<section class="brofile-management-page">
+  <header class="page-heading">
+    <div>
+      <p class="eyebrow">Community profiles</p>
+      <h1><span class="bro-mark">BRO</span>file Management</h1>
+      <p class="muted">Moderate member profiles, manage private upload storage, and connect Discord roles to recognition badges.</p>
+    </div>
+    <a class="button secondary" href="{{ url_for('brofile_directory') }}">Open&nbsp;<span class="bro-mark">BRO</span>&nbsp;Directory</a>
+  </header>
+
+  {% if message %}<div class="alert success">{{ message }}</div>{% endif %}
+  {% if error %}<div class="alert error">{{ error }}</div>{% endif %}
+
+  <section class="metric-grid brofile-management-metrics" aria-label="BROfile summary">
+    <article class="metric-card"><span>Saved profiles</span><strong>{{ page_data.total }}</strong><small>All member <span class="bro-mark">BRO</span>files</small></article>
+    <article class="metric-card"><span>Profile images</span><strong>{{ storage.total_assets }}</strong><small>{{ storage.stored_assets }} stored in Discord</small></article>
+    <article class="metric-card"><span>Storage queue</span><strong>{{ storage.pending_jobs }}</strong><small>{{ storage.failed_jobs }} failed</small></article>
+    <article class="metric-card"><span>Role badges</span><strong>{{ badge_mappings|length }}</strong><small>Active recognition mappings</small></article>
+  </section>
+
+  <section class="card brofile-storage-manager" id="upload-storage">
+    <header class="split-heading">
+      <div>
+        <p class="eyebrow">Private Discord storage</p>
+        <h2><span class="bro-mark">BRO</span>file upload destination</h2>
+        <p class="muted">Paste an existing private Discord forum post/thread ID. Banner and spotlight uploads are normalized locally, then the live bot stores each image as a message attachment in this thread.</p>
+      </div>
+      <span class="status-chip {{ 'ready' if storage_thread_id and storage_module_enabled else 'failed' }}">{{ 'Configured' if storage_thread_id and storage_module_enabled else 'Setup required' }}</span>
+    </header>
+    {% if not storage_module_enabled %}
+    <div class="alert warning">Add <code>visual</code> to <code>ENABLED_MODULES</code> so the shared Discord storage worker can process <span class="bro-mark">BRO</span>file uploads.</div>
+    {% endif %}
+    <form method="post" action="{{ url_for('brofile_management_storage') }}" class="brofile-storage-form">
+      <input type="hidden" name="csrf" value="{{ csrf_token }}">
+      <label>Forum post/thread ID
+        <input name="storage_thread_id" value="{{ storage_thread_id }}" inputmode="numeric" pattern="[0-9]*" placeholder="123456789012345678">
+        <small>Use the forum post/thread itself—not the parent forum channel. Clearing this pauses new uploads.</small>
+      </label>
+      <button class="button" type="submit">Save upload destination</button>
+    </form>
+  </section>
+
+  <section class="card brofile-member-manager" id="member-brofiles">
+    <header class="split-heading">
+      <div>
+        <p class="eyebrow">Member moderation</p>
+        <h2>Saved <span class="bro-mark">BRO</span>files</h2>
+        <p class="muted">Showing up to 15 profiles per page. Staff hides override a member’s own directory preference until restored here.</p>
+      </div>
+      <form method="get" action="{{ url_for('brofile_management') }}" class="brofile-management-search" role="search">
+        <label>Search members
+          <input type="search" name="q" value="{{ page_data.query }}" placeholder="Name, username, ID, or headline">
+        </label>
+        <button class="button secondary" type="submit">Search</button>
+        {% if page_data.query %}<a class="button ghost" href="{{ url_for('brofile_management') }}#member-brofiles">Clear</a>{% endif %}
+      </form>
+    </header>
+
+    {% if page_data["items"] %}
+    <div class="brofile-management-list">
+      {% for item in page_data["items"] %}
+      <article class="brofile-management-row">
+        <div class="brofile-management-avatar">{% if item.avatar_url %}<img src="{{ item.avatar_url }}" alt="" referrerpolicy="no-referrer">{% else %}{{ (item.display_name or item.username)[:1]|upper }}{% endif %}</div>
+        <div class="brofile-management-identity">
+          <strong>{{ (item.display_name or item.username)|display_name }}</strong>
+          <span>@{{ item.username|display_name }} · <code>{{ item.user_id }}</code></span>
+          <small>{{ item.tagline or 'No headline yet' }}</small>
+        </div>
+        <div class="brofile-management-statuses">
+          {% if item.moderation_hidden_at %}
+          <span class="status-chip failed">Hidden by staff</span>
+          {% elif item.directory_visible %}
+          <span class="status-chip ready">Published</span>
+          {% else %}
+          <span class="status-chip pending">Member draft</span>
+          {% endif %}
+          <small>{{ item.media_count }} image{{ '' if item.media_count == 1 else 's' }} · updated {{ item.updated_at|friendly_datetime }}</small>
+        </div>
+        <div class="brofile-management-actions">
+          {% if item.directory_visible and not item.moderation_hidden_at %}<a class="button ghost small" href="{{ url_for('brofile_detail', user_id=item.user_id) }}">View</a>{% endif %}
+          <form method="post" action="{{ url_for('brofile_management_visibility', user_id=item.user_id) }}">
+            <input type="hidden" name="csrf" value="{{ csrf_token }}">
+            <input type="hidden" name="hidden" value="{{ 'no' if item.moderation_hidden_at else 'yes' }}">
+            <input type="hidden" name="return_query" value="{{ page_data.query }}">
+            <input type="hidden" name="return_page" value="{{ page_data.page }}">
+            <button class="button secondary small" type="submit">{{ 'Restore' if item.moderation_hidden_at else 'Hide' }}</button>
+          </form>
+          <a class="button danger small" href="{{ url_for('brofile_management_delete_confirm', user_id=item.user_id) }}?{{ {'q': page_data.query, 'page': page_data.page}|urlencode }}">Delete</a>
+        </div>
+      </article>
+      {% endfor %}
+    </div>
+
+    {% if page_data.pages > 1 %}
+    <nav class="pagination brofile-pagination" aria-label="BROfile management pages">
+      {% if page_data.page > 1 %}<a class="button secondary small" href="{{ url_for('brofile_management') }}?{{ {'q': page_data.query, 'page': page_data.page - 1}|urlencode }}#member-brofiles">Previous</a>{% endif %}
+      <span>Page {{ page_data.page }} of {{ page_data.pages }}</span>
+      {% if page_data.page < page_data.pages %}<a class="button secondary small" href="{{ url_for('brofile_management') }}?{{ {'q': page_data.query, 'page': page_data.page + 1}|urlencode }}#member-brofiles">Next</a>{% endif %}
+    </nav>
+    {% endif %}
+    {% else %}
+    <div class="empty-state">{% if page_data.query %}No saved <span class="bro-mark">BRO</span>files match that search.{% else %}No member <span class="bro-mark">BRO</span>files have been created yet.{% endif %}</div>
+    {% endif %}
+  </section>
+
+  <section class="card brofile-badge-manager" id="badge-mappings">
+    <header class="split-heading">
+      <div>
+        <p class="eyebrow">Role recognition</p>
+        <h2><span class="bro-mark">BRO</span>file badge mappings</h2>
+        <p class="muted">A member receives the highest-priority badge whose mapped Discord role they currently hold. Role membership refreshes when they sign in with Discord.</p>
+      </div>
+      {% if can('visual.manage') %}<a class="button secondary small" href="{{ url_for('visual_asset_upload') }}">Upload badge graphic</a>{% endif %}
+    </header>
+    {% if role_options and badge_assets %}
+    <form method="post" action="{{ url_for('brofile_badge_save') }}" class="brofile-badge-form">
+      <input type="hidden" name="csrf" value="{{ csrf_token }}">
+      <label>Discord role<select name="role_id" required><option value="">Choose role</option>{% for role in role_options %}<option value="{{ role.id }}">{{ role.name }}</option>{% endfor %}</select></label>
+      <label>Badge graphic<select name="asset_id" required><option value="">Choose Asset Library badge</option>{% for asset in badge_assets %}<option value="{{ asset.id }}">{{ asset.name }} · {{ asset.width }} × {{ asset.height }}</option>{% endfor %}</select></label>
+      <label>Accessible label<input name="label" maxlength="60" placeholder="Founding BRO" required></label>
+      <label>Priority<input type="number" name="priority" min="-1000" max="1000" value="0" required><small>Higher wins when a member has multiple badge roles.</small></label>
+      <button class="button" type="submit">Save mapping</button>
+    </form>
+    {% elif not role_options %}
+    <div class="alert warning">Refresh Discord metadata before mapping a role to a badge.</div>
+    {% else %}
+    <div class="alert warning">{% if can('visual.manage') %}Upload an Asset Library image with type <strong>Badge</strong> before creating a role mapping.{% else %}An Asset Library manager must upload an image with type <strong>Badge</strong> first.{% endif %}</div>
+    {% endif %}
+
+    {% if badge_mappings %}
+    <div class="brofile-badge-list">
+      {% for mapping in badge_mappings %}
+      <article>
+        <img src="{{ url_for('brofile_badge_image', mapping_id=mapping.id) }}" alt="">
+        <div><strong>{{ mapping.label }}</strong><span>{{ mapping.role_name }} · priority {{ mapping.priority }}</span><small>{{ mapping.asset_name or 'Missing asset' }}</small></div>
+        <form method="post" action="{{ url_for('brofile_badge_delete', mapping_id=mapping.id) }}"><input type="hidden" name="csrf" value="{{ csrf_token }}"><button class="button danger small" type="submit">Remove</button></form>
+      </article>
+      {% endfor %}
+    </div>
+    {% endif %}
+  </section>
+</section>
+{% endblock %}
