@@ -11,7 +11,7 @@ from fastapi.testclient import TestClient
 
 from dashboard.app import app, required_permission
 from dashboard.features import FEATURES_BY_KEY, feature_snapshot
-from dashboard.rbac import initialize_rbac_schema
+from dashboard.rbac import initialize_rbac_schema, list_roles
 from dashboard.users import hash_password, initialize_dashboard_users
 from utils.settings import initialize_settings_from_env
 from utils.settings import get_setting
@@ -167,8 +167,90 @@ class DashboardFeatureAccessTests(unittest.TestCase):
         self.assertIn("<h1>Events</h1>", events.text)
         self.assertIn("The Garden", events.text)
         self.assertNotIn("Create an event", events.text)
+        self.assertIn("My <span class=\"bro-mark\">BRO</span>file", events.text)
+        self.assertIn("<span class=\"bro-mark\">BRO</span> Directory", events.text)
+        self.assertNotIn("<span>Overview</span>", events.text)
+        self.assertNotIn("<span>Analytics</span>", events.text)
+        self.assertNotIn(">Dashboard</span>", events.text)
         self.assertEqual(self.client.get("/").status_code, 403)
         self.assertEqual(self.client.get("/events/new").status_code, 403)
+
+    def test_owner_can_toggle_between_dashboard_and_member_navigation(self):
+        self.login("owner", "owner-password")
+        dashboard = self.client.get("/events")
+        self.assertIn("<span>Overview</span>", dashboard.text)
+        self.assertIn("<span>Member View</span>", dashboard.text)
+        token = re.search(
+            r'name="csrf" value="([^"]+)"',
+            dashboard.text,
+        ).group(1)
+        switched = self.client.post(
+            "/view-mode",
+            data={"csrf": token, "mode": "member"},
+            follow_redirects=False,
+        )
+        self.assertEqual(switched.status_code, 303)
+        self.assertTrue(switched.headers["location"].endswith("/events"))
+        member = self.client.get("/events")
+        self.assertIn("<span>Dashboard</span>", member.text)
+        self.assertIn("My <span class=\"bro-mark\">BRO</span>file", member.text)
+        self.assertNotIn("<span>Overview</span>", member.text)
+        self.assertNotIn("<span>Analytics</span>", member.text)
+        self.assertNotIn("Event settings", member.text)
+        self.assertNotIn("Create an event", member.text)
+        self.assertNotIn("Publishing activity", member.text)
+        self.assertNotIn("Events readiness", member.text)
+
+        token = re.search(
+            r'name="csrf" value="([^"]+)"',
+            member.text,
+        ).group(1)
+        restored = self.client.post(
+            "/view-mode",
+            data={"csrf": token, "mode": "dashboard"},
+            follow_redirects=False,
+        )
+        self.assertEqual(restored.status_code, 303)
+        self.assertEqual(restored.headers["location"], "http://testserver/")
+
+    def test_administrator_access_page_can_edit_only_lower_roles(self):
+        self.add_password_user("administrator", "administrator-password", "admin")
+        self.login("administrator", "administrator-password")
+        page = self.client.get("/settings/access")
+        self.assertEqual(page.status_code, 200)
+        self.assertIn("Verified Member", page.text)
+        self.assertIn("Edit role capabilities", page.text)
+        self.assertIn("Protected at your access level", page.text)
+        token = re.search(
+            r'name="csrf" value="([^"]+)"',
+            page.text,
+        ).group(1)
+        roles = {item["role_key"]: item for item in list_roles()}
+        blocked = self.client.post(
+            "/settings/access/roles/save",
+            data={
+                "csrf": token,
+                "role_id": roles["administrator"]["id"],
+                "name": "Administrator",
+                "description": "Attempted self-edit.",
+                "permissions": ["events.view"],
+            },
+            follow_redirects=False,
+        )
+        self.assertEqual(blocked.status_code, 303)
+        error_page = self.client.get(blocked.headers["location"])
+        self.assertIn(
+            "cannot manage that dashboard role",
+            error_page.text,
+        )
+        self.assertIn(
+            "access.manage",
+            next(
+                item
+                for item in list_roles()
+                if item["role_key"] == "administrator"
+            )["permissions"],
+        )
 
     def test_expired_discord_verification_clears_existing_session(self):
         self.login("owner", "owner-password")

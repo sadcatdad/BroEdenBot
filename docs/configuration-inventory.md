@@ -73,7 +73,7 @@ All visible values have consumers in staff/moderation/context code. Model values
 Every key is read by the reminder/event service or its compatibility command gate. The fallback and command-specific roles intentionally overlap with documented precedence; they are not duplicate writes.
 
 The Garden Events area adds no Discord role-ID environment setting. Map the
-existing live Verified role to **Verified Events Member** and the live Captain
+existing live Verified role to **Verified Member** and the live Captain
 role to **Party Captain** in Dashboard Access. Runtime activation is
 `ENABLED_MODULES=events,reminders,...`; the Events cog remains disabled if its
 canonical Reminders dependency is omitted.

@@ -82,15 +82,15 @@ SYSTEM_ROLES = {
     },
     "administrator": {
         "name": "Administrator",
-        "description": "Broad operational, content, and configuration access without dashboard-access administration.",
-        "permissions": set(PERMISSION_KEYS) - {"access.manage"},
+        "description": "Full dashboard access, including access administration for roles below Administrator.",
+        "permissions": set(PERMISSION_KEYS),
     },
     "moderator": {
         "name": "Moderator",
         "description": "Moderation-adjacent analytics, knowledge, reminder, and event visibility.",
         "permissions": {
             "dashboard.view", "analytics.view", "features.view", "events.view",
-            "operations.view", "bot.status.view", "reminders.view",
+            "events.subscribe", "operations.view", "bot.status.view", "reminders.view",
             "content.view", "knowledge.view", "ai.view", "ask.view",
             "staff_tools.view", "checklists.view", "rulecards.view", "voice.view",
         },
@@ -104,15 +104,27 @@ SYSTEM_ROLES = {
         },
     },
     "verified_events_member": {
-        "name": "Verified Events Member",
-        "description": "Verified community-member access to the private Events schedule and DM reminders.",
+        "name": "Verified Member",
+        "description": "Verified BRO access to member-facing Garden experiences, including Events and personal reminders.",
         "permissions": {"events.view", "events.subscribe"},
     },
     "viewer": {
         "name": "Analyst / Viewer",
         "description": "Read-only overview and aggregate analytics access.",
-        "permissions": {"dashboard.view", "analytics.view", "bot.status.view"},
+        "permissions": {
+            "dashboard.view", "analytics.view", "bot.status.view",
+            "events.view", "events.subscribe",
+        },
     },
+}
+
+ROLE_LEVELS = {
+    "owner": 100,
+    "administrator": 90,
+    "moderator": 70,
+    "party_captain": 50,
+    "viewer": 40,
+    "verified_events_member": 10,
 }
 
 LEGACY_ROLE_MAP = {
@@ -223,6 +235,11 @@ def initialize_rbac_schema() -> None:
                 created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
             );
 
+            CREATE TABLE IF NOT EXISTS dashboard_rbac_migrations (
+                migration_key TEXT PRIMARY KEY,
+                applied_at TEXT NOT NULL
+            );
+
             CREATE INDEX IF NOT EXISTS idx_dashboard_role_assignments_user
             ON dashboard_user_role_assignments(user_id);
             CREATE INDEX IF NOT EXISTS idx_dashboard_role_mappings_discord
@@ -258,34 +275,107 @@ def initialize_rbac_schema() -> None:
                 (permission.key, permission.category, permission.name, permission.description, now),
             )
         for role_key, definition in SYSTEM_ROLES.items():
-            connection.execute(
-                """
-                INSERT INTO dashboard_roles (
-                    role_key, name, description, is_system, updated_at
-                ) VALUES (?, ?, ?, 1, ?)
-                ON CONFLICT(role_key) DO UPDATE SET
-                    name = excluded.name,
-                    description = excluded.description,
-                    is_system = 1,
-                    updated_at = excluded.updated_at
-                """,
-                (role_key, definition["name"], definition["description"], now),
-            )
-            role_id = int(
+            existing = connection.execute(
+                "SELECT id FROM dashboard_roles WHERE role_key = ?", (role_key,)
+            ).fetchone()
+            if existing is None:
+                cursor = connection.execute(
+                    """
+                    INSERT INTO dashboard_roles (
+                        role_key, name, description, is_system, updated_at
+                    ) VALUES (?, ?, ?, 1, ?)
+                    """,
+                    (role_key, definition["name"], definition["description"], now),
+                )
+                role_id = int(cursor.lastrowid)
+                connection.executemany(
+                    "INSERT INTO dashboard_role_permissions(role_id, permission_key) VALUES (?, ?)",
+                    [
+                        (role_id, key)
+                        for key in sorted(set(definition["permissions"]))
+                    ],
+                )
+            else:
+                role_id = int(existing["id"])
                 connection.execute(
-                    "SELECT id FROM dashboard_roles WHERE role_key = ?", (role_key,)
+                    """
+                    UPDATE dashboard_roles
+                    SET name = ?, description = ?, is_system = 1, updated_at = ?
+                    WHERE id = ?
+                    """,
+                    (
+                        definition["name"],
+                        definition["description"],
+                        now,
+                        role_id,
+                    ),
+                )
+        full_admin_migration = "2026_07_administrator_full_access"
+        if connection.execute(
+            "SELECT 1 FROM dashboard_rbac_migrations WHERE migration_key = ?",
+            (full_admin_migration,),
+        ).fetchone() is None:
+            administrator_id = int(
+                connection.execute(
+                    "SELECT id FROM dashboard_roles WHERE role_key = 'administrator'"
                 ).fetchone()[0]
             )
-            desired = set(definition["permissions"])
-            connection.execute(
-                "DELETE FROM dashboard_role_permissions WHERE role_id = ?", (role_id,)
-            )
             connection.executemany(
-                "INSERT INTO dashboard_role_permissions(role_id, permission_key) VALUES (?, ?)",
-                [(role_id, key) for key in sorted(desired)],
+                """
+                INSERT OR IGNORE INTO dashboard_role_permissions(role_id, permission_key)
+                VALUES (?, ?)
+                """,
+                [(administrator_id, key) for key in sorted(PERMISSION_KEYS)],
+            )
+            connection.execute(
+                """
+                INSERT INTO dashboard_rbac_migrations(migration_key, applied_at)
+                VALUES (?, ?)
+                """,
+                (full_admin_migration, now),
+            )
+        member_baseline_migration = "2026_07_member_view_baseline"
+        if connection.execute(
+            "SELECT 1 FROM dashboard_rbac_migrations WHERE migration_key = ?",
+            (member_baseline_migration,),
+        ).fetchone() is None:
+            for role_key in (
+                "owner",
+                "administrator",
+                "moderator",
+                "party_captain",
+                "viewer",
+                "verified_events_member",
+            ):
+                role_id = int(
+                    connection.execute(
+                        "SELECT id FROM dashboard_roles WHERE role_key = ?",
+                        (role_key,),
+                    ).fetchone()[0]
+                )
+                connection.executemany(
+                    """
+                    INSERT OR IGNORE INTO dashboard_role_permissions(role_id, permission_key)
+                    VALUES (?, ?)
+                    """,
+                    [
+                        (role_id, "events.view"),
+                        (role_id, "events.subscribe"),
+                    ],
+                )
+            connection.execute(
+                """
+                INSERT INTO dashboard_rbac_migrations(migration_key, applied_at)
+                VALUES (?, ?)
+                """,
+                (member_baseline_migration, now),
             )
         if _table_exists(connection, "dashboard_users"):
-            for row in connection.execute("SELECT id, role FROM dashboard_users"):
+            for row in connection.execute(
+                "SELECT id, role, access_source FROM dashboard_users"
+            ):
+                if str(row["access_source"] or "").casefold() == "discord_role":
+                    continue
                 role_key = LEGACY_ROLE_MAP.get(str(row["role"] or "viewer").casefold(), "viewer")
                 role_id = int(
                     connection.execute(
@@ -300,6 +390,16 @@ def initialize_rbac_schema() -> None:
                     """,
                     (int(row["id"]), role_id, role_key),
                 )
+            connection.execute(
+                """
+                DELETE FROM dashboard_user_role_assignments
+                WHERE source = 'legacy'
+                  AND user_id IN (
+                      SELECT id FROM dashboard_users
+                      WHERE access_source = 'discord_role'
+                  )
+                """
+            )
         connection.commit()
     _INITIALIZED_PATHS.add(database_key)
 
@@ -314,7 +414,8 @@ def permissions_for_user(user_id: int) -> set[str]:
     initialize_rbac_schema()
     with _connect() as connection:
         row = connection.execute(
-            "SELECT role, status FROM dashboard_users WHERE id = ?", (int(user_id),)
+            "SELECT role, status, access_source FROM dashboard_users WHERE id = ?",
+            (int(user_id),),
         ).fetchone()
         if row is None or str(row["status"]).casefold() != "active":
             return set()
@@ -330,8 +431,10 @@ def permissions_for_user(user_id: int) -> set[str]:
                 (int(user_id),),
             )
         }
+        uses_legacy_role = str(row["access_source"] or "").casefold() != "discord_role"
         legacy_key = LEGACY_ROLE_MAP.get(str(row["role"] or "viewer").casefold(), "viewer")
-        role_keys.add(legacy_key)
+        if uses_legacy_role:
+            role_keys.add(legacy_key)
         if "owner" in role_keys:
             return set(PERMISSION_KEYS)
         permissions = {
@@ -341,14 +444,14 @@ def permissions_for_user(user_id: int) -> set[str]:
                 SELECT DISTINCT rp.permission_key
                 FROM dashboard_user_role_assignments a
                 JOIN dashboard_role_permissions rp ON rp.role_id = a.role_id
-                WHERE a.user_id = ?
+                WHERE a.user_id = ? AND a.source != 'legacy'
                 """,
                 (int(user_id),),
             )
         }
         legacy_role_id = connection.execute(
             "SELECT id FROM dashboard_roles WHERE role_key = ?", (legacy_key,)
-        ).fetchone()
+        ).fetchone() if uses_legacy_role else None
         if legacy_role_id:
             permissions.update(
                 str(item["permission_key"])
@@ -372,6 +475,14 @@ def permissions_for_user(user_id: int) -> set[str]:
 def role_names_for_user(user_id: int) -> list[str]:
     initialize_rbac_schema()
     with _connect() as connection:
+        user = connection.execute(
+            "SELECT role, access_source FROM dashboard_users WHERE id = ?",
+            (int(user_id),),
+        ).fetchone()
+        if user is None:
+            return []
+        uses_legacy_role = str(user["access_source"] or "").casefold() != "discord_role"
+        source_clause = "" if uses_legacy_role else "AND a.source != 'legacy'"
         return [
             str(row["name"])
             for row in connection.execute(
@@ -379,12 +490,90 @@ def role_names_for_user(user_id: int) -> list[str]:
                 SELECT DISTINCT r.name, r.is_system, r.id
                 FROM dashboard_user_role_assignments a
                 JOIN dashboard_roles r ON r.id = a.role_id
-                WHERE a.user_id = ?
+                WHERE a.user_id = ? {}
                 ORDER BY r.is_system DESC, r.id
-                """,
+                """.format(source_clause),
                 (int(user_id),),
             )
         ]
+
+
+def role_keys_for_user(user_id: int) -> set[str]:
+    initialize_rbac_schema()
+    with _connect() as connection:
+        user = connection.execute(
+            "SELECT role, access_source FROM dashboard_users WHERE id = ?",
+            (int(user_id),),
+        ).fetchone()
+        if user is None:
+            return set()
+        keys = {
+            str(row["role_key"])
+            for row in connection.execute(
+                """
+                SELECT DISTINCT r.role_key
+                FROM dashboard_user_role_assignments a
+                JOIN dashboard_roles r ON r.id = a.role_id
+                WHERE a.user_id = ? AND a.source != 'legacy'
+                """,
+                (int(user_id),),
+            )
+        }
+        if str(user["access_source"] or "").casefold() != "discord_role":
+            keys.add(
+                LEGACY_ROLE_MAP.get(
+                    str(user["role"] or "viewer").casefold(),
+                    "viewer",
+                )
+            )
+        return keys
+
+
+def access_management_scope(user_id: int) -> dict[str, Any]:
+    """Return the roles and capabilities an access administrator may change."""
+    keys = role_keys_for_user(user_id)
+    if "owner" in keys:
+        maximum_level = ROLE_LEVELS["owner"]
+        allowed_permissions = set(PERMISSION_KEYS)
+    elif "administrator" in keys:
+        maximum_level = ROLE_LEVELS["administrator"]
+        allowed_permissions = set(PERMISSION_KEYS) - {"access.manage"}
+    else:
+        return {
+            "can_create_roles": False,
+            "manageable_role_ids": set(),
+            "manageable_user_ids": set(),
+            "allowed_permissions": set(),
+        }
+    roles = list_roles()
+    manageable_role_ids = {
+        int(role["id"])
+        for role in roles
+        if (
+            (
+                not int(role["is_system"])
+                or ROLE_LEVELS.get(str(role["role_key"]), 0) < maximum_level
+            )
+            and set(role["permissions"]).issubset(allowed_permissions)
+        )
+    }
+    manageable_user_ids: set[int] = set()
+    with _connect() as connection:
+        users = connection.execute("SELECT id FROM dashboard_users").fetchall()
+    for user in users:
+        target_keys = role_keys_for_user(int(user["id"]))
+        target_level = max(
+            (ROLE_LEVELS.get(key, 0) for key in target_keys),
+            default=0,
+        )
+        if target_level < maximum_level:
+            manageable_user_ids.add(int(user["id"]))
+    return {
+        "can_create_roles": True,
+        "manageable_role_ids": manageable_role_ids,
+        "manageable_user_ids": manageable_user_ids,
+        "allowed_permissions": allowed_permissions,
+    }
 
 
 def sync_discord_role_assignments(user_id: int, discord_role_ids: Iterable[str]) -> list[str]:
@@ -472,12 +661,23 @@ def permission_catalog() -> list[dict[str, str]]:
 def save_custom_role(
     *, role_id: Optional[int], name: str, description: str,
     permissions: Iterable[str], changed_by: str,
+    manageable_role_ids: Optional[Iterable[int]] = None,
+    allowed_permissions: Optional[Iterable[str]] = None,
 ) -> int:
     initialize_rbac_schema()
     clean_name = " ".join(str(name or "").split())[:80]
     if not clean_name:
         raise ValueError("Role name is required.")
-    selected = sorted(set(permissions) & set(PERMISSION_KEYS))
+    requested = set(permissions)
+    allowed = (
+        set(PERMISSION_KEYS)
+        if allowed_permissions is None
+        else set(allowed_permissions) & set(PERMISSION_KEYS)
+    )
+    unauthorized = requested - allowed
+    if unauthorized:
+        raise ValueError("One or more selected capabilities cannot be delegated.")
+    selected = sorted(requested & allowed)
     role_key = "custom_" + uuid.uuid4().hex[:16]
     with _connect() as connection:
         connection.execute("BEGIN IMMEDIATE")
@@ -496,8 +696,15 @@ def save_custom_role(
             ).fetchone()
             if existing is None:
                 raise ValueError("Dashboard role was not found.")
-            if int(existing["is_system"]):
-                raise ValueError("System roles cannot be edited.")
+            editable_ids = (
+                None
+                if manageable_role_ids is None
+                else {int(value) for value in manageable_role_ids}
+            )
+            if int(existing["is_system"]) and (
+                editable_ids is None or int(role_id) not in editable_ids
+            ):
+                raise ValueError("This system role cannot be edited by your role.")
             connection.execute(
                 "UPDATE dashboard_roles SET name = ?, description = ?, updated_at = ? WHERE id = ?",
                 (clean_name, str(description or "").strip()[:300], _utc_now(), int(role_id)),
@@ -706,9 +913,26 @@ def _active_owner_count(connection: sqlite3.Connection) -> int:
     )
 
 
-def access_overview(users: list[dict[str, Any]]) -> dict[str, Any]:
+def access_overview(
+    users: list[dict[str, Any]],
+    *,
+    actor_user_id: Optional[int] = None,
+) -> dict[str, Any]:
     initialize_rbac_schema()
     roles = list_roles()
+    scope = (
+        access_management_scope(actor_user_id)
+        if actor_user_id is not None
+        else {
+            "can_create_roles": False,
+            "manageable_role_ids": set(),
+            "manageable_user_ids": set(),
+            "allowed_permissions": set(),
+        }
+    )
+    manageable_role_ids = set(scope["manageable_role_ids"])
+    for role in roles:
+        role["editable"] = int(role["id"]) in manageable_role_ids
     with _connect() as connection:
         mappings = [
             dict(row)
@@ -751,12 +975,19 @@ def access_overview(users: list[dict[str, Any]]) -> dict[str, Any]:
             override for override in overrides
             if int(override["user_id"]) == int(item["id"])
         ]
+        item["manageable"] = int(item["id"]) in set(scope["manageable_user_ids"])
         enriched_users.append(item)
     return {
         "roles": roles,
-        "permissions": permission_catalog(),
+        "permissions": [
+            permission
+            for permission in permission_catalog()
+            if permission["key"] in set(scope["allowed_permissions"])
+        ],
         "mappings": mappings,
         "users": enriched_users,
+        "can_create_roles": bool(scope["can_create_roles"]),
+        "manageable_role_ids": manageable_role_ids,
     }
 
 

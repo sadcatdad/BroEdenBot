@@ -22,24 +22,40 @@ Permissions are stable strings grouped into Monitor, Community, Operations, Fina
 
 Multiple roles combine additively. A per-user explicit deny removes an inherited capability; an explicit allow adds it. Owner denies are rejected.
 
+For Discord users admitted through a database-backed role mapping, mapped
+assignments are authoritative. The compatibility `viewer` value stored on older
+user rows is not unioned into effective permissions, so a Verified Member does
+not gain Overview or Analytics accidentally.
+
 ## System roles
 
 | Role | Default intent |
 |---|---|
 | Owner | Every current capability; final active owner cannot be removed, disabled, or denied |
-| Administrator | Broad operations/content/settings and audit access, excluding `access.manage` |
-| Moderator | Dashboard/analytics plus selected staff, knowledge, voice, reminder, and event views; no infrastructure writes |
+| Administrator | Every current capability by default, including access management for roles below Administrator |
+| Moderator | Dashboard/analytics plus selected staff, knowledge, voice, reminder, and member-event views; no infrastructure writes |
 | Party Captain | Overview, feature hub, event view/subscribe/create/edit-own only |
-| Verified Events Member | Private Events schedule and personal DM subscription controls only |
-| Analyst / Viewer | Overview, bot-status summary, read-only analytics |
+| Verified Member | Member-facing Garden access, currently the private Events schedule and personal DM subscription controls |
+| Analyst / Viewer | Overview, bot-status summary, read-only analytics, and the member Events surface |
 
-Custom roles store a name, description, and selected capabilities. System roles are reseeded from code to keep their security meaning stable; custom roles are never overwritten.
+Custom roles store a name, description, and selected capabilities. Owners can
+configure Administrator and all lower system/custom roles. Administrators can
+configure or create roles below Administrator, but cannot edit Owner,
+Administrator, or delegate `access.manage`. Owner remains an immutable recovery
+authority. System role names/descriptions stay canonical, while configured
+capability sets persist across restarts; defaults and required compatibility
+changes use one-time migration records instead of reseeding permissions.
 
 ## Discord role mapping
 
 `dashboard_discord_role_mappings` maps one or more live Discord role IDs to a dashboard role. Saving a mapping set replaces the mappings for that dashboard role. Multiple matching mappings yield additive dashboard permissions. `dashboard_user_role_assignments.source` identifies `legacy`, `direct`, or `discord`; Discord-derived assignments retain the source role ID.
 
 An owner can also add direct dashboard roles and per-user allow/deny/inherit overrides. The UI shows each effective permission and access source. Mapping changes do not impersonate Discord: login remains the authoritative membership refresh.
+
+Users with both `events.view` and `dashboard.view` can switch between a fixed
+**Member View** and **Dashboard** control in the sidebar. Member View shows only
+My BROfile and BRO Directory placeholders plus Events. The switch changes
+navigation presentation only; server-side capabilities remain unchanged.
 
 ## Enforcement
 
@@ -62,6 +78,7 @@ The additive schema contains:
 - `dashboard_discord_role_mappings`
 - `dashboard_user_permission_overrides`
 - `dashboard_audit_log`
+- `dashboard_rbac_migrations`
 - dashboard membership-verification columns on `dashboard_users`
 
 The append-only audit log records actor, action, target, timestamp, redacted before/after JSON, success/error, and correlation ID. SQLite triggers reject update and delete. Semantic events exist for login, denied access, configuration/access changes, Discord refresh, service restart, database backup, and visual publication; the middleware also records mutating route outcomes.
