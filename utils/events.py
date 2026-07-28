@@ -15,7 +15,7 @@ from typing import Any, Iterable, Optional, Sequence
 
 import aiosqlite
 
-from utils.reminder_service import ReminderService, initialize_schema_sync
+from utils.reminder_service import ReminderService, initialize_schema_sync, parse_utc
 from utils.settings import settings_database_path
 from utils.sqlite import configure_connection, configure_sync_connection
 
@@ -231,8 +231,17 @@ def list_events(
             (str(user_id or ""), str(guild_id)),
         ).fetchall()
     result: list[dict[str, Any]] = []
+    now = datetime.now(timezone.utc)
     for row in rows:
         item = dict(row)
+        if not include_inactive and item.get("status") != "active":
+            boundary_text = item.get("end_at_utc") or item.get("scheduled_at_utc")
+            try:
+                boundary = parse_utc(str(boundary_text))
+            except (TypeError, ValueError):
+                continue
+            if boundary <= now:
+                continue
         item["discord_cover_url"] = item.get("image_url")
         item["image_url"] = item.get("stored_image_url") or item.get("image_url")
         item["subscribed"] = bool(item.get("subscribed"))

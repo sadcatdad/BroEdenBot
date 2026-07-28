@@ -24,6 +24,8 @@
         <channel-multi-select input-name="setting__{{ setting.key }}" setting-key="{{ setting.key }}" value-format="{{ setting.value_format }}" value="{{ setting.value|e }}"></channel-multi-select>
       {% elif setting.picker == 'category' %}
         <category-multi-select input-name="setting__{{ setting.key }}" setting-key="{{ setting.key }}" value-format="{{ setting.value_format }}" value="{{ setting.value|e }}"></category-multi-select>
+      {% elif setting.picker == 'snowflake' %}
+        <input id="setting-{{ setting.key }}" name="setting__{{ setting.key }}" value="{{ setting.value }}" inputmode="numeric" pattern="[0-9]{17,20}" placeholder="Paste Discord thread ID" autocomplete="off">
       {% elif setting.picker == 'emoji_text' %}
         <div class="setting-message-editor" data-setting-message-editor>
           <textarea id="setting-{{ setting.key }}" name="setting__{{ setting.key }}" rows="6" maxlength="{{ setting.maximum or 2000 }}" data-setting-message-input>{{ setting.value }}</textarea>

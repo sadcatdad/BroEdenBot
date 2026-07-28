@@ -178,10 +178,10 @@ SETTING_DEFINITIONS = (
         "EVENTS_ARTWORK_STORAGE_CHANNEL_ID",
         "events",
         "csv_ids",
-        "Private Discord forum, thread, or text channel where dashboard event artwork is stored. "
-        "BroEdenBot keeps the resulting Discord attachment link and clears temporary upload bytes.",
-        title="Event Artwork Storage",
-        picker="channel",
+        "Paste the thread ID of an existing private Discord forum post where dashboard event artwork "
+        "will be stored. BroEdenBot keeps the resulting attachment link and clears temporary upload bytes.",
+        title="Event Artwork Storage Forum Post",
+        picker="snowflake",
         single=True,
     ),
     SettingDefinition(

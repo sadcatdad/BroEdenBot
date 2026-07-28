@@ -3,10 +3,11 @@
 from __future__ import annotations
 
 import asyncio
+import calendar
 import io
 import json
 import logging
-from datetime import datetime, timezone
+from datetime import datetime, time, timedelta, timezone
 from typing import Any, Optional
 
 import discord
@@ -31,6 +32,122 @@ def _parse_datetime(value: Any) -> datetime:
     if parsed.tzinfo is None:
         parsed = parsed.replace(tzinfo=timezone.utc)
     return parsed.astimezone(timezone.utc)
+
+
+def _next_recurrence_start(
+    start: datetime,
+    recurrence: dict[str, Any],
+    after: datetime,
+) -> Optional[datetime]:
+    """Return the first Discord recurrence after ``after``.
+
+    Discord recurrence weekdays use Python's Monday=0 through Sunday=6
+    numbering. Iterating calendar dates keeps this implementation small while
+    covering Discord's supported daily, weekly, monthly, and yearly rules.
+    """
+    anchor = start.astimezone(timezone.utc)
+    if anchor > after:
+        return anchor
+    try:
+        frequency = int(recurrence.get("frequency"))
+        interval = max(1, int(recurrence.get("interval") or 1))
+    except (TypeError, ValueError):
+        return None
+    if frequency not in {0, 1, 2, 3}:
+        return None
+
+    weekdays = {
+        int(value)
+        for value in (recurrence.get("by_weekday") or [])
+        if str(value).lstrip("-").isdigit()
+    }
+    month_days = {
+        int(value)
+        for value in (recurrence.get("by_month_day") or [])
+        if str(value).lstrip("-").isdigit()
+    }
+    months = {
+        int(value)
+        for value in (recurrence.get("by_month") or [])
+        if str(value).isdigit()
+    }
+    numbered_weekdays = [
+        item
+        for item in (recurrence.get("by_n_weekday") or [])
+        if isinstance(item, dict)
+    ]
+    rule_end = None
+    if recurrence.get("end"):
+        try:
+            rule_end = _parse_datetime(recurrence["end"])
+        except (TypeError, ValueError):
+            rule_end = None
+
+    candidate_date = max(anchor.date(), after.astimezone(timezone.utc).date())
+    # Discord currently does not expose an externally configurable recurrence
+    # end, but cap the search so malformed data cannot create an unbounded loop.
+    for day_offset in range(366 * 20):
+        current_date = candidate_date + timedelta(days=day_offset)
+        day_index = (current_date - anchor.date()).days
+        months_since = (
+            (current_date.year - anchor.year) * 12
+            + current_date.month
+            - anchor.month
+        )
+        years_since = current_date.year - anchor.year
+        matches = False
+        if frequency == 0:
+            matches = day_index >= 0 and day_index % interval == 0
+            if weekdays:
+                matches = matches and current_date.weekday() in weekdays
+        elif frequency == 1:
+            wanted_weekdays = weekdays or {anchor.weekday()}
+            matches = (
+                day_index >= 0
+                and (day_index // 7) % interval == 0
+                and current_date.weekday() in wanted_weekdays
+            )
+        elif frequency == 2:
+            matches = months_since >= 0 and months_since % interval == 0
+            if month_days:
+                matches = matches and current_date.day in month_days
+            elif numbered_weekdays:
+                matches = matches and any(
+                    current_date.weekday() == int(item.get("day", -1))
+                    and (current_date.day - 1) // 7 + 1 == int(item.get("n", 0))
+                    for item in numbered_weekdays
+                )
+            else:
+                matches = matches and current_date.day == min(
+                    anchor.day,
+                    calendar.monthrange(current_date.year, current_date.month)[1],
+                )
+        else:
+            matches = years_since >= 0 and years_since % interval == 0
+            wanted_months = months or {anchor.month}
+            wanted_days = month_days or {anchor.day}
+            matches = (
+                matches
+                and current_date.month in wanted_months
+                and current_date.day in wanted_days
+            )
+        if not matches:
+            continue
+        candidate = datetime.combine(
+            current_date,
+            time(
+                anchor.hour,
+                anchor.minute,
+                anchor.second,
+                anchor.microsecond,
+                tzinfo=timezone.utc,
+            ),
+        )
+        if rule_end is not None and candidate > rule_end:
+            return None
+        if candidate > after:
+            return candidate
+    return None
 
 
 class EventsSync(commands.Cog):
@@ -169,6 +286,14 @@ class EventsSync(commands.Cog):
         cover = getattr(event, "cover_image", None)
         recurrence = (raw or {}).get("recurrence_rule") or getattr(event, "recurrence_rule", None)
         status = str(getattr(getattr(event, "status", None), "name", "scheduled")).casefold()
+        start = event.start_time.astimezone(timezone.utc)
+        end = event.end_time.astimezone(timezone.utc) if event.end_time else None
+        if isinstance(recurrence, dict) and status == "scheduled":
+            next_start = _next_recurrence_start(start, recurrence, datetime.now(timezone.utc))
+            if next_start is not None and next_start != start:
+                duration = end - start if end is not None else None
+                start = next_start
+                end = next_start + duration if duration is not None else None
         return {
             "scheduled_event_id": str(event.id),
             "name": str(event.name),
@@ -176,8 +301,8 @@ class EventsSync(commands.Cog):
             "entity_type": _event_type_name(getattr(event, "entity_type", None)),
             "channel_id": str(channel.id) if channel is not None else None,
             "location": str(getattr(channel, "name", "") or getattr(event, "location", "") or "Discord Event"),
-            "scheduled_at_utc": event.start_time.astimezone(timezone.utc).isoformat(),
-            "end_at_utc": event.end_time.astimezone(timezone.utc).isoformat() if event.end_time else None,
+            "scheduled_at_utc": start.isoformat(),
+            "end_at_utc": end.isoformat() if end else None,
             "event_url": str(event.url),
             "image_url": str(cover.url) if cover is not None else None,
             "discord_creator_id": creator_id or None,
@@ -285,7 +410,7 @@ class EventsSync(commands.Cog):
                         (now, event_id),
                     )
                 await self._refresh_artwork_links(guild)
-                storage_ready = self._storage_channel_ready(guild)
+                storage_ready = await self._storage_channel_ready(guild)
                 await self.bot.db.execute(
                     """
                     INSERT INTO dashboard_event_sync_status (
@@ -367,9 +492,9 @@ class EventsSync(commands.Cog):
         value = str(get_setting("EVENTS_ARTWORK_STORAGE_CHANNEL_ID", "") or "").strip()
         return int(value) if value.isdigit() else 0
 
-    def _storage_channel_ready(self, guild: discord.Guild) -> bool:
+    async def _storage_channel_ready(self, guild: discord.Guild) -> bool:
         channel_id = self._storage_setting_id()
-        destination = self.bot.get_channel(channel_id) if channel_id else None
+        destination = await self._resolve_storage_destination(channel_id) if channel_id else None
         if not isinstance(destination, (discord.ForumChannel, discord.TextChannel, discord.Thread)):
             return False
         permissions = destination.permissions_for(guild.me)
@@ -435,7 +560,7 @@ class EventsSync(commands.Cog):
             }
         channel_id = self._storage_setting_id()
         if not channel_id:
-            raise ValueError("Event Artwork Storage is not configured in the Events dashboard settings.")
+            raise ValueError("Event Artwork Storage Forum Post is not configured in the Events dashboard settings.")
         destination = await self._resolve_storage_destination(channel_id)
         if not isinstance(destination, (discord.ForumChannel, discord.TextChannel, discord.Thread)):
             raise ValueError("The configured Event Artwork Storage destination is unavailable or unsupported.")

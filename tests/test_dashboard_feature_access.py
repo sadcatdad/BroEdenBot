@@ -132,16 +132,31 @@ class DashboardFeatureAccessTests(unittest.TestCase):
             action = connection.execute("SELECT action, status FROM event_dashboard_actions").fetchone()
         self.assertEqual(action, ("create", "pending"))
 
-    def test_owner_events_settings_include_discord_artwork_storage_picker(self):
+    def test_owner_events_settings_accept_a_forum_post_thread_id(self):
         self.login("owner", "owner-password")
         events_page = self.client.get("/events")
         self.assertIn("Event settings", events_page.text)
         self.assertIn('/features/events', events_page.text)
         response = self.client.get("/features/events")
         self.assertEqual(response.status_code, 200)
-        self.assertIn("Event Artwork Storage", response.text)
+        self.assertIn("Event Artwork Storage Forum Post", response.text)
         self.assertIn("EVENTS_ARTWORK_STORAGE_CHANNEL_ID", response.text)
-        self.assertIn("channel-single-select", response.text)
+        self.assertIn('placeholder="Paste Discord thread ID"', response.text)
+        self.assertNotIn("channel-single-select", response.text)
+
+    def test_events_page_exposes_live_state_and_month_year_selectors(self):
+        self.login("owner", "owner-password")
+        page = self.client.get("/events?month=2026-08")
+        self.assertEqual(page.status_code, 200)
+        self.assertIn("data-events-state-url", page.text)
+        self.assertIn("data-event-calendar-month", page.text)
+        self.assertIn("data-event-calendar-year", page.text)
+        self.assertIn('<option value="8" selected>August</option>', page.text)
+        self.assertIn('<option value="2026" selected>2026</option>', page.text)
+        state = self.client.get("/events/state")
+        self.assertEqual(state.status_code, 200)
+        self.assertRegex(state.json()["revision"], r"^[0-9a-f]{20}$")
+        self.assertEqual(state.headers["cache-control"], "private, no-store")
 
     def test_viewer_cannot_fetch_discord_metadata_or_settings(self):
         self.add_password_user("viewer", "viewer-password", "viewer")

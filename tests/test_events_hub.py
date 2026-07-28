@@ -28,7 +28,7 @@ from utils.events import (
     unsubscribe_from_event,
     update_event_subscription,
 )
-from cogs.events import EventsSync
+from cogs.events import EventsSync, _next_recurrence_start
 from utils.sqlite import configure_connection
 
 
@@ -140,6 +140,42 @@ class EventsHubStorageTests(unittest.TestCase):
         self.assertEqual(parse_offsets(["0", "15", "15", "360"]), (360, 15, 0))
         with self.assertRaises(ValueError):
             parse_offsets([30])
+
+    def test_past_scheduled_events_are_hidden_but_active_events_remain(self):
+        now = datetime.now(timezone.utc)
+        with sqlite3.connect(self.database) as connection:
+            for event_id, status in (("past", "scheduled"), ("active", "active")):
+                connection.execute(
+                    """INSERT INTO dashboard_scheduled_events
+                    (scheduled_event_id,guild_id,name,entity_type,location,scheduled_at_utc,event_url,status,updated_at_utc)
+                    VALUES (?, '1', ?, 'voice', 'Lounge', ?, ?, ?, ?)""",
+                    (
+                        event_id,
+                        event_id.title(),
+                        (now - timedelta(hours=2)).isoformat(),
+                        f"https://discord.com/events/1/{event_id}",
+                        status,
+                        now.isoformat(),
+                    ),
+                )
+            connection.commit()
+        self.assertEqual(
+            [item["scheduled_event_id"] for item in list_events("1")],
+            ["active"],
+        )
+        self.assertEqual(len(list_events("1", include_inactive=True)), 2)
+
+    def test_weekly_recurrence_advances_to_the_next_occurrence(self):
+        start = datetime(2026, 7, 26, 20, 0, tzinfo=timezone.utc)
+        next_start = _next_recurrence_start(
+            start,
+            {"frequency": 1, "interval": 1, "by_weekday": [6]},
+            datetime(2026, 7, 27, 0, 0, tzinfo=timezone.utc),
+        )
+        self.assertEqual(
+            next_start,
+            datetime(2026, 8, 2, 20, 0, tzinfo=timezone.utc),
+        )
 
 
 class EventsDiscordActionTests(unittest.IsolatedAsyncioTestCase):
@@ -297,6 +333,28 @@ class EventsReconciliationTests(unittest.IsolatedAsyncioTestCase):
         cursor = await self.database.execute("SELECT status, last_sync_status FROM dashboard_scheduled_events WHERE scheduled_event_id='900'")
         self.assertEqual(tuple(await cursor.fetchone()), ("cancelled", "removed"))
         await cursor.close()
+
+    async def test_reconciliation_advances_a_recurring_event_to_its_next_date(self):
+        original = datetime.now(timezone.utc) - timedelta(days=1)
+        self.raw_event["scheduled_start_time"] = original.isoformat()
+        self.raw_event["scheduled_end_time"] = (original + timedelta(hours=1)).isoformat()
+        self.raw_event["recurrence_rule"] = {
+            "start": original.isoformat(),
+            "frequency": 1,
+            "interval": 1,
+            "by_weekday": [original.weekday()],
+        }
+        await self.cog.refresh_guild(self.guild)
+        cursor = await self.database.execute(
+            "SELECT scheduled_at_utc, end_at_utc FROM dashboard_scheduled_events WHERE scheduled_event_id='900'"
+        )
+        scheduled_at, end_at = await cursor.fetchone()
+        await cursor.close()
+        next_start = datetime.fromisoformat(scheduled_at)
+        next_end = datetime.fromisoformat(end_at)
+        self.assertGreater(next_start, datetime.now(timezone.utc))
+        self.assertEqual(next_start.weekday(), original.weekday())
+        self.assertEqual(next_end - next_start, timedelta(hours=1))
 
     async def test_reconciliation_prefers_and_refreshes_creator_server_nickname(self):
         member = SimpleNamespace(

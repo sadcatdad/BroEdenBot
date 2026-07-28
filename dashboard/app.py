@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import re
@@ -1037,6 +1038,23 @@ def _event_artwork_storage_configured() -> bool:
     return str(get_setting("EVENTS_ARTWORK_STORAGE_CHANNEL_ID", "") or "").strip().isdigit()
 
 
+def _events_revision(events: list[dict[str, Any]]) -> str:
+    values = [
+        {
+            "id": item.get("scheduled_event_id"),
+            "status": item.get("status"),
+            "start": item.get("scheduled_at_utc"),
+            "end": item.get("end_at_utc"),
+            "updated": item.get("updated_at_utc"),
+            "interested": item.get("interested_count"),
+            "subscribed": item.get("subscribed"),
+        }
+        for item in events
+    ]
+    payload = json.dumps(values, sort_keys=True, separators=(",", ":"), default=str)
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()[:20]
+
+
 @app.get("/events", response_class=HTMLResponse, name="events_page")
 async def events_page(request: Request) -> HTMLResponse:
     user, discord_user_id = _events_user(request)
@@ -1079,8 +1097,17 @@ async def events_page(request: Request) -> HTMLResponse:
             message=request.session.pop("events_message", None),
             error=request.session.pop("events_error", None),
             tracked_action=request.query_params.get("action", ""),
+            events_revision=_events_revision(events),
         ),
     )
+
+
+@app.get("/events/state", response_class=JSONResponse, name="events_state")
+async def events_state(request: Request) -> JSONResponse:
+    _, discord_user_id = _events_user(request)
+    guild_id = str(get_setting("GUILD_ID", "") or os.getenv("GUILD_ID", "")).strip()
+    events = list_events(guild_id, user_id=discord_user_id) if guild_id else []
+    return JSONResponse({"revision": _events_revision(events)})
 
 
 @app.get("/events/new", response_class=HTMLResponse, name="events_new")
@@ -1113,7 +1140,7 @@ async def _queue_event_form(request: Request, event: dict[str, Any] | None = Non
         if upload is not None and getattr(upload, "filename", ""):
             if not _event_artwork_storage_configured():
                 raise ValueError(
-                    "Event Artwork Storage must be selected in the Events dashboard settings before uploading artwork."
+                    "Paste the Event Artwork Storage Forum Post thread ID in the Events dashboard settings before uploading artwork."
                 )
             image_bytes, image_type = normalize_event_image(
                 await upload.read(MAX_EVENT_IMAGE_BYTES + 1),

@@ -2,7 +2,7 @@ import os
 import unittest
 from unittest.mock import patch
 
-from main import cog_is_enabled, configured_modules
+from main import cog_is_enabled, configured_modules, intents
 
 
 class ModuleLoaderTests(unittest.TestCase):
@@ -30,6 +30,9 @@ class ModuleLoaderTests(unittest.TestCase):
         self.assertFalse(cog_is_enabled("events.py", {"events"}))
         self.assertFalse(cog_is_enabled("events.py", {"reminders"}))
         self.assertTrue(cog_is_enabled("events.py", {"events", "reminders"}))
+
+    def test_scheduled_event_gateway_updates_are_enabled(self):
+        self.assertTrue(intents.guild_scheduled_events)
 
     def test_visual_asset_storage_has_a_dedicated_module(self):
         self.assertFalse(cog_is_enabled("visual_assets.py", {"stats"}))

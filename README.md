@@ -106,10 +106,14 @@ manual-test, deployment, and troubleshooting instructions are in
 
 ## The Garden: Events
 
-The authenticated `/events` page mirrors every Discord Scheduled Event and
-keeps each event linked to the canonical reminder service. It presents a Bro
-Eden-styled next-gathering hero, type filters, month-grouped cards, an HTML
-calendar, native **Open in Discord** links, and separate BroEdenBot DM controls.
+The authenticated `/events` page mirrors every current Discord Scheduled Event
+and keeps each event linked to the canonical reminder service. It presents a
+Bro Eden-styled next-gathering hero, type filters, month-grouped cards, an HTML
+calendar with separate month and year selectors, native **Open in Discord**
+links, and separate BroEdenBot DM controls. The page checks for synchronized
+changes once per minute and reloads only when the event listing changed. Past
+one-time events are excluded, while recurring events advance to their next
+scheduled occurrence.
 Quick Subscribe selects 15 minutes before plus start time; members can instead
 choose 6 hours, 1 hour, 15 minutes, and/or start time.
 Discord-created event cards show the host's current server nickname when one is
@@ -123,10 +127,11 @@ Stage, Voice, or Text/Other events and edit/cancel only their own. Text/Other is
 the member-facing label for Discord's external-location event type. Discord-created
 recurring events remain visible and subscribable but read-only. The Garden writes
 are queued in SQLite for the bot process; FastAPI never receives or uses the bot
-token. Owners select a private forum, thread, or text channel as **Event Artwork
-Storage** under **Admin Dashboard → Features → Events**. Event covers are normalized, posted
-there by the bot, and then displayed from the Discord attachment link; the
-temporary database bytes are cleared when the action finishes. Full setup,
+token. Owners paste the thread ID of an existing private forum post as
+**Event Artwork Storage Forum Post** under **Admin Dashboard → Features → Events**.
+Event covers are normalized, posted there by the bot, and then displayed from
+the Discord attachment link; the temporary database bytes are cleared when the
+action finishes. Full setup,
 permissions, migration, validation, and recovery guidance is
 in [`docs/events.md`](docs/events.md).
 
@@ -1619,7 +1624,7 @@ updated from the authenticated local dashboard without rewriting `.env`.
 | `REMINDER_DELIVERY_GRACE_MINUTES` | Maximum age of a missed delivery that may be caught up after downtime. Defaults to `120`; valid runtime range is 1–1440 minutes. |
 | `REMINDER_EVENT_AUTO_SUBSCRIBE_CREATOR` | Automatically subscribes an event creator to the event defaults. Defaults to `true`. |
 | `EVENTS_HEADER_ASSET_ID` | Saved Embed/Message Editor asset used as the `/events` header. Blank uses the built-in Upcoming Events card. Supports `{count}` and `{next_event}` placeholders. |
-| `EVENTS_ARTWORK_STORAGE_CHANNEL_ID` | Private Discord forum, thread, or text channel used for artwork uploaded through the Events dashboard. Configure it from **Features → Events**. The bot retains the Discord attachment link and clears pending image bytes. |
+| `EVENTS_ARTWORK_STORAGE_CHANNEL_ID` | Thread ID of an existing private Discord forum post used for artwork uploaded through the Events dashboard. Configure it from **Features → Events**. The compatibility key name is retained; the bot posts inside that thread, retains the Discord attachment link, and clears pending image bytes. |
 | `DISBOARD_BOT_USER_ID` | Official DISBOARD bot user ID trusted for verified success responses. |
 | `BUMP_REWARD_ROLE_ID` | Role granted after a verified bump for the external XP/reward handoff. |
 | `BUMP_SUCCESS_ASSET_ID` | Optional Embed/Message Editor asset sent after a verified bump. Supports `{user.feature}`, `{role.feature}`, `{member}`, `{points}`, and `{reward_status}`. |

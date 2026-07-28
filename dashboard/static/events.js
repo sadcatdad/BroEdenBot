@@ -6,8 +6,44 @@
       card.hidden = button.dataset.eventFilter !== "all" && card.dataset.eventType !== button.dataset.eventFilter;
     });
   }));
-  const month = document.querySelector("[data-event-month]");
-  month?.addEventListener("change", () => { if (month.value) window.location.search = `?month=${encodeURIComponent(month.value)}`; });
+  const calendarMonth = document.querySelector("[data-event-calendar-month]");
+  const calendarYear = document.querySelector("[data-event-calendar-year]");
+  const changeCalendar = () => {
+    if (!calendarMonth?.value || !calendarYear?.value) return;
+    const month = String(calendarMonth.value).padStart(2, "0");
+    const search = new URLSearchParams(window.location.search);
+    search.set("month", `${calendarYear.value}-${month}`);
+    window.location.search = search.toString();
+  };
+  calendarMonth?.addEventListener("change", changeCalendar);
+  calendarYear?.addEventListener("change", changeCalendar);
+  const eventsHeading = document.querySelector("[data-events-revision]");
+  if (eventsHeading) {
+    let checking = false;
+    const checkForUpdates = async () => {
+      if (checking || document.hidden) return;
+      checking = true;
+      try {
+        const response = await fetch(eventsHeading.dataset.eventsStateUrl, {
+          headers: {Accept: "application/json"},
+          cache: "no-store",
+        });
+        if (!response.ok) return;
+        const result = await response.json();
+        if (result.revision && result.revision !== eventsHeading.dataset.eventsRevision) {
+          window.location.reload();
+        }
+      } catch (_) {
+        // A transient refresh failure should not interrupt the current page.
+      } finally {
+        checking = false;
+      }
+    };
+    window.setInterval(checkForUpdates, 60000);
+    document.addEventListener("visibilitychange", () => {
+      if (!document.hidden) checkForUpdates();
+    });
+  }
   const editor = document.querySelector("[data-event-editor]");
   if (editor) {
     const radios = [...editor.querySelectorAll('[name="entity_type"]')];

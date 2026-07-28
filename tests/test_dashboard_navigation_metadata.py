@@ -447,6 +447,9 @@ class DashboardNavigationMetadataTests(unittest.TestCase):
             ".member-event-grid .event-cover { height: auto; min-height: 0; aspect-ratio: 16 / 9; }",
             styles,
         )
+        self.assertIn("data-event-calendar-month", template)
+        self.assertIn("data-event-calendar-year", template)
+        self.assertNotIn('type="month"', template)
 
     def test_category_selection_matches_child_channels(self):
         self.assertTrue(

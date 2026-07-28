@@ -9,8 +9,9 @@ Discord's Interested RSVP. **Open in Discord** is the native RSVP path, while
 **DM Reminders** uses BroEdenBot's existing canonical reminder service.
 
 The existing Discord `/events`, `/remind event`, and `/remind subscriptions`
-commands are unchanged. The `events` module adds gateway refreshes, a
-15-minute reconciliation, and a queued dashboard action worker. FastAPI reads
+commands are unchanged. The `events` module enables Discord's scheduled-event
+Gateway intent for immediate create/update/delete refreshes, adds a 15-minute
+safety reconciliation, and runs a queued dashboard action worker. FastAPI reads
 and writes only the shared SQLite database and never calls Discord or receives
 the bot token.
 
@@ -43,13 +44,12 @@ to the selected Stage or Voice channel (normally **View Channel** and
 - External: a location and required end time.
 
 All are one-time events with a name, optional description, start, optional end,
-and optional cover. In **Features → Events**, select an existing private forum,
-thread, or text channel as **Event Artwork Storage**. BroEdenBot needs **View
-Channel**, **Attach Files**, and the applicable **Send Messages** or **Send
-Messages in Threads** permission there. JPEG, PNG, and WebP files are limited
+and optional cover. In **Features → Events**, paste the thread ID of an existing
+private forum post as **Event Artwork Storage Forum Post**. BroEdenBot needs
+**View Channel**, **Attach Files**, **Read Message History**, and **Send Messages
+in Threads** permission there. JPEG, PNG, and WebP files are limited
 to 8 MiB and safely normalized to a bounded 1600 × 900 WebP. The live bot posts
-the normalized image to that destination; forum destinations receive an
-automatically named post. The dashboard and downstream renderers use the saved
+the normalized image inside that forum post. The dashboard and downstream renderers use the saved
 Discord attachment URL, while temporary bytes remain in SQLite only while the
 action is pending/retrying and are cleared after success or permanent failure.
 Retries reuse the recorded Discord upload receipt rather than creating a second
@@ -69,8 +69,12 @@ description credit, action history, and audit trail.
 ## Synchronization and reminders
 
 Gateway create/update/delete events request an immediate guild refresh. A
-15-minute reconciliation recovers missed gateway notifications. Each Discord
-event is upserted with a stable `discord_scheduled_event` source key into
+15-minute reconciliation recovers missed gateway notifications. The Garden
+page polls a private, no-store revision endpoint once per minute and reloads
+only when its visible listing changed. Past one-time events are filtered even
+if Discord has not yet transitioned their status; recurring event dates advance
+to their next occurrence. Each Discord event is upserted with a stable
+`discord_scheduled_event` source key into
 `reminder_items`; existing occurrence/subscription/delivery code remains the
 only reminder implementation. Reschedules rebuild pending deliveries.
 Cancellation or removal cancels future deliveries without deleting history.
@@ -120,9 +124,9 @@ queued actions, and failures.
    Settings, and metadata APIs return 403.
 2. Quick Subscribe, customize all timing combinations, unsubscribe, and
    resubscribe. Confirm Discord Interested count does not change.
-3. Select a private artwork forum in **Features → Events**. As a Captain,
-   publish one Stage, Voice, and external event; verify the auto-created artwork
-   post, Discord fields/artwork, The Garden image source, and human organizer
+3. Paste an existing private artwork forum-post thread ID in **Features → Events**.
+   As a Captain, publish one Stage, Voice, and external event; verify the artwork
+   message, Discord fields/artwork, The Garden image source, and human organizer
    label. Retry a temporary failure and confirm it does not duplicate the post.
 4. Edit/reschedule and confirm pending reminder deliveries are rebuilt. Cancel
    after typing `CANCEL` and confirm future deliveries are cancelled.
