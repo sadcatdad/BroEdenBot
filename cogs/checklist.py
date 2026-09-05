@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import asyncio
-import csv
+from utils.csv_export import SafeCSVDictWriter
 import io
 import logging
 import os
@@ -2071,7 +2071,7 @@ class ChecklistCog(commands.Cog):
             (row["id"],),
         )
         output = io.StringIO()
-        writer = csv.DictWriter(
+        writer = SafeCSVDictWriter(
             output,
             fieldnames=[
                 "id",

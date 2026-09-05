@@ -99,10 +99,16 @@ def drop_view(drop_id, campaign):
 
 
 def drop_embed(campaign, drop_id, expires_at, has_image=False):
+    description = campaign["description"]
+    if campaign.get("show_reward"):
+        noun = campaign["singular"] if campaign["points"] == 1 else campaign["plural"]
+        description += f"\n\nWorth: {campaign['points']} {noun}"
+    if campaign.get("show_rarity") and campaign.get("rarity"):
+        description += f"\nRarity: {campaign['rarity']}"
     embed = discord.Embed(
         title=campaign["title"],
         color=int(campaign["color"][1:], 16),
-        description=campaign["description"]
+        description=description
         + f'\n\n{campaign["emoji"]} Expires <t:{int(expires_at)}:R>.',
     )
     embed.set_footer(text=f"Event Drop #{drop_id}")
@@ -201,6 +207,7 @@ class EventDropsCog(commands.Cog):
         drop, campaign = taken
         attempted = False
         try:
+            campaign.update(await self.call(self.service.drop_appearance, drop_id))
             channels = await self.eligible_channels(
                 campaign, drop["channel_id"], image=bool(drop["asset_id"])
             )

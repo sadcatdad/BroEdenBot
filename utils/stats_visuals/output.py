@@ -2,7 +2,7 @@ import io
 import logging
 import os
 import time
-from typing import Callable, Iterable, List, Optional, Tuple
+from typing import Callable, Iterable, Optional
 
 from PIL import Image
 

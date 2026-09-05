@@ -12,7 +12,7 @@ from datetime import datetime, timezone
 from typing import Any
 
 from utils.settings import settings_database_path
-from utils.sqlite import configure_sync_connection
+from utils.sqlite import AutoClosingSQLiteConnection, configure_sync_connection
 
 
 ALLOWED_ROLES = {"owner", "admin", "viewer"}
@@ -23,7 +23,7 @@ PBKDF2_ITERATIONS = 600_000
 def _connect() -> sqlite3.Connection:
     path = settings_database_path()
     path.parent.mkdir(parents=True, exist_ok=True)
-    connection = sqlite3.connect(path, timeout=30)
+    connection = sqlite3.connect(path, timeout=30, factory=AutoClosingSQLiteConnection)
     return configure_sync_connection(connection)
 
 
@@ -48,7 +48,14 @@ def verify_password(password: str, encoded: str | None) -> bool:
         salt = bytes.fromhex(raw_salt)
     except (TypeError, ValueError):
         return False
-    if algorithm != "pbkdf2_sha256" or iterations < 100_000:
+    if (
+        algorithm != "pbkdf2_sha256"
+        or not 100_000 <= iterations <= 2_000_000
+        or not 16 <= len(salt) <= 32
+        or len(expected) != 64
+        or any(character not in "0123456789abcdef" for character in expected)
+        or len(password) > 1024
+    ):
         return False
     actual = hashlib.pbkdf2_hmac(
         "sha256",
@@ -179,11 +186,12 @@ def authenticate_password(username: str, password: str) -> dict[str, Any] | None
             """,
             (str(username).strip(),),
         ).fetchone()
-        if (
-            row is None
-            or str(row["status"]).casefold() != "active"
-            or not verify_password(password, row["password_hash"])
-        ):
+        # Unknown accounts do equivalent password work to avoid username probing.
+        encoded = row["password_hash"] if row is not None else (
+            f"pbkdf2_sha256${PBKDF2_ITERATIONS}$" + "00" * 16 + "$" + "00" * 32
+        )
+        valid_password = verify_password(password, encoded)
+        if row is None or str(row["status"]).casefold() != "active" or not valid_password:
             return None
         now = datetime.now(timezone.utc).isoformat()
         connection.execute(
@@ -251,7 +259,10 @@ def upsert_discord_user(identity: dict[str, Any]) -> dict[str, Any]:
         raise PermissionError(
             "Complete this server's membership screening before using the dashboard."
         )
-    member_user_id = str((member.get("user") or {}).get("id") or discord_user_id).strip()
+    member_user = member.get("user") or {}
+    if not isinstance(member_user, dict) or not isinstance(member.get("roles", []), list):
+        raise PermissionError("Discord returned an invalid server membership.")
+    member_user_id = str(member_user.get("id") or discord_user_id).strip()
     if member_user_id != discord_user_id:
         raise PermissionError("Discord returned a mismatched server membership.")
     role_ids = sorted(

@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from dataclasses import asdict, dataclass, field
 from fractions import Fraction
-from typing import Any, Dict, Iterable, Mapping, Optional, Tuple
+from typing import Any, Dict, Iterable, Mapping, Tuple
 
 
 SUPPORTED_IMAGE_FORMATS = ("PNG", "JPEG", "WEBP")

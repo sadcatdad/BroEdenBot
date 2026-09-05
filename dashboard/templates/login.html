@@ -8,7 +8,7 @@
   <p class="eyebrow">Member platform</p>
   <h1>The Garden</h1>
   <p class="muted">Sign in with an approved Discord account or use the owner password fallback.</p>
-  {% if error %}<div class="alert error">{{ error }}</div>{% endif %}
+  {% if error %}<div class="alert error" role="alert">{{ error }}</div>{% endif %}
   {% if not dashboard_enabled %}
   <div class="alert warning">The Garden is currently disabled.</div>
   {% endif %}
@@ -20,11 +20,11 @@
     <input type="hidden" name="csrf" value="{{ csrf_token }}">
     <label>
       Username
-      <input name="username" type="text" autocomplete="username" required autofocus>
+      <input name="username" type="text" autocomplete="username" autocapitalize="none" spellcheck="false" required autofocus>
     </label>
     <label>
       Password
-      <input name="password" type="password" autocomplete="current-password" required>
+      <input name="password" type="password" autocomplete="current-password" maxlength="1024" required>
     </label>
     <button class="button" type="submit">Sign in with password</button>
   </form>

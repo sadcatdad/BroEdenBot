@@ -27,7 +27,7 @@
     <p class="muted">Assets are applied only to templates that register the matching slot. Template-specific assets still override theme assets.</p>
     <label>Theme settings JSON<textarea name="settings_json" rows="20">{{ s|tojson(indent=2) }}</textarea></label>
     <p class="muted">Supported values include colors, bundled fonts, panel styling, typography sizes, avatar style, background effects, footer settings, and accessibility flags. Invalid or unsupported values are rejected.</p>
-    {% if can_manage_users and not (theme and theme.is_builtin) %}<button class="button" type="submit">Save theme</button>{% endif %}
+    {% if can('visual.manage') and not (theme and theme.is_builtin) %}<button class="button" type="submit">Save theme</button>{% endif %}
     </fieldset>
   </form>
 </section>

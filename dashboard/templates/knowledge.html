@@ -6,8 +6,8 @@
     <h1>Knowledge</h1>
   </div>
   <div class="action-buttons">
-    <a class="button secondary" href="{{ url_for('ai_kb_new') }}">Add text source</a>
-    {% if has_reindexable_documents %}
+    {% if can('ai.manage') %}<a class="button secondary" href="{{ url_for('ai_kb_new') }}">Add text source</a>{% endif %}
+    {% if has_reindexable_documents and can('knowledge.manage') %}
     <form method="post" action="{{ url_for('knowledge_reindex_all') }}">
       <input type="hidden" name="csrf" value="{{ csrf_token }}">
       <button class="button" type="submit">Reindex file knowledge</button>
@@ -86,8 +86,8 @@
           <div class="table-actions">
             <a class="button secondary small" href="{{ url_for('knowledge_detail', doc_key=document.doc_key) }}">View</a>
             <a class="button secondary small" href="{{ url_for('knowledge_preview', doc_key=document.doc_key) }}">Preview</a>
-            {% if document.editable %}<a class="button secondary small" href="{{ url_for('knowledge_edit', doc_key=document.doc_key) }}">Edit</a>{% endif %}
-            {% if document.reindex_supported %}
+            {% if document.editable and can('knowledge.manage') %}<a class="button secondary small" href="{{ url_for('knowledge_edit', doc_key=document.doc_key) }}">Edit</a>{% endif %}
+            {% if document.reindex_supported and can('knowledge.manage') %}
             <form method="post" action="{{ url_for('knowledge_reindex', doc_key=document.doc_key) }}">
               <input type="hidden" name="csrf" value="{{ csrf_token }}">
               <button class="button small" type="submit">Reindex</button>
@@ -104,22 +104,22 @@
         <td><span class="badge">text source</span></td>
         <td><span class="badge visibility-{{ source.source_visibility }}">{{ source.source_visibility }}</span></td>
         <td>
-          <form method="post" action="{{ url_for('knowledge_ai_toggle', source_name=source.source_name) }}">
+          {% if can('knowledge.manage') %}<form method="post" action="{{ url_for('knowledge_ai_toggle', source_name=source.source_name) }}">
             <input type="hidden" name="csrf" value="{{ csrf_token }}">
             <input type="hidden" name="ai_enabled" value="{{ '0' if source.ai_enabled else '1' }}">
             <button class="button {{ 'secondary' if source.ai_enabled else '' }} small" type="submit">{{ "Enabled" if source.ai_enabled else "Disabled" }}</button>
-          </form>
+          </form>{% else %}<span class="badge">{{ "Enabled" if source.ai_enabled else "Disabled" }}</span>{% endif %}
         </td>
         <td><span class="badge">{{ source.source_type }}</span><br><small class="muted">{{ source.chunk_count }} chunks</small></td>
         <td>{{ source.updated_at }}</td>
         <td>
           <div class="table-actions">
-            <a class="button secondary small" href="{{ url_for('ai_kb_edit', source_name=source.source_name) }}">Edit</a>
-            <form method="post" action="{{ url_for('ai_kb_delete', source_name=source.source_name) }}">
+            {% if can('ai.manage') %}<a class="button secondary small" href="{{ url_for('ai_kb_edit', source_name=source.source_name) }}">Edit</a>{% endif %}
+            {% if can('ai.manage') %}<form method="post" action="{{ url_for('ai_kb_delete', source_name=source.source_name) }}">
               <input type="hidden" name="csrf" value="{{ csrf_token }}">
               <input type="hidden" name="confirm" value="{{ source.source_name }}">
               <button class="button danger small" type="submit">Delete</button>
-            </form>
+            </form>{% endif %}
           </div>
         </td>
       </tr>
@@ -135,15 +135,15 @@
         <td>{{ source.latest_indexed_at or source.last_synced_at or source.updated_at }}</td>
         <td>
           <div class="table-actions">
-            <form method="post" action="{{ url_for('knowledge_live_sync', guild_id=source.guild_id, channel_id=source.channel_id) }}">
+            {% if can('knowledge.manage') %}<form method="post" action="{{ url_for('knowledge_live_sync', guild_id=source.guild_id, channel_id=source.channel_id) }}">
               <input type="hidden" name="csrf" value="{{ csrf_token }}">
               <input type="hidden" name="limit" value="200">
               <button class="button small" type="submit">Sync</button>
-            </form>
-            <form method="post" action="{{ url_for('knowledge_live_remove', guild_id=source.guild_id, channel_id=source.channel_id) }}">
+            </form>{% endif %}
+            {% if can('knowledge.manage') %}<form method="post" action="{{ url_for('knowledge_live_remove', guild_id=source.guild_id, channel_id=source.channel_id) }}">
               <input type="hidden" name="csrf" value="{{ csrf_token }}">
               <button class="button danger small" type="submit">Remove</button>
-            </form>
+            </form>{% endif %}
           </div>
         </td>
       </tr>
@@ -153,6 +153,7 @@
   </div>
 </section>
 
+{% if can('knowledge.manage') %}
 <section class="card">
   <div class="section-heading">
     <div>
@@ -216,6 +217,7 @@
     <div class="action-buttons"><button class="button" type="submit">Save Discord source</button></div>
   </form>
 </section>
+{% endif %}
 
 <section class="card">
   <h2>Recent knowledge activity</h2>
@@ -241,23 +243,5 @@
   {% endif %}
 </section>
 
-<script>
-(() => {
-  const rows = [...document.querySelectorAll("#knowledge-table tbody tr")];
-  const controls = ["knowledge-search", "knowledge-kind", "knowledge-visibility", "knowledge-ai"]
-    .map((id) => document.getElementById(id));
-  const applyFilters = () => {
-    const [search, kind, visibility, ai] = controls.map((control) => control.value.toLowerCase());
-    rows.forEach((row) => {
-      row.hidden = !(
-        (!search || row.dataset.search.includes(search)) &&
-        (!kind || row.dataset.kind === kind) &&
-        (!visibility || row.dataset.visibility === visibility) &&
-        (!ai || row.dataset.ai === ai)
-      );
-    });
-  };
-  controls.forEach((control) => control.addEventListener("input", applyFilters));
-})();
-</script>
+<script src="{{ url_for('static', path='knowledge_filters.js') }}" defer></script>
 {% endblock %}

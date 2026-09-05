@@ -38,7 +38,7 @@
       <input type="hidden" name="csrf" value="{{ csrf_token }}">
       <button class="button" type="submit">Queue refresh</button>
     </form>
-    <form method="post" action="{{ url_for('stats_archive', stat_id=stat.stat_id) }}" onsubmit="return confirm('Archive this stat? Its Discord message will remain.');">
+    <form method="post" action="{{ url_for('stats_archive', stat_id=stat.stat_id) }}" data-confirm="Archive this stat? Its Discord message will remain.">
       <input type="hidden" name="csrf" value="{{ csrf_token }}">
       <button class="button danger" type="submit">Archive</button>
     </form>

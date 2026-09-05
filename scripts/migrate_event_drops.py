@@ -29,13 +29,32 @@ def validate(path):
             "event_drop_claims",
             "event_drop_members",
             "event_drop_worker",
+            "event_drop_variants",
+            "event_drop_variant_assets",
+            "event_drop_snapshots",
         }
         if required - tables:
             raise RuntimeError(
                 "Missing tables: " + ", ".join(sorted(required - tables))
             )
-        if db.execute("SELECT MAX(version) FROM event_drop_schema").fetchone()[0] != 1:
+        if db.execute("SELECT MAX(version) FROM event_drop_schema").fetchone()[0] != 2:
             raise RuntimeError("Unexpected migration version.")
+        for table, expected in {
+            "event_drop_campaigns": {"variants_enabled"},
+            "event_drop_assets": {"campaign_pool"},
+            "event_drops": {
+                "variant_id",
+                "variant_name",
+                "rarity",
+                "variant_selection",
+            },
+        }.items():
+            if expected - {row[1] for row in db.execute(f"PRAGMA table_info({table})")}:
+                raise RuntimeError(f"Missing Drop Variant columns in {table}.")
+        if db.execute(
+            "SELECT 1 FROM event_drops d LEFT JOIN event_drop_snapshots s ON s.drop_id=d.id WHERE s.drop_id IS NULL LIMIT 1"
+        ).fetchone():
+            raise RuntimeError("An Event Drop is missing its configuration snapshot.")
         for table in required:
             if db.execute(f"PRAGMA foreign_key_check({table})").fetchone():
                 raise RuntimeError("Event Drops foreign key validation failed.")

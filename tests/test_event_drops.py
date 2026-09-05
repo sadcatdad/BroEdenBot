@@ -623,7 +623,7 @@ class EventDropsRouteTests(unittest.TestCase):
         self.login()
         other = self.s.save("2", "admin", dict(DEFAULTS, name="Private"), ["10"])
         self.assertEqual(self.client.get(f"/events/drops/{other}").status_code, 404)
-        from dashboard.event_drops_routes import csv_cell
+        from utils.csv_export import safe_cell as csv_cell
 
         self.assertEqual(csv_cell("=SUM(A1:A3)"), "'=SUM(A1:A3)")
         self.assertEqual(csv_cell("Joe"), "Joe")

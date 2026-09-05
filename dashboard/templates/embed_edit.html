@@ -7,7 +7,7 @@
   </div>
   <div class="action-buttons">
     <a class="button secondary" href="{{ url_for('embed_templates') }}">Discard</a>
-    {% if can_write %}<button class="button" type="submit" form="embed-editor-form">Save</button>{% endif %}
+    {% if can('message_studio.manage') %}<button class="button" type="submit" form="embed-editor-form">Save</button>{% endif %}
   </div>
 </div>
 {% if message %}<div class="alert success">{{ message }}</div>{% endif %}

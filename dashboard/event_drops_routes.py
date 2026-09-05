@@ -3,12 +3,12 @@
 from __future__ import annotations
 
 import asyncio
-import csv
+from utils.csv_export import SafeCSVWriter
 import io
 import os
 import secrets
 import time
-from datetime import datetime
+from datetime import datetime, timezone
 
 from fastapi import HTTPException, Request
 from fastapi.responses import HTMLResponse, RedirectResponse, Response
@@ -22,6 +22,7 @@ from dashboard.events_manager import (
 from dashboard.rbac import record_audit
 from utils.discord_metadata import initialize_discord_metadata_schema
 from utils.event_drops import DEFAULTS, EventDrops
+from utils.event_drop_variants import APPEARANCE_FIELDS, VARIANT_DEFAULTS
 from utils.settings import get_setting
 
 
@@ -70,15 +71,6 @@ def display_time(value):
         )
         if value
         else "—"
-    )
-
-
-def csv_cell(value):
-    text = str(value or "")
-    return (
-        "'" + text
-        if text.lstrip().startswith(("=", "+", "-", "@", "\t", "\r"))
-        else text
     )
 
 
@@ -159,7 +151,7 @@ def install_event_drop_routes(app, templates, context):
                     values[key], event_timezone()
                 ).strftime("%Y-%m-%dT%H:%M")
         assets = svc.rows(
-            "SELECT id FROM event_drop_assets WHERE campaign_id=? AND created_at>0",
+            "SELECT id FROM event_drop_assets WHERE campaign_id=? AND created_at>0 AND campaign_pool=1",
             (campaign.get("id", 0),),
         )
         return render(
@@ -171,6 +163,7 @@ def install_event_drop_routes(app, templates, context):
             assets=assets,
             error=error,
             timezone_label=str(event_timezone()),
+            **preview_context(request, svc, campaign),
         )
 
     @app.get("/events/drops/new", response_class=HTMLResponse, name="event_drops_new")
@@ -298,6 +291,8 @@ def install_event_drop_routes(app, templates, context):
             campaign=c,
             scores=scores,
             history=history[:50],
+            variants=svc.variants(campaign_id),
+            variant_stats=svc.variant_results(campaign_id),
             more=len(history) > 50,
             page=page,
             active_drops=active,
@@ -332,7 +327,10 @@ def install_event_drop_routes(app, templates, context):
                     guild_id(),
                     current_user(request).get("id", "dashboard"),
                 )
-            elif kind == "drop":
+            elif kind in {"drop", "rare_drop"}:
+                variant_id = form.get("variant_id") or None
+                if kind == "rare_drop" and variant_id is None:
+                    raise ValueError("Choose a variant before using Rare Drop Now.")
                 token = str(form.get("submission_id", ""))
                 if not token or len(token) > 100:
                     raise ValueError("Reload the page before sending a manual drop.")
@@ -341,9 +339,11 @@ def install_event_drop_routes(app, templates, context):
                     guild_id(),
                     f"garden:{campaign_id}:{token}",
                     form.get("channel_id") or None,
+                    variant_id,
                 )
+                label = "Rare drop" if kind == "rare_drop" else "Manual drop"
                 request.session["drops_message"] = (
-                    f"Manual drop #{did} queued. Delivery status appears below."
+                    f"{label} #{did} queued. Delivery status appears below."
                 )
             else:
                 svc.transition(campaign_id, guild_id(), kind)
@@ -358,7 +358,7 @@ def install_event_drop_routes(app, templates, context):
         svc = service()
         scoped_campaign(svc, campaign_id)
         output = io.StringIO(newline="")
-        writer = csv.writer(output)
+        writer = SafeCSVWriter(output)
         writer.writerow(
             ["user_id", "display_name", "total_points", "drops_claimed", "rank"]
         )
@@ -366,10 +366,7 @@ def install_event_drop_routes(app, templates, context):
             writer.writerow(
                 [
                     row["user_id"],
-                    csv_cell(
-                        row["display_name"]
-                        or f'Unknown/Former Member ({row["user_id"]})'
-                    ),
+                    row["display_name"] or f'Unknown/Former Member ({row["user_id"]})',
                     row["total_points"],
                     row["drops_claimed"],
                     row["rank"],
@@ -402,6 +399,340 @@ def install_event_drop_routes(app, templates, context):
             campaign=c,
             drop_id=drop_id,
             claims=rows,
+        )
+
+    def scoped_variant(svc, campaign_id, variant_id):
+        scoped_campaign(svc, campaign_id)
+        item = next(
+            (v for v in svc.variants(campaign_id) if v["id"] == variant_id), None
+        )
+        if item is None:
+            raise HTTPException(404, "Drop Variant not found.")
+        return item
+
+    def preview_context(request, svc, campaign):
+        variants = svc.variants(campaign["id"]) if campaign.get("id") else []
+        all_assets = svc.rows(
+            "SELECT id,campaign_pool,created_at FROM event_drop_assets WHERE campaign_id=? ORDER BY id",
+            (campaign.get("id", 0),),
+        )
+
+        def image_url(asset_id):
+            return str(
+                request.url_for(
+                    "event_drops_asset", campaign_id=campaign["id"], asset_id=asset_id
+                )
+            )
+
+        base = {
+            key: campaign.get(key, DEFAULTS.get(key))
+            for key in (
+                *APPEARANCE_FIELDS,
+                "points",
+                "singular",
+                "plural",
+                "claim_minutes",
+            )
+        }
+        base["image_urls"] = [
+            image_url(a["id"])
+            for a in all_assets
+            if a["campaign_pool"] and a["created_at"] > 0
+        ]
+        for v in variants:
+            v["image_urls"] = [image_url(a) for a in v["asset_ids"]]
+        return dict(variants=variants, preview_campaign=base, preview_variants=variants)
+
+    @app.get(
+        "/events/drops/{campaign_id:int}/variants",
+        response_class=HTMLResponse,
+        name="event_drop_variants",
+    )
+    async def variants_page(request: Request, campaign_id: int):
+        svc = service()
+        c = scoped_campaign(svc, campaign_id)
+        return render(
+            request,
+            "event_drop_variants.html",
+            campaign=c,
+            **preview_context(request, svc, c),
+            error=request.session.pop("drops_error", None),
+        )
+
+    @app.post(
+        "/events/drops/{campaign_id:int}/variants/mode", name="event_drop_variants_mode"
+    )
+    async def variants_mode(request: Request, campaign_id: int):
+        form = await checked_form(request)
+        svc = service()
+        scoped_campaign(svc, campaign_id)
+        try:
+            if form.get("mode") not in ("enabled", "standard"):
+                raise ValueError("Choose Standard Drops or Drop Variants.")
+            svc.set_variants_enabled(
+                campaign_id, guild_id(), form.get("mode") == "enabled"
+            )
+        except ValueError as exc:
+            request.session["drops_error"] = str(exc)
+        else:
+            audit(request, "variants." + str(form.get("mode")), campaign_id)
+        return RedirectResponse(
+            request.url_for("event_drop_variants", campaign_id=campaign_id),
+            status_code=303,
+        )
+
+    def variant_editor(request, svc, campaign, variant, error=None):
+        preview = preview_context(request, svc, campaign)
+        available = svc.rows(
+            "SELECT id,campaign_pool,created_at FROM event_drop_assets WHERE campaign_id=? ORDER BY id",
+            (campaign["id"],),
+        )
+        available = [
+            a
+            for a in available
+            if a["created_at"] > 0 or a["id"] in variant.get("asset_ids", [])
+        ]
+        return render(
+            request,
+            "event_drop_variant_form.html",
+            campaign=campaign,
+            variant=variant,
+            variant_assets=available,
+            appearance_fields=APPEARANCE_FIELDS,
+            error=error,
+            **preview,
+        )
+
+    @app.get(
+        "/events/drops/{campaign_id:int}/variants/new",
+        response_class=HTMLResponse,
+        name="event_drop_variant_new",
+    )
+    async def variant_new(request: Request, campaign_id: int):
+        svc = service()
+        c = scoped_campaign(svc, campaign_id)
+        if c["status"] not in ("draft", "paused"):
+            raise HTTPException(400, "Pause the campaign before editing Drop Variants.")
+        return variant_editor(
+            request, svc, c, dict(VARIANT_DEFAULTS, points=c["points"], asset_ids=[])
+        )
+
+    @app.get(
+        "/events/drops/{campaign_id:int}/variants/{variant_id:int}/edit",
+        response_class=HTMLResponse,
+        name="event_drop_variant_edit",
+    )
+    async def variant_edit(request: Request, campaign_id: int, variant_id: int):
+        svc = service()
+        c = scoped_campaign(svc, campaign_id)
+        if c["status"] not in ("draft", "paused"):
+            raise HTTPException(400, "Pause the campaign before editing Drop Variants.")
+        return variant_editor(
+            request, svc, c, scoped_variant(svc, campaign_id, variant_id)
+        )
+
+    async def save_variant_form(request, campaign_id, variant_id=None):
+        form = await checked_form(request)
+        svc = service()
+        c = scoped_campaign(svc, campaign_id)
+        if variant_id:
+            scoped_variant(svc, campaign_id, variant_id)
+        values = {k: form.get(k, default) for k, default in VARIANT_DEFAULTS.items()}
+        for flag in ("enabled", "is_default", "show_reward", "show_rarity"):
+            values[flag] = form.get(flag) == "on"
+        for field in APPEARANCE_FIELDS:
+            values[field + "_override"] = (
+                str(form.get(field + "_override", ""))
+                if form.get("override_" + field) == "on"
+                else None
+            )
+        ids = form.getlist("asset_ids")
+        try:
+            uploads = [u for u in form.getlist("images") if getattr(u, "filename", "")]
+            if len(uploads) > 10:
+                raise ValueError("Upload at most 10 variant images.")
+            assets = []
+            for upload in uploads:
+                try:
+                    data = await upload.read(MAX_EVENT_IMAGE_BYTES + 1)
+                    assets.append(
+                        await asyncio.to_thread(
+                            normalize_event_image, data, upload.content_type
+                        )
+                    )
+                finally:
+                    await upload.close()
+            saved = svc.save_variant(
+                campaign_id, guild_id(), values, variant_id, ids, assets
+            )
+        except (ValueError, TypeError) as exc:
+            variant = dict(
+                values,
+                id=variant_id,
+                asset_ids=[int(a) for a in ids if str(a).isdigit()],
+            )
+            response = variant_editor(request, svc, c, variant, str(exc))
+            response.status_code = 400
+            return response
+        audit(
+            request,
+            "variant.updated" if variant_id else "variant.created",
+            f"{campaign_id}:{saved}",
+        )
+        return RedirectResponse(
+            request.url_for("event_drop_variants", campaign_id=campaign_id),
+            status_code=303,
+        )
+
+    @app.post(
+        "/events/drops/{campaign_id:int}/variants/new", name="event_drop_variant_create"
+    )
+    async def variant_create(request: Request, campaign_id: int):
+        return await save_variant_form(request, campaign_id)
+
+    @app.post(
+        "/events/drops/{campaign_id:int}/variants/{variant_id:int}/edit",
+        name="event_drop_variant_save",
+    )
+    async def variant_save(request: Request, campaign_id: int, variant_id: int):
+        return await save_variant_form(request, campaign_id, variant_id)
+
+    @app.post(
+        "/events/drops/{campaign_id:int}/variants/{variant_id:int}/action",
+        name="event_drop_variant_action",
+    )
+    async def variant_action(request: Request, campaign_id: int, variant_id: int):
+        form = await checked_form(request)
+        svc = service()
+        scoped_variant(svc, campaign_id, variant_id)
+        action = str(form.get("action", ""))
+        try:
+            svc.variant_action(campaign_id, guild_id(), variant_id, action)
+        except ValueError as exc:
+            request.session["drops_error"] = str(exc)
+        else:
+            audit(request, "variant." + action, f"{campaign_id}:{variant_id}")
+        return RedirectResponse(
+            request.url_for("event_drop_variants", campaign_id=campaign_id),
+            status_code=303,
+        )
+
+    @app.get(
+        "/events/drops/{campaign_id:int}/participants/{user_id}",
+        response_class=HTMLResponse,
+        name="event_drop_participant",
+    )
+    async def participant(request: Request, campaign_id: int, user_id: str):
+        svc = service()
+        c = scoped_campaign(svc, campaign_id)
+        if not user_id.isdigit():
+            raise HTTPException(404, "Participant not found.")
+        score = next(
+            (r for r in svc.leaderboard(campaign_id) if r["user_id"] == user_id), None
+        )
+        if not score:
+            raise HTTPException(404, "Participant not found.")
+        return render(
+            request,
+            "event_drop_participant.html",
+            campaign=c,
+            score=score,
+            breakdown=svc.variant_results(campaign_id, user_id),
+        )
+
+    @app.get(
+        "/events/drops/{campaign_id:int}/exports/{export_type}.csv",
+        name="event_drop_detailed_export",
+    )
+    async def detailed_export(request: Request, campaign_id: int, export_type: str):
+        svc = service()
+        c = scoped_campaign(svc, campaign_id)
+        output = io.StringIO(newline="")
+        writer = SafeCSVWriter(output)
+        if export_type == "claims":
+            writer.writerow(
+                [
+                    "campaign",
+                    "drop_id",
+                    "variant_id",
+                    "variant_name",
+                    "rarity",
+                    "channel_id",
+                    "user_id",
+                    "points",
+                    "claimed_at",
+                ]
+            )
+            rows = svc.rows(
+                "SELECT q.*,d.variant_id,d.variant_name,d.rarity,d.channel_id FROM event_drop_claims q JOIN event_drops d ON d.id=q.drop_id WHERE q.campaign_id=? ORDER BY q.id",
+                (campaign_id,),
+            )
+            for r in rows:
+                writer.writerow(
+                    [
+                        c["name"],
+                        r["drop_id"],
+                        r["variant_id"],
+                        r["variant_name"],
+                        r["rarity"],
+                        r["channel_id"],
+                        r["user_id"],
+                        r["points"],
+                        datetime.fromtimestamp(
+                            r["claimed_at"], timezone.utc
+                        ).isoformat(),
+                    ]
+                )
+        elif export_type == "drops":
+            writer.writerow(
+                [
+                    "drop_id",
+                    "variant_id",
+                    "variant_name",
+                    "rarity",
+                    "points_per_claim",
+                    "channel",
+                    "automatic_or_manual",
+                    "variant_selection",
+                    "posted_at",
+                    "claims",
+                    "status",
+                ]
+            )
+            for r in svc.rows(
+                "SELECT d.*,(SELECT COUNT(*) FROM event_drop_claims q WHERE q.drop_id=d.id) AS claims FROM event_drops d WHERE campaign_id=? ORDER BY id",
+                (campaign_id,),
+            ):
+                writer.writerow(
+                    [
+                        r["id"],
+                        r["variant_id"],
+                        r["variant_name"],
+                        r["rarity"],
+                        r["points"],
+                        r["channel_id"],
+                        r["kind"],
+                        r["variant_selection"],
+                        (
+                            datetime.fromtimestamp(
+                                r["posted_at"], timezone.utc
+                            ).isoformat()
+                            if r["posted_at"]
+                            else ""
+                        ),
+                        r["claims"],
+                        r["status"],
+                    ]
+                )
+        else:
+            raise HTTPException(404, "Export not found.")
+        audit(request, "export." + export_type, campaign_id)
+        return Response(
+            output.getvalue(),
+            media_type="text/csv; charset=utf-8",
+            headers={
+                "Content-Disposition": f'attachment; filename="event-drops-{campaign_id}-{export_type}.csv"'
+            },
         )
 
     @app.get(

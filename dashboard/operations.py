@@ -14,6 +14,7 @@ from typing import Any, Sequence
 
 from dashboard.db import find_bank_database_path, find_database_path, table_names
 from utils.sqlite import configure_sync_connection
+from utils.privacy import redact_sensitive_text
 
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
@@ -101,7 +102,7 @@ def run_fixed_command(
 
 
 def sanitize_output(text: str) -> str:
-    safe = str(text or "").replace("\x00", "")
+    safe = redact_sensitive_text(str(text or "").replace("\x00", ""))
     safe = BEARER_RE.sub("Bearer [REDACTED]", safe)
     safe = SECRET_ASSIGNMENT_RE.sub(r"\1\2[REDACTED]", safe)
     safe = DISCORD_TOKEN_RE.sub("[REDACTED DISCORD TOKEN]", safe)

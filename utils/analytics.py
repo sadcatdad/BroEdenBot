@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-import csv
+from utils.csv_export import SafeCSVWriter
 import io
 import json
 import os
@@ -858,7 +858,7 @@ def export_analytics_csv(
     range_key = validate_range(range_key, heatmap=export_type == "heatmap")
     export_type = validate_export_type(export_type)
     output = io.StringIO(newline="")
-    writer = csv.writer(output)
+    writer = SafeCSVWriter(output)
     if export_type == "overview":
         data = get_analytics_overview(range_key)
         writer.writerow(["metric", "value"])

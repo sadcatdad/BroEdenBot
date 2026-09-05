@@ -104,7 +104,7 @@ def load_runtime_customization_sync(
             canvas_width=int((resolved.get("canvas") or {}).get("width") or REGISTRY.get(template_key).width),
             canvas_height=int((resolved.get("canvas") or {}).get("height") or REGISTRY.get(template_key).height),
         )
-    except Exception as exc:
+    except Exception:
         logger.exception("Visual customization resolution failed template=%s; using legacy renderer", template_key)
         return RuntimeCustomization(
             template_key=template_key,

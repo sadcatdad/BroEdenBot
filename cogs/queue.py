@@ -310,14 +310,26 @@ class Queue(commands.Cog):
             with requests.get(
                 user.display_avatar.url,
                 timeout=10,
+                stream=True,
+                allow_redirects=False,
             ) as response:
                 response.raise_for_status()
-                avatar = Image.open(io.BytesIO(response.content)).convert("RGBA")
+                data = bytearray()
+                for chunk in response.iter_content(64 * 1024):
+                    if len(data) + len(chunk) > 2_000_000:
+                        raise ValueError("Avatar exceeds the download limit.")
+                    data.extend(chunk)
+                with Image.open(io.BytesIO(data)) as source:
+                    if source.width * source.height > 4096 * 4096:
+                        raise ValueError("Avatar dimensions are too large.")
+                    avatar = source.convert("RGBA")
             avatar = avatar.resize((167, 167), Image.Resampling.LANCZOS)
         except (
             OSError,
             UnidentifiedImageError,
             requests.RequestException,
+            ValueError,
+            Image.DecompressionBombError,
         ):
             logger.warning("Queue banner avatar unavailable for user_id=%s", user.id)
             return None

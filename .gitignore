@@ -36,7 +36,8 @@ __pycache__/
 *.zip
 staff_context.db
 message_context.db
-/backups/knowledge/
+# Recovery archives can contain source patches, databases, and member uploads.
+/backups/
 
 # Deterministic local visual-review artifacts (generated, never committed).
 /dev-output/

@@ -152,10 +152,20 @@ confirmation before ending, duplication, live status, per-drop claimers,
 participants, and CSV results. All management/results routes require the existing
 RBAC catalog's new `event_drops.manage` permission, grantable to an existing role.
 
+Optional **Drop Variants** extend a campaign with relative selection weights,
+individual rewards, freeform rarity labels, inherited appearance overrides,
+and dedicated images. Configure a Default Variant plus special variants such
+as weights 90/8/2 and rewards 1/5/10. The Garden previews normalized chances and
+resolved appearance, offers **Rare Drop Now** to force a selected enabled variant, and adds
+historical variant details, participant score breakdowns, and detailed CSVs.
+Pause before changing variant configuration. Existing drops retain their
+appearance and reward snapshots; all awards feed the same campaign leaderboard.
+Existing campaigns remain standard until variants are explicitly enabled.
+
 The bot loads Event Drops with the `events` module and uses the shared
 `DATABASE_PATH`. No new dependency or service changes are needed. Apply the
-additive `scripts/migrate_event_drops.py` migration with `--database` and
-`--backup-dir` during deployment; startup also initializes the same schema.
+additive version 2 `scripts/migrate_event_drops.py` migration with `--database`
+and `--backup-dir` while both old services are stopped during deployment; startup also initializes the same schema.
 See [Event Drops configuration, reliability, and Pi deployment](docs/event_drops.md)
 for permission requirements, timing semantics, image limits, recovery behavior,
 and the live smoke test.
@@ -1756,8 +1766,10 @@ updated from the authenticated local dashboard without rewriting `.env`.
 
 ## Run locally
 
-Python 3.11 or newer is recommended. Python 3.9 is end-of-life and current
-Google libraries emit compatibility warnings on it.
+Python 3.12 or 3.13 is recommended. The patched dependencies require Python
+3.10 or newer; Python 3.9 environments must be recreated with a supported
+interpreter before installing them. Check `.venv/bin/python --version` first.
+For a new checkout, create the environment with `python3.12 -m venv .venv`.
 
 ```bash
 cd ~/Documents/BroEdenBot
@@ -1927,6 +1939,48 @@ backup; an edge redirect in Cloudflare is preferred. Follow the
 [The Garden public-domain migration runbook](docs/the-garden-domain-migration.md)
 for the staged Railway, Cloudflare, Discord OAuth, verification, and rollback
 steps.
+
+### Dashboard security and validation
+
+- Password sign-in allows five attempts per client address within five minutes.
+  The counter is stored in SQLite and survives worker restarts and new browser
+  sessions. A successful login clears that client's counter; throttled requests
+  return HTTP 429 with `Retry-After`. Discord sign-in remains available.
+  Only the ASGI server's resolved client address is used. Configure trusted
+  proxy addresses at Uvicorn/the hosting boundary; do not accept client-supplied
+  forwarding headers from an untrusted direct connection. Shared proxy/NAT
+  addresses share the limit. An edge rate limit is still appropriate for public
+  deployments.
+- Dynamic responses, including downloads and login pages, use `private, no-store`.
+  Responses also block framing and MIME sniffing, suppress referrer disclosure,
+  and use a Content Security Policy that loads JavaScript from this app only.
+  Confirmation dialogs, live editors, and filters use external script files.
+  Uploaded and external image previews remain supported.
+- Streamed request bodies are bounded even without a trustworthy Content-Length:
+  1 MiB for ordinary forms, 12 MiB for multipart uploads, and 81 MiB for Event
+  Drops' ten-image multipart batches. Individual image limits still apply.
+  Oversized requests return HTTP 413. Images are dimension-checked before pixel
+  decoding; remote avatar reads and the avatar cache are bounded. Discord media
+  recovery accepts only the fixed HTTPS Discord CDN hosts and rejects redirects.
+- CSV exports from analytics, stats, voice reports, checklists, and Event Drops
+  prefix formula-like text with an apostrophe. Numeric values remain numeric.
+  Dashboard and Discord log viewers share credential redaction, including quoted
+  values and environment-prefixed names. All recovery archives under `backups/`
+  are excluded from Git, including deployment snapshots containing member uploads.
+- Edit controls follow the page's capability, including delegated Visual Content
+  Studio editors. Mobile navigation traps focus while open, excludes hidden
+  controls from keyboard navigation, and returns focus to the menu button on Escape.
+
+Run the regression suite and dependency check after installing the requirements:
+
+```bash
+.venv/bin/python -m unittest discover -s tests -v
+.venv/bin/python -m pip check
+.venv/bin/python -m riffbot.setup safety-check
+```
+
+The [codebase audit report](docs/codebase-hardening-audit.md) records the scope,
+security fixes, dependency checks, and remaining deployment verification.
 
 ### Discord login for The Garden
 

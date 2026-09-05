@@ -9,11 +9,11 @@ import os
 import secrets
 import urllib.parse
 import urllib.request
-from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 from PIL import Image, ImageOps, UnidentifiedImageError
+from utils.image_safety import check_image_dimensions, is_discord_media_url
 
 from .registry import (
     MAX_UPLOAD_BYTES,
@@ -91,22 +91,27 @@ def asset_path(storage_key: str) -> Path:
     return path
 
 
+class _NoMediaRedirects(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        raise ValueError("Visual asset Discord source must not redirect.")
+
+
 def _discord_asset_bytes(source_url: str) -> bytes:
-    parsed = urllib.parse.urlparse(str(source_url or ""))
-    if parsed.scheme != "https" or parsed.hostname not in {"cdn.discordapp.com", "media.discordapp.net"}:
+    if not is_discord_media_url(source_url):
         raise ValueError("Visual asset Discord source URL is invalid.")
     request = urllib.request.Request(
         source_url,
         headers={"User-Agent": "BroEdenBot/VisualContentStudio"},
     )
-    with urllib.request.urlopen(request, timeout=15) as response:
+    with urllib.request.build_opener(_NoMediaRedirects()).open(request, timeout=15) as response:
         data = response.read(MAX_UPLOAD_BYTES + 1)
     if not data or len(data) > MAX_UPLOAD_BYTES:
         raise ValueError("Visual asset Discord source is empty or too large.")
     try:
         with Image.open(io.BytesIO(data)) as image:
+            check_image_dimensions(image)
             image.verify()
-    except (UnidentifiedImageError, OSError, SyntaxError) as exc:
+    except (UnidentifiedImageError, OSError, SyntaxError, Image.DecompressionBombError) as exc:
         raise ValueError("Visual asset Discord source is not a valid image.") from exc
     return data
 
@@ -157,6 +162,7 @@ def inspect_upload(
         raise ValueError("Supported files are PNG, JPG, and WEBP.")
     try:
         with Image.open(io.BytesIO(data)) as image:
+            check_image_dimensions(image)
             image.seek(0)
             image.verify()
         with Image.open(io.BytesIO(data)) as image:
@@ -178,7 +184,7 @@ def inspect_upload(
             has_alpha = "A" in image.mode or (
                 image.mode == "P" and "transparency" in image.info
             )
-    except (UnidentifiedImageError, OSError, SyntaxError) as exc:
+    except (UnidentifiedImageError, OSError, SyntaxError, Image.DecompressionBombError) as exc:
         raise ValueError("Asset file could not be decoded.") from exc
 
     slot = _slot(template_key, slot_key)

@@ -6,10 +6,12 @@ from typing import Dict, Iterable, Optional, Tuple
 
 import aiohttp
 from PIL import Image, ImageDraw, ImageOps
+from utils.image_safety import check_image_dimensions, is_discord_media_url
 
 
 MAX_AVATAR_BYTES = 2_000_000
 MAX_CACHE_ITEMS = 500
+MAX_CACHE_BYTES = 32 * 1024 * 1024
 _CACHE = OrderedDict()  # type: OrderedDict[str, bytes]
 
 
@@ -20,14 +22,15 @@ class AvatarFetchResult:
 
 
 async def fetch_avatars(urls: Iterable[Optional[str]]) -> AvatarFetchResult:
-    unique = {url for url in urls if url}
+    requested = {url for url in urls if url}
+    unique = {url for url in requested if is_discord_media_url(url)}
     data = {}
     for url in unique:
         if url in _CACHE:
             data[url] = _CACHE[url]
             _CACHE.move_to_end(url)
     pending = unique.difference(data)
-    failed = []
+    failed = list(requested - unique)
     if pending:
         timeout = aiohttp.ClientTimeout(total=8, connect=4, sock_read=5)
         connector = aiohttp.TCPConnector(limit=10)
@@ -36,7 +39,7 @@ async def fetch_avatars(urls: Iterable[Optional[str]]) -> AvatarFetchResult:
             async def fetch(url: str):
                 try:
                     async with semaphore:
-                        async with session.get(url) as response:
+                        async with session.get(url, allow_redirects=False) as response:
                             if response.status != 200:
                                 return url, None
                             if (
@@ -44,10 +47,12 @@ async def fetch_avatars(urls: Iterable[Optional[str]]) -> AvatarFetchResult:
                                 and response.content_length > MAX_AVATAR_BYTES
                             ):
                                 return url, None
-                            payload = await response.read()
-                            if len(payload) > MAX_AVATAR_BYTES:
-                                return url, None
-                            return url, payload
+                            payload = bytearray()
+                            async for chunk in response.content.iter_chunked(64 * 1024):
+                                if len(payload) + len(chunk) > MAX_AVATAR_BYTES:
+                                    return url, None
+                                payload.extend(chunk)
+                            return url, bytes(payload)
                 except (aiohttp.ClientError, asyncio.TimeoutError, ValueError):
                     return url, None
 
@@ -57,6 +62,8 @@ async def fetch_avatars(urls: Iterable[Optional[str]]) -> AvatarFetchResult:
                 data[url] = payload
                 _CACHE[url] = payload
                 _CACHE.move_to_end(url)
+                while len(_CACHE) > MAX_CACHE_ITEMS or sum(map(len, _CACHE.values())) > MAX_CACHE_BYTES:
+                    _CACHE.popitem(last=False)
             else:
                 failed.append(url)
     while len(_CACHE) > MAX_CACHE_ITEMS:
@@ -73,6 +80,7 @@ def prepare_avatar(
         return None
     try:
         with Image.open(io.BytesIO(data)) as source:
+            check_image_dimensions(source, max_pixels=4096 * 4096)
             source.seek(0)  # Animated avatars intentionally use their first frame.
             corrected = ImageOps.exif_transpose(source)
             avatar = ImageOps.fit(
@@ -92,5 +100,5 @@ def prepare_avatar(
                 ImageDraw.Draw(mask).ellipse((0, 0, size - 1, size - 1), fill=255)
             avatar.putalpha(mask)
         return avatar
-    except (EOFError, OSError, ValueError):
+    except (EOFError, OSError, ValueError, Image.DecompressionBombError):
         return None

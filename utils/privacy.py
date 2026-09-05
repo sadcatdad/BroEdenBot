@@ -8,8 +8,10 @@ import re
 SENSITIVE_TEXT_PATTERNS = (
     (
         re.compile(
-            r"(?im)\b((?:[A-Z][A-Z0-9_]*_)?"
-            r"(?:TOKEN|SECRET|PASSWORD|API_KEY))\s*[:=]\s*([^\s,;]+)"
+            r'''(?im)(?<!\w)(["']?(?:[A-Z][A-Z0-9_-]*[_-])?'''
+            r'''(?:TOKEN|SECRET|PASSWORD|PASSWD|API[_-]?KEY|PRIVATE[_-]?KEY)'''
+            r'''(?:[_-][A-Z0-9]+)*["']?)\s*[:=]\s*'''
+            r'''("[^"\r\n]*"|'[^'\r\n]*'|[^\s,;]+)'''
         ),
         r"\1=[REDACTED]",
     ),

@@ -6,7 +6,7 @@
     <h1>Embed/Message Editor</h1>
     <p class="muted">Create message and embed designs that bot features can send.</p>
   </div>
-  {% if can_write %}
+  {% if can('message_studio.manage') %}
   <details class="create-asset-menu">
     <summary class="button">+ Create</summary>
     <div class="create-asset-options">
@@ -49,8 +49,8 @@
           <td>
             <div class="embed-feature-actions">
               <div>{% if embed.features %}{% for feature in embed.features %}<span class="badge">{{ feature }}</span>{% endfor %}{% else %}<span class="muted">Not in use</span>{% endif %}</div>
-              {% if can_write %}
-              <form method="post" action="{{ url_for('embed_delete', template_id=embed.id) }}" onsubmit="return confirm('Delete this asset? This cannot be undone.');">
+              {% if can('message_studio.manage') %}
+              <form method="post" action="{{ url_for('embed_delete', template_id=embed.id) }}" data-confirm="Delete this asset? This cannot be undone.">
                 <input type="hidden" name="csrf" value="{{ csrf_token }}">
                 <button class="button danger small" type="submit">Delete</button>
               </form>

@@ -9,8 +9,22 @@ from typing import Any
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from PIL import Image, ImageOps, UnidentifiedImageError
+from utils.image_safety import check_image_dimensions
 
-from utils.events import *  # Re-export the small dashboard-safe event API.
+from utils.events import (
+    EVENT_TYPES,
+    event_is_owned_by as event_is_owned_by,
+    event_sync_status as event_sync_status,
+    get_event as get_event,
+    get_event_action as get_event_action,
+    list_events as list_events,
+    list_recent_actions as list_recent_actions,
+    parse_offsets as parse_offsets,
+    queue_event_action as queue_event_action,
+    subscribe_to_event as subscribe_to_event,
+    unsubscribe_from_event as unsubscribe_from_event,
+    update_event_subscription as update_event_subscription,
+)
 from utils.settings import get_setting
 
 
@@ -34,6 +48,9 @@ def normalize_event_image(data: bytes, content_type: str) -> tuple[bytes, str]:
         raise ValueError("Event artwork must be a JPEG, PNG, or WebP image.")
     try:
         with Image.open(BytesIO(data)) as source:
+            check_image_dimensions(source)
+            if source.format not in {"PNG", "JPEG", "WEBP"}:
+                raise ValueError("Event artwork must be a JPEG, PNG, or WebP image.")
             source.verify()
         with Image.open(BytesIO(data)) as source:
             image = ImageOps.exif_transpose(source).convert("RGB")

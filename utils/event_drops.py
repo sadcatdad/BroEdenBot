@@ -16,6 +16,15 @@ from contextlib import contextmanager
 from pathlib import Path
 from urllib.parse import urlsplit
 
+from utils.event_drop_variants import (
+    APPEARANCE_FIELDS,
+    VARIANT_DEFAULTS,
+    SNAPSHOT_FIELDS,
+    migrate_variants,
+    resolve_appearance,
+    select_drop_variant,
+    valid_weight,
+)
 from utils.settings import settings_database_path
 from utils.sqlite import AutoClosingSQLiteConnection, configure_sync_connection
 
@@ -121,6 +130,9 @@ class EventDrops:
                 + "\nINSERT OR IGNORE INTO event_drop_schema VALUES(1,unixepoch());\nCOMMIT;"
             )
 
+        with self.connect(True) as db:
+            migrate_variants(db)
+
     def rows(self, sql, args=()):
         with self.connect() as db:
             return [dict(r) for r in db.execute(sql, args)]
@@ -157,6 +169,280 @@ class EventDrops:
     def campaign(self, campaign_id, guild_id=None):
         with self.connect() as db:
             return self._campaign(db, campaign_id, guild_id)
+
+    @staticmethod
+    def _editable(campaign):
+        if campaign["status"] not in ("draft", "paused"):
+            raise ValueError(
+                "Pause the campaign before editing Drop Variants. Completed campaigns can be duplicated."
+            )
+
+    @staticmethod
+    def _variants(db, campaign_id):
+        rows = [
+            dict(row)
+            for row in db.execute(
+                "SELECT * FROM event_drop_variants WHERE campaign_id=? AND deleted_at IS NULL ORDER BY sort_order,id",
+                (campaign_id,),
+            )
+        ]
+        total = sum(row["weight"] for row in rows if row["enabled"])
+        for row in rows:
+            row["asset_ids"] = [
+                r[0]
+                for r in db.execute(
+                    "SELECT asset_id FROM event_drop_variant_assets WHERE variant_id=? ORDER BY asset_id",
+                    (row["id"],),
+                )
+            ]
+            row["chance"] = (
+                row["weight"] / total * 100 if row["enabled"] and total else 0
+            )
+        return rows
+
+    def variants(self, campaign_id, guild_id=None):
+        with self.connect() as db:
+            self._campaign(db, campaign_id, guild_id)
+            return self._variants(db, campaign_id)
+
+    @staticmethod
+    def _validate_variant_set(db, campaign):
+        if not campaign["variants_enabled"]:
+            return
+        variants = EventDrops._variants(db, campaign["id"])
+        enabled = [v for v in variants if v["enabled"]]
+        if not enabled:
+            raise ValueError(
+                "At least one enabled Drop Variant must have a selection weight greater than 0."
+            )
+        for variant in enabled:
+            valid_weight(variant["weight"])
+        if len([v for v in enabled if v["is_default"]]) != 1:
+            raise ValueError(
+                "Choose one enabled Default Variant before disabling or deleting the current default."
+            )
+
+    def set_variants_enabled(self, campaign_id, guild_id, enabled):
+        with self.connect(True) as db:
+            c = self._campaign(db, campaign_id, guild_id)
+            self._editable(c)
+            if enabled and not self._variants(db, campaign_id):
+                now = time.time()
+                db.execute(
+                    "INSERT INTO event_drop_variants(campaign_id,name,weight,points,is_default,created_at,updated_at) VALUES(?,?,?,?,1,?,?)",
+                    (campaign_id, "Standard Drop", 100, c["points"], now, now),
+                )
+            c["variants_enabled"] = int(bool(enabled))
+            self._validate_variant_set(db, c)
+            db.execute(
+                "UPDATE event_drop_campaigns SET variants_enabled=?,updated_at=? WHERE id=?",
+                (c["variants_enabled"], time.time(), campaign_id),
+            )
+
+    def validate_variant(self, campaign, values):
+        data = {key: values.get(key, value) for key, value in VARIANT_DEFAULTS.items()}
+        for key in ("enabled", "is_default", "show_reward", "show_rarity"):
+            data[key] = int(data[key] in (True, 1, "1", "on"))
+        data["name"] = str(data["name"] or "").strip()
+        data["rarity"] = str(data["rarity"] or "").strip()
+        if not data["name"] or len(data["name"]) > 100 or len(data["rarity"]) > 60:
+            raise ValueError(
+                "Variant name is required (up to 100 characters); rarity may be up to 60 characters."
+            )
+        data["weight"] = valid_weight(data["weight"], bool(data["enabled"]))
+        try:
+            data["points"] = int(str(data["points"]))
+            data["sort_order"] = int(str(data["sort_order"]))
+        except (ValueError, TypeError):
+            raise ValueError(
+                "Reward and display order must be whole numbers."
+            ) from None
+        if not 1 <= data["points"] <= 1_000_000 or not 0 <= data["sort_order"] <= 10000:
+            raise ValueError(
+                "Reward must be 1–1,000,000 points; display order must be 0–10,000."
+            )
+        if data["image_mode"] not in ("inherit", "single", "pool", "none"):
+            raise ValueError("Choose a valid image behavior.")
+        for field in APPEARANCE_FIELDS:
+            key = field + "_override"
+            if data[key] is not None:
+                data[key] = str(data[key]).strip()
+        appearance = resolve_appearance(campaign, data)
+        self.validate(
+            dict(campaign, **appearance, points=data["points"], max_user_points=None),
+            campaign["channels"],
+        )
+        return data
+
+    def save_variant(
+        self, campaign_id, guild_id, values, variant_id=None, asset_ids=(), assets=()
+    ):
+        with self.connect(True) as db:
+            c = self._campaign(db, campaign_id, guild_id)
+            self._editable(c)
+            data = self.validate_variant(c, values)
+            variants = self._variants(db, campaign_id)
+            if variant_id and not any(v["id"] == int(variant_id) for v in variants):
+                raise ValueError("Drop Variant not found in this campaign.")
+            if not variant_id and len(variants) >= 30:
+                raise ValueError("Use at most 30 Drop Variants per campaign.")
+            ids = {int(a) for a in asset_ids}
+            known = {
+                r[0]
+                for r in db.execute(
+                    "SELECT id FROM event_drop_assets WHERE campaign_id=?",
+                    (campaign_id,),
+                )
+            }
+            if ids - known:
+                raise ValueError("Choose images belonging to this campaign.")
+            if len(ids) + len(assets) > 10:
+                raise ValueError("Use at most 10 images in a variant pool.")
+            if data["image_mode"] == "single" and len(ids) + len(assets) != 1:
+                raise ValueError(
+                    "Select or upload exactly one image for Variant Image."
+                )
+            if data["image_mode"] == "pool" and not (ids or assets):
+                raise ValueError(
+                    "Select or upload at least one image for Variant Image Pool."
+                )
+            if data["is_default"]:
+                db.execute(
+                    "UPDATE event_drop_variants SET is_default=0 WHERE campaign_id=?",
+                    (campaign_id,),
+                )
+            now = time.time()
+            if variant_id:
+                db.execute(
+                    "UPDATE event_drop_variants SET "
+                    + ",".join(k + "=?" for k in data)
+                    + ",updated_at=? WHERE id=?",
+                    (*data.values(), now, variant_id),
+                )
+            else:
+                variant_id = db.execute(
+                    "INSERT INTO event_drop_variants(campaign_id,created_at,updated_at,"
+                    + ",".join(data)
+                    + ") VALUES("
+                    + ",".join("?" for _ in range(len(data) + 3))
+                    + ")",
+                    (campaign_id, now, now, *data.values()),
+                ).lastrowid
+            for blob, mime in assets:
+                asset_id = db.execute(
+                    "INSERT INTO event_drop_assets(campaign_id,image_bytes,content_type,created_at,campaign_pool) VALUES(?,?,?,?,0)",
+                    (campaign_id, blob, mime, now),
+                ).lastrowid
+                ids.add(asset_id)
+            db.execute(
+                "DELETE FROM event_drop_variant_assets WHERE variant_id=?",
+                (variant_id,),
+            )
+            db.executemany(
+                "INSERT INTO event_drop_variant_assets VALUES(?,?)",
+                [(variant_id, a) for a in ids],
+            )
+            self._validate_variant_set(db, c)
+            db.execute(
+                "UPDATE event_drop_campaigns SET updated_at=? WHERE id=?",
+                (now, campaign_id),
+            )
+        log.info(
+            "Event Drop variant saved campaign=%s variant=%s", campaign_id, variant_id
+        )
+        return variant_id
+
+    def variant_action(self, campaign_id, guild_id, variant_id, action):
+        with self.connect(True) as db:
+            c = self._campaign(db, campaign_id, guild_id)
+            self._editable(c)
+            variants = self._variants(db, campaign_id)
+            variant = next((v for v in variants if v["id"] == int(variant_id)), None)
+            if variant is None:
+                raise ValueError("Drop Variant not found in this campaign.")
+            if action == "duplicate":
+                if len(variants) >= 30:
+                    raise ValueError("Use at most 30 Drop Variants per campaign.")
+                values = {key: variant[key] for key in VARIANT_DEFAULTS}
+                values.update(name=variant["name"][:93] + " (copy)", is_default=0)
+                variant_id = db.execute(
+                    "INSERT INTO event_drop_variants(campaign_id,created_at,updated_at,"
+                    + ",".join(values)
+                    + ") VALUES("
+                    + ",".join("?" for _ in range(len(values) + 3))
+                    + ")",
+                    (campaign_id, time.time(), time.time(), *values.values()),
+                ).lastrowid
+                db.executemany(
+                    "INSERT INTO event_drop_variant_assets VALUES(?,?)",
+                    [(variant_id, a) for a in variant["asset_ids"]],
+                )
+            elif action == "default":
+                if not variant["enabled"]:
+                    raise ValueError(
+                        "Enable this variant before making it the default."
+                    )
+                db.execute(
+                    "UPDATE event_drop_variants SET is_default=0 WHERE campaign_id=?",
+                    (campaign_id,),
+                )
+                db.execute(
+                    "UPDATE event_drop_variants SET is_default=1,updated_at=? WHERE id=?",
+                    (time.time(), variant_id),
+                )
+            elif action in ("enable", "disable"):
+                valid_weight(variant["weight"], enabled=action == "enable")
+                db.execute(
+                    "UPDATE event_drop_variants SET enabled=?,updated_at=? WHERE id=?",
+                    (int(action == "enable"), time.time(), variant_id),
+                )
+            elif action == "delete":
+                if db.execute(
+                    "SELECT 1 FROM event_drops WHERE variant_id=?", (variant_id,)
+                ).fetchone():
+                    db.execute(
+                        "UPDATE event_drop_variants SET enabled=0,is_default=0,deleted_at=?,updated_at=? WHERE id=?",
+                        (time.time(), time.time(), variant_id),
+                    )
+                else:
+                    db.execute(
+                        "DELETE FROM event_drop_variants WHERE id=?", (variant_id,)
+                    )
+            else:
+                raise ValueError("Unknown Drop Variant action.")
+            self._validate_variant_set(db, c)
+            db.execute(
+                "UPDATE event_drop_campaigns SET updated_at=? WHERE id=?",
+                (time.time(), campaign_id),
+            )
+        return variant_id
+
+    def drop_appearance(self, drop_id):
+        with self.connect() as db:
+            row = db.execute(
+                "SELECT s.*,d.points,d.variant_name,d.rarity,d.variant_id FROM event_drop_snapshots s JOIN event_drops d ON d.id=s.drop_id WHERE drop_id=?",
+                (drop_id,),
+            ).fetchone()
+            if row is None:
+                raise ValueError("Drop snapshot not found.")
+            return dict(row)
+
+    def variant_results(self, campaign_id, user_id=None):
+        if user_id is not None:
+            return self.rows(
+                """SELECT d.variant_id,d.variant_name,d.rarity,COUNT(*) AS claims,SUM(q.points) AS total_points
+                FROM event_drop_claims q JOIN event_drops d ON d.id=q.drop_id
+                WHERE q.campaign_id=? AND q.user_id=? GROUP BY d.variant_id,d.variant_name,d.rarity ORDER BY total_points DESC""",
+                (campaign_id, str(user_id)),
+            )
+        return self.rows(
+            """SELECT d.variant_id,d.variant_name,d.rarity,COUNT(*) AS drops,
+            COALESCE(SUM(q.claims),0) AS claims,COALESCE(SUM(q.points),0) AS total_points,
+            AVG(COALESCE(q.claims,0)) AS average_claims FROM event_drops d LEFT JOIN
+            (SELECT drop_id,COUNT(*) AS claims,SUM(points) AS points FROM event_drop_claims GROUP BY drop_id) q ON q.drop_id=d.id
+            WHERE d.campaign_id=? AND d.posted_at IS NOT NULL GROUP BY d.variant_id,d.variant_name,d.rarity ORDER BY drops DESC""",
+            (campaign_id,),
+        )
 
     @staticmethod
     def validate(values, channels, starting=False):
@@ -315,7 +601,7 @@ class EventDrops:
                     (asset_id, campaign_id),
                 )
             existing = db.execute(
-                "SELECT COUNT(*) FROM event_drop_assets WHERE campaign_id=? AND created_at>0",
+                "SELECT COUNT(*) FROM event_drop_assets WHERE campaign_id=? AND created_at>0 AND campaign_pool=1",
                 (campaign_id,),
             ).fetchone()[0]
             if existing + len(assets) > 10:
@@ -328,23 +614,73 @@ class EventDrops:
         return campaign_id
 
     def duplicate(self, campaign_id, guild_id, actor):
-        campaign = self.campaign(campaign_id, guild_id)
-        campaign.update(
-            name=(campaign["name"][:93] + " (copy)"), start_at=None, end_at=None
-        )
-        assets = self.rows(
-            "SELECT image_bytes,content_type FROM event_drop_assets WHERE campaign_id=? AND created_at>0",
-            (campaign_id,),
-        )
-        return self.save(
-            guild_id,
-            actor,
-            campaign,
-            campaign["channels"],
-            assets=[(a["image_bytes"], a["content_type"]) for a in assets],
-            eligible_roles=campaign["eligible_roles"],
-            excluded_roles=campaign["excluded_roles"],
-        )
+        # Copy the complete configuration in one transaction; retain references
+        # only within the new campaign and never copy drops, claims or schedules.
+        with self.connect(True) as db:
+            source = self._campaign(db, campaign_id, guild_id)
+            values = {key: source[key] for key in DEFAULTS}
+            values.update(
+                name=source["name"][:93] + " (copy)", start_at=None, end_at=None
+            )
+            now = time.time()
+            new_id = db.execute(
+                "INSERT INTO event_drop_campaigns(guild_id,created_by,created_at,updated_at,variants_enabled,"
+                + ",".join(values)
+                + ") VALUES("
+                + ",".join("?" for _ in range(len(values) + 5))
+                + ")",
+                (
+                    str(guild_id),
+                    str(actor),
+                    now,
+                    now,
+                    source["variants_enabled"],
+                    *values.values(),
+                ),
+            ).lastrowid
+            db.execute(
+                "INSERT INTO event_drop_channels SELECT ?,channel_id FROM event_drop_channels WHERE campaign_id=?",
+                (new_id, campaign_id),
+            )
+            db.execute(
+                "INSERT INTO event_drop_roles SELECT ?,role_id,rule FROM event_drop_roles WHERE campaign_id=?",
+                (new_id, campaign_id),
+            )
+            variants = self._variants(db, campaign_id)
+            asset_map = {}
+            needed = {a for v in variants for a in v["asset_ids"]}
+            for asset in db.execute(
+                "SELECT * FROM event_drop_assets WHERE campaign_id=?", (campaign_id,)
+            ).fetchall():
+                if asset["id"] not in needed and not (
+                    asset["campaign_pool"] and asset["created_at"] > 0
+                ):
+                    continue
+                asset_map[asset["id"]] = db.execute(
+                    "INSERT INTO event_drop_assets(campaign_id,image_bytes,content_type,created_at,campaign_pool) VALUES(?,?,?,?,?)",
+                    (
+                        new_id,
+                        asset["image_bytes"],
+                        asset["content_type"],
+                        now if asset["created_at"] > 0 else -now,
+                        asset["campaign_pool"],
+                    ),
+                ).lastrowid
+            for variant in variants:
+                data = {key: variant[key] for key in VARIANT_DEFAULTS}
+                new_variant = db.execute(
+                    "INSERT INTO event_drop_variants(campaign_id,created_at,updated_at,"
+                    + ",".join(data)
+                    + ") VALUES("
+                    + ",".join("?" for _ in range(len(data) + 3))
+                    + ")",
+                    (new_id, now, now, *data.values()),
+                ).lastrowid
+                db.executemany(
+                    "INSERT INTO event_drop_variant_assets VALUES(?,?)",
+                    [(new_variant, asset_map[a]) for a in variant["asset_ids"]],
+                )
+            return new_id
 
     def delete(self, campaign_id, guild_id):
         with self.connect(True) as db:
@@ -384,6 +720,7 @@ class EventDrops:
             next_at = None
             if action in ("start", "resume"):
                 self.validate(c, c["channels"], starting=True)
+                self._validate_variant_set(db, c)
                 if c["end_at"] is not None and c["end_at"] <= now:
                     raise ValueError("Campaign end time is in the past.")
                 state = (
@@ -410,7 +747,9 @@ class EventDrops:
                 )
         log.info("Event Drops campaign %s id=%s", action, campaign_id)
 
-    def queue_manual(self, campaign_id, guild_id, key, channel_id=None):
+    def queue_manual(
+        self, campaign_id, guild_id, key, channel_id=None, variant_id=None
+    ):
         now = time.time()
         with self.connect(True) as db:
             c = self._campaign(db, campaign_id, guild_id)
@@ -430,6 +769,7 @@ class EventDrops:
                 "manual",
                 channel_id=str(channel_id) if channel_id else None,
                 key=key,
+                forced_variant_id=variant_id,
             )
 
     @staticmethod
@@ -448,16 +788,44 @@ class EventDrops:
             raise ValueError("Maximum campaign drops reached.")
 
     @staticmethod
-    def _reserve(db, c, now, kind, scheduled=None, channel_id=None, key=None):
-        assets = [
-            r[0]
-            for r in db.execute(
-                "SELECT id FROM event_drop_assets WHERE campaign_id=? AND created_at>0",
-                (c["id"],),
+    def _reserve(
+        db,
+        c,
+        now,
+        kind,
+        scheduled=None,
+        channel_id=None,
+        key=None,
+        forced_variant_id=None,
+    ):
+        variant = None
+        if c.get("variants_enabled"):
+            EventDrops._validate_variant_set(db, c)
+            variant = select_drop_variant(
+                EventDrops._variants(db, c["id"]), forced_variant_id
             )
-        ]
+        elif forced_variant_id is not None:
+            raise ValueError("Enable Drop Variants before forcing a variant.")
+        mode = variant["image_mode"] if variant else "inherit"
+        if mode == "inherit":
+            assets = [
+                r[0]
+                for r in db.execute(
+                    "SELECT id FROM event_drop_assets WHERE campaign_id=? AND created_at>0 AND campaign_pool=1",
+                    (c["id"],),
+                )
+            ]
+        elif mode == "none":
+            assets = []
+        else:
+            assets = variant["asset_ids"]
+            if not assets:
+                raise ValueError(
+                    "Variant images are unavailable. Edit its image settings."
+                )
+        appearance = resolve_appearance(c, variant)
         cur = db.execute(
-            "INSERT INTO event_drops(campaign_id,channel_id,kind,scheduled_at,created_at,status,asset_id,points,request_key) VALUES(?,?,?,?,?,'pending',?,?,?)",
+            "INSERT INTO event_drops(campaign_id,channel_id,kind,scheduled_at,created_at,status,asset_id,points,request_key,variant_id,variant_name,rarity,variant_selection) VALUES(?,?,?,?,?,'pending',?,?,?,?,?,?,?)",
             (
                 c["id"],
                 channel_id,
@@ -465,11 +833,28 @@ class EventDrops:
                 scheduled,
                 now,
                 random.choice(assets) if assets else None,
-                c["points"],
+                variant["points"] if variant else c["points"],
                 key,
+                variant["id"] if variant else None,
+                variant["name"] if variant else "Standard Drop",
+                variant["rarity"] if variant else "",
+                (
+                    "forced"
+                    if forced_variant_id is not None
+                    else ("random" if variant else "standard")
+                ),
             ),
         )
-        return cur.lastrowid
+        drop_id = cur.lastrowid
+        db.execute(
+            "INSERT INTO event_drop_snapshots(drop_id,"
+            + ",".join(SNAPSHOT_FIELDS)
+            + ") VALUES("
+            + ",".join("?" for _ in range(len(SNAPSHOT_FIELDS) + 1))
+            + ")",
+            (drop_id, *(appearance[field] for field in SNAPSHOT_FIELDS)),
+        )
+        return drop_id
 
     def tick(self, now=None, recover=False):
         now = time.time() if now is None else now
@@ -574,7 +959,17 @@ class EventDrops:
                 raise ValueError("Campaign stopped before delivery.")
             if str(channel_id) not in c["channels"]:
                 raise ValueError("Channel is no longer allowlisted.")
-            expires = min(now + c["claim_minutes"] * 60, c["end_at"] or float("inf"))
+            snapshot = db.execute(
+                "SELECT claim_minutes FROM event_drop_snapshots WHERE drop_id=?",
+                (drop_id,),
+            ).fetchone()
+            expires = (
+                row["expires_at"]
+                if row["expires_at"] is not None
+                else min(
+                    now + snapshot["claim_minutes"] * 60, c["end_at"] or float("inf")
+                )
+            )
             db.execute(
                 "UPDATE event_drops SET channel_id=?,expires_at=? WHERE id=?",
                 (str(channel_id), expires, drop_id),
@@ -694,10 +1089,25 @@ class EventDrops:
                 (str(guild_id), str(user_id), str(display_name)[:100], now),
             )
             total += d["points"]
+            snapshot = dict(
+                db.execute(
+                    "SELECT * FROM event_drop_snapshots WHERE drop_id=?", (drop_id,)
+                ).fetchone()
+            )
+            earned_name = (
+                snapshot["singular"] if d["points"] == 1 else snapshot["plural"]
+            )
+            total_name = snapshot["singular"] if total == 1 else snapshot["plural"]
+            confirmation = (
+                f"{snapshot['emoji']} Collected {d['variant_name']}!"
+                if d["variant_id"]
+                else f"{snapshot['emoji']} Collected!"
+            )
+            confirmation += f" You earned {d['points']} {earned_name}. You now have {total} {total_name}."
             return {
                 "ok": True,
                 "total": total,
-                "message": f'{c["emoji"]} Collected! You now have {total} {c["singular"] if total==1 else c["plural"]}.',
+                "message": confirmation,
             }
 
     def leaderboard(self, campaign_id):

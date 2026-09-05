@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import sqlite3
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List
 
 from .repository import _connect, initialize_visual_studio_schema, utcnow
 

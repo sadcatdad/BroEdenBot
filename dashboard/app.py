@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import json
 import os
@@ -12,6 +13,7 @@ from typing import Any, Optional
 from urllib.parse import urlencode, urlsplit, urlunsplit
 
 import uvicorn
+from starlette.concurrency import run_in_threadpool
 from dotenv import load_dotenv
 from fastapi import FastAPI, Form, HTTPException, Request, status
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, Response
@@ -31,6 +33,11 @@ from dashboard.auth import (
     is_authenticated,
     login_user,
     logout_user,
+)
+from dashboard.security import (
+    DashboardSecurityMiddleware,
+    clear_login_attempts,
+    reserve_login_attempt,
 )
 from dashboard.oauth import (
     DiscordOAuthError,
@@ -207,7 +214,7 @@ from utils.stats_manager import (
 )
 from utils.visual_studio import initialize_visual_studio_schema
 from utils.visual_studio.preview import render_preview, validate_preview
-from utils.visual_studio.registry import REGISTRY, asset_type_guidance
+from utils.visual_studio.registry import MAX_UPLOAD_BYTES, REGISTRY, asset_type_guidance
 from utils.visual_studio.repository import (
     archive_theme,
     delete_schedule,
@@ -240,10 +247,8 @@ from utils.visual_studio.storage import (
     ASSET_TYPES,
     archive_asset,
     asset_bytes,
-    asset_path,
     delete_asset,
     get_asset,
-    inspect_upload,
     list_assets,
     rename_asset,
     save_asset,
@@ -555,6 +560,7 @@ app.add_middleware(
     https_only=env_flag("DASHBOARD_COOKIE_SECURE", default=False),
 )
 app.mount("/static", StaticFiles(directory=DASHBOARD_DIR / "static"), name="static")
+app.add_middleware(DashboardSecurityMiddleware)
 templates = Jinja2Templates(directory=DASHBOARD_DIR / "templates")
 templates.env.filters["display_name"] = normalize_display_name
 
@@ -709,8 +715,19 @@ async def login(
     elif not csrf_is_valid(request, csrf):
         error = "Your login session expired. Please try again."
     else:
-        user = authenticate_password(username, password)
+        client_host = request.client.host if request.client else "unknown"
+        retry_after = await run_in_threadpool(reserve_login_attempt, client_host)
+        if retry_after:
+            response = login_response(
+                request,
+                error="Too many sign-in attempts. Please wait a few minutes and try again.",
+                status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            )
+            response.headers["Retry-After"] = str(retry_after)
+            return response
+        user = await run_in_threadpool(authenticate_password, username, password)
         if user is not None:
+            await run_in_threadpool(clear_login_attempts, client_host)
             login_user(request, user, auth_provider="password")
             record_audit(
                 actor_user_id=int(user["id"]),
@@ -790,7 +807,7 @@ async def discord_callback(
             error="Discord login session is missing or expired.",
             status_code=status.HTTP_400_BAD_REQUEST,
         )
-    if not secrets.compare_digest(expected_state, state):
+    if not state.isascii() or not secrets.compare_digest(expected_state, state):
         record_audit(
             actor_label="anonymous", action="auth.login.failed",
             target_type="auth_provider", target_id="discord",
@@ -2338,7 +2355,11 @@ async def knowledge_live_sync(
     if not has_permission(request, "knowledge.manage"):
         raise HTTPException(status_code=403, detail="Admin access is required.")
     form = await request.form()
-    limit = int(str(form.get("limit", "200")).strip() or "200")
+    try:
+        limit = int(str(form.get("limit", "200")).strip() or "200")
+    except ValueError:
+        request.session["knowledge_error"] = "Sync limit must be a whole number."
+        return knowledge_redirect(request)
     action_id = queue_live_knowledge_sync(
         guild_id=guild_id,
         channel_id=channel_id,
@@ -2653,7 +2674,7 @@ async def visual_template_preview(
     if edge_case not in {"maximum", "minimum", "empty"}:
         raise HTTPException(status_code=400, detail="Unknown preview data set.")
     try:
-        png = await __import__("asyncio").to_thread(
+        png = await asyncio.to_thread(
             render_preview,
             template_key,
             draft=draft,
@@ -2699,7 +2720,7 @@ async def visual_template_publish(request: Request, template_key: str) -> Redire
         return redirect
     form = await require_visual_admin(request)
     try:
-        await __import__("asyncio").to_thread(
+        await asyncio.to_thread(
             validate_preview,
             template_key,
             draft=True,
@@ -2973,13 +2994,13 @@ async def visual_asset_upload_save(request: Request) -> Response:
     if upload is None or not hasattr(upload, "read"):
         request.session["visual_error"] = "Choose a PNG, JPG, or WEBP file."
         return visual_redirect(request, "visual_asset_upload")
-    data = await upload.read()
+    data = await upload.read(MAX_UPLOAD_BYTES + 1)
     template_key = str(form.get("template_key", "")).strip() or None
     slot_key = str(form.get("slot_key", "")).strip() or None
     raw_replace_id = str(form.get("replace_asset_id", "")).strip()
     replace_asset_id = int(raw_replace_id) if raw_replace_id.isdigit() else None
     try:
-        asset_id, inspection = await __import__("asyncio").to_thread(
+        asset_id, inspection = await asyncio.to_thread(
             save_asset,
             data,
             filename=str(getattr(upload, "filename", "upload")),

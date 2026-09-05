@@ -357,7 +357,7 @@ class VisualStudioTestCase(unittest.TestCase):
                 return None
 
         response = FakeHTTPResponse()
-        with patch("utils.visual_studio.storage.urllib.request.urlopen", return_value=response):
+        with patch("utils.visual_studio.storage.urllib.request.OpenerDirector.open", return_value=response):
             recovered = asset_bytes(
                 key,
                 "https://cdn.discordapp.com/attachments/1/2/recovered.png",

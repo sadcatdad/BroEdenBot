@@ -14,7 +14,7 @@ import discord
 from discord.ext import commands, tasks
 
 from config import COLOR
-from utils.events import EVENTS_SCHEMA_SQL, initialize_events_schema_async, utc_text
+from utils.events import initialize_events_schema_async, utc_text
 from utils.reminder_service import DEFAULT_EVENT_OFFSETS, ReminderService, parse_utc
 from utils.settings import get_setting
 

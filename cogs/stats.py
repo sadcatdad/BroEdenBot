@@ -1,5 +1,5 @@
 import asyncio
-import csv
+from utils.csv_export import SafeCSVWriter, SafeCSVDictWriter
 import datetime
 import io
 import json
@@ -1874,7 +1874,7 @@ class Stats(commands.Cog):
         report_type, role_1_id, role_2_id, has_role_id, missing_role_id = row
         generated_at = self._utcnow().isoformat()
         output = io.StringIO(newline="")
-        writer = csv.writer(output)
+        writer = SafeCSVWriter(output)
 
         if report_type == "rolecompare":
             role_1 = guild.get_role(role_1_id)
@@ -3025,7 +3025,7 @@ class Stats(commands.Cog):
             "metric",
             "value",
         ]
-        writer = csv.DictWriter(output, fieldnames=headers)
+        writer = SafeCSVDictWriter(output, fieldnames=headers)
         writer.writeheader()
 
         overview = await self._activity_overview_data(

@@ -1,0 +1,5 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="page-heading"><div><p class="eyebrow">{{ campaign.name }} / Participant results</p><h1>{{ score.display_name or ('Unknown/Former Member (' ~ score.user_id ~ ')') }}</h1><p>{{ score.total_points }} {{ campaign.plural }} · {{ score.drops_claimed }} claims · Rank #{{ score.rank }}</p></div><a class="button secondary" href="{{ url_for('event_drops_detail',campaign_id=campaign.id) }}#participants">Back to results</a></div>
+<section class="card"><h2>Score by Drop Variant</h2><p class="muted">Recorded names and actual claim awards are preserved even when variants change.</p><div class="table-wrap"><table><thead><tr><th>Variant</th><th>Rarity</th><th>Claims</th><th>{{ campaign.plural }}</th></tr></thead><tbody>{% for row in breakdown %}<tr><td>{{ row.variant_name }}</td><td>{{ row.rarity or '—' }}</td><td>{{ row.claims }}</td><td>{{ row.total_points }}</td></tr>{% endfor %}</tbody></table></div></section>
+{% endblock %}

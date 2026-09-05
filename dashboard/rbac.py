@@ -10,7 +10,7 @@ from datetime import datetime, timezone
 from typing import Any, Iterable, Optional
 
 from utils.settings import settings_database_path
-from utils.sqlite import configure_sync_connection
+from utils.sqlite import AutoClosingSQLiteConnection, configure_sync_connection
 
 
 @dataclass(frozen=True)
@@ -151,7 +151,7 @@ _INITIALIZED_PATHS: set[str] = set()
 def _connect() -> sqlite3.Connection:
     path = settings_database_path()
     path.parent.mkdir(parents=True, exist_ok=True)
-    connection = sqlite3.connect(path, timeout=30)
+    connection = sqlite3.connect(path, timeout=30, factory=AutoClosingSQLiteConnection)
     return configure_sync_connection(connection)
 
 
@@ -469,7 +469,7 @@ def permissions_for_user(user_id: int) -> set[str]:
                 SELECT DISTINCT r.role_key
                 FROM dashboard_user_role_assignments a
                 JOIN dashboard_roles r ON r.id = a.role_id
-                WHERE a.user_id = ?
+                WHERE a.user_id = ? AND a.source != 'legacy'
                 """,
                 (int(user_id),),
             )
@@ -525,7 +525,10 @@ def role_names_for_user(user_id: int) -> list[str]:
         if user is None:
             return []
         uses_legacy_role = str(user["access_source"] or "").casefold() != "discord_role"
-        source_clause = "" if uses_legacy_role else "AND a.source != 'legacy'"
+        legacy_key = (
+            LEGACY_ROLE_MAP.get(str(user["role"] or "viewer").casefold(), "viewer")
+            if uses_legacy_role else ""
+        )
         return [
             str(row["name"])
             for row in connection.execute(
@@ -533,10 +536,12 @@ def role_names_for_user(user_id: int) -> list[str]:
                 SELECT DISTINCT r.name, r.is_system, r.id
                 FROM dashboard_user_role_assignments a
                 JOIN dashboard_roles r ON r.id = a.role_id
-                WHERE a.user_id = ? {}
+                WHERE a.user_id = ? AND a.source != 'legacy'
+                UNION
+                SELECT name, is_system, id FROM dashboard_roles WHERE role_key = ?
                 ORDER BY r.is_system DESC, r.id
-                """.format(source_clause),
-                (int(user_id),),
+                """,
+                (int(user_id), legacy_key),
             )
         ]
 

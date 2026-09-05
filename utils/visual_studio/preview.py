@@ -3,13 +3,11 @@
 from __future__ import annotations
 
 import io
-import json
-from datetime import datetime, timezone
 from typing import Any, Dict, Mapping, Optional, Tuple
 
 from PIL import Image, ImageDraw, ImageFont
 
-from .registry import REGISTRY, TemplateDefinition
+from .registry import REGISTRY
 from .repository import (
     _connect,
     _deep_merge,

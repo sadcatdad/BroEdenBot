@@ -38,7 +38,7 @@
     {% else %}
     <div class="alert warning">No bot heartbeat has been recorded yet. Manual restore requests can still be queued.</div>
     {% endif %}
-    {% if can_write %}
+    {% if can('streaks.manage') %}
     <form method="post" action="{{ url_for('streaks_restore') }}" class="stack">
       <input type="hidden" name="csrf" value="{{ csrf_token }}">
       <label>Guild ID<input name="guild_id" value="{{ streaks.guild_id }}" inputmode="numeric" required></label>
@@ -57,7 +57,7 @@
     <p class="eyebrow">Audited correction</p>
     <h2>Manual adjustment</h2>
     <p class="muted">Add or remove one qualifying source day. Cached current and longest values are recalculated from the source-day history.</p>
-    {% if can_write %}
+    {% if can('streaks.manage') %}
     <form method="post" action="{{ url_for('streaks_adjust') }}" class="stack">
       <input type="hidden" name="csrf" value="{{ csrf_token }}">
       <label>Guild ID<input name="guild_id" value="{{ streaks.guild_id }}" inputmode="numeric" required></label>

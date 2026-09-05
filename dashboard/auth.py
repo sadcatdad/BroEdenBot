@@ -180,4 +180,8 @@ def csrf_token(request: Request) -> str:
 
 def csrf_is_valid(request: Request, submitted_token: str) -> bool:
     expected_token = str(request.session.get(CSRF_TOKEN_KEY, ""))
-    return bool(expected_token) and hmac.compare_digest(expected_token, submitted_token)
+    return (
+        bool(expected_token)
+        and submitted_token.isascii()
+        and hmac.compare_digest(expected_token, submitted_token)
+    )

@@ -8,7 +8,7 @@
   <p class="muted">{{ current_time.strftime("%B %d, %Y · %I:%M:%S %p %Z") }}</p>
 </div>
 
-<section class="card-grid">
+<section class="card-grid overview-metrics">
   <article class="card">
     <p class="label">Admin Dashboard</p>
     <p class="metric good">{{ dashboard_status }}</p>
@@ -51,9 +51,9 @@
       <h2>VC XP Role-Pulse Readiness</h2>
     </div>
     <div class="action-buttons">
-      <a class="button secondary small" href="{{ url_for('settings') }}">Open VC XP Settings</a>
-      {% if can_write and vcxp.failed_24h %}
-      <form method="post" action="{{ url_for('clear_failed_vcxp_pulses') }}" onsubmit="return confirm('Clear all failed VC XP pulse records? Successful pulses and reward accounting will not be changed.');">
+      <a class="button secondary small" href="{{ url_for('feature_detail', feature_key='voice') }}">Open VC XP Settings</a>
+      {% if can('operations.manage') and vcxp.failed_24h %}
+      <form method="post" action="{{ url_for('clear_failed_vcxp_pulses') }}" data-confirm="Clear all failed VC XP pulse records? Successful pulses and reward accounting will not be changed.">
         <input type="hidden" name="csrf" value="{{ csrf_token }}">
         <button class="button danger small" type="submit">Clear failed XP pulses</button>
       </form>

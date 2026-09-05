@@ -1,5 +1,5 @@
 import asyncio
-import csv
+from utils.csv_export import SafeCSVWriter
 import io
 import logging
 import os
@@ -1979,7 +1979,7 @@ class VCStats(commands.Cog):
         filename: str, headers: List[str], rows: Iterable[Iterable]
     ) -> Optional[discord.File]:
         output = io.StringIO(newline="")
-        writer = csv.writer(output)
+        writer = SafeCSVWriter(output)
         writer.writerow(headers)
         writer.writerows(rows)
         data = output.getvalue().encode("utf-8-sig")

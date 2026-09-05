@@ -301,6 +301,9 @@ input:focus, select:focus, textarea:focus { outline: none; border-color: var(--f
 .page-heading .muted { max-width: 44rem; margin-bottom: 0; }
 .card-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 1rem; margin-bottom: 1rem; }
 .card-grid.three { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+.overview-metrics .card:nth-child(5) { grid-column: 1 / -1; display: flex; flex-wrap: wrap; align-items: center; gap: .75rem 1.5rem; }
+.overview-metrics .card:nth-child(5) p { margin: 0; }
+.overview-metrics .card:nth-child(5) .muted { margin-left: auto; }
 .card {
   min-width: 0;
   padding: 1.25rem;
@@ -1017,10 +1020,11 @@ details summary { color: var(--muted); cursor: pointer; }
     width: min(19rem, calc(100vw - 3rem));
     max-width: 100%;
     transform: translateX(-105%);
+    visibility: hidden;
     box-shadow: 28px 0 70px rgba(0, 0, 0, .46);
     transition: transform .2s ease;
   }
-  .nav-open .site-sidebar { transform: translateX(0); }
+  .nav-open .site-sidebar { transform: translateX(0); visibility: visible; }
   .nav-close { display: grid; }
   .nav-scrim {
     position: fixed;

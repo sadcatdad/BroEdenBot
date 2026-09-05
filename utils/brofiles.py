@@ -14,6 +14,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 from PIL import Image, ImageOps, UnidentifiedImageError
+from utils.image_safety import check_image_dimensions
 
 from utils.settings import settings_database_path
 from utils.sqlite import AutoClosingSQLiteConnection, configure_sync_connection
@@ -685,12 +686,13 @@ def _normalized_media(data: bytes, filename: str, media_type: str) -> Tuple[byte
         raise ValueError("Upload a PNG, JPG, or WEBP image.")
     try:
         with Image.open(io.BytesIO(data)) as source:
+            check_image_dimensions(source)
+            if source.format not in {"PNG", "JPEG", "WEBP"}:
+                raise ValueError("Upload a PNG, JPG, or WEBP image.")
             source.seek(0)
             if getattr(source, "is_animated", False) and getattr(source, "n_frames", 1) > 1:
                 raise ValueError("Animated BROfile images are not supported.")
             image = ImageOps.exif_transpose(source).convert("RGBA")
-            if image.width * image.height > 40_000_000:
-                raise ValueError("BROfile image dimensions are too large.")
             width, height = MEDIA_SIZES[media_type]
             image = ImageOps.fit(
                 image,
@@ -700,7 +702,7 @@ def _normalized_media(data: bytes, filename: str, media_type: str) -> Tuple[byte
             )
             output = io.BytesIO()
             image.save(output, "PNG", optimize=True, compress_level=9)
-    except (UnidentifiedImageError, OSError, SyntaxError) as exc:
+    except (UnidentifiedImageError, OSError, SyntaxError, Image.DecompressionBombError) as exc:
         raise ValueError("BROfile image could not be decoded.") from exc
     return output.getvalue(), width, height
 

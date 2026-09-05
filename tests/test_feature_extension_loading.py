@@ -1,4 +1,7 @@
 import os
+import sys
+
+import cogs
 import tempfile
 import unittest
 from pathlib import Path
@@ -9,7 +12,9 @@ from main import BotClient
 
 class FeatureExtensionLoadingTests(unittest.IsolatedAsyncioTestCase):
     async def test_transferred_extensions_load_together_in_runtime_order(self):
-        with tempfile.TemporaryDirectory() as directory:
+        # discord.py replaces extension modules and package attributes while loading.
+        # Restore both so later tests keep patching the classes collected by pytest.
+        with patch.dict(sys.modules), patch.dict(vars(cogs)), tempfile.TemporaryDirectory() as directory:
             database_path = str(Path(directory) / "data.db")
             with patch.dict(os.environ, {"DATABASE_PATH": database_path}):
                 bot = BotClient()

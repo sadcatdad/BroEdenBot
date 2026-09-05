@@ -68,7 +68,13 @@ async def fetch_discord_identity(code: str) -> dict[str, Any]:
                 headers={"Content-Type": "application/x-www-form-urlencoded"},
             )
             token_response.raise_for_status()
-            access_token = str(token_response.json().get("access_token", "")).strip()
+            token_data = token_response.json()
+            if not isinstance(token_data, dict):
+                raise DiscordOAuthError("Discord token exchange failed.")
+            access_token = token_data.get("access_token")
+            if not isinstance(access_token, str):
+                raise DiscordOAuthError("Discord token exchange failed.")
+            access_token = access_token.strip()
             if not access_token:
                 raise DiscordOAuthError("Discord token exchange failed.")
             identity_response = await client.get(

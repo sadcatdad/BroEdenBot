@@ -14,7 +14,6 @@ from discord.ext import commands
 from cogs.mod_ai import (
     RULE_REMINDER_FOOTER,
     RULE_REMINDER_HEADER,
-    _canonical_user_mentions,
     format_public_rule_card_embed,
 )
 from utils.ai_kb import format_kb_context, search_kb
@@ -25,7 +24,6 @@ from utils.ai_service import (
     set_ai_cooldown,
 )
 from utils.settings import get_csv_ids_setting
-from utils.ui import branded_embed
 
 
 logger = logging.getLogger(__name__)

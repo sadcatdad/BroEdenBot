@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-import csv
+from utils.csv_export import SafeCSVWriter
 import io
 import json
 import sqlite3
@@ -352,7 +352,7 @@ def export_stat_csv(stat_id: str) -> Optional[bytes]:
     if not record["members"]:
         return None
     output = io.StringIO(newline="")
-    writer = csv.writer(output)
+    writer = SafeCSVWriter(output)
     writer.writerow(
         [
             "discord_user_id",

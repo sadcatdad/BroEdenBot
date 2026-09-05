@@ -1,6 +1,5 @@
 import asyncio
 import logging
-import math
 import os
 from dataclasses import dataclass
 from datetime import datetime
@@ -29,7 +28,6 @@ from .text import (
     format_timestamp,
     pluralize,
     truncate_text,
-    wrap_text,
 )
 from .theme import (
     COLORS,

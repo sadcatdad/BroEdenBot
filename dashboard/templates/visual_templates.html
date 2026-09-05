@@ -8,7 +8,7 @@
 {% if error %}<div class="alert error">{{ error }}</div>{% endif %}
 <form class="toolbar" method="get">
   <label>Category
-    <select name="category" onchange="this.form.submit()">
+    <select name="category" data-auto-submit>
       <option value="">All registered templates</option>
       {% for category in categories %}<option value="{{ category }}" {{ 'selected' if selected_category == category else '' }}>{{ category|title }}</option>{% endfor %}
     </select>

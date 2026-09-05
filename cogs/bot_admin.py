@@ -185,6 +185,9 @@ def format_bytes(size: int) -> str:
 
 
 def sanitize_logs(text: str) -> str:
+    from utils.privacy import redact_sensitive_text
+
+    text = redact_sensitive_text(text)
     safe_lines = []
     for line in text.replace("\x00", "").splitlines():
         if TRACEBACK_LINE_RE.search(line):
