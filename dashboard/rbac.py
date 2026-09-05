@@ -39,6 +39,7 @@ PERMISSIONS = (
     PermissionDefinition("events.edit_all", "Community", "Edit all events", "Edit any server event."),
     PermissionDefinition("events.publish", "Community", "Publish events", "Publish or approve server events."),
     PermissionDefinition("events.delete", "Community", "Delete events", "Delete server events."),
+    PermissionDefinition("event_drops.manage", "Community", "Manage Event Drops", "Create campaigns, operate drops, and view or export participant results."),
     PermissionDefinition("brofiles.view", "Community", "View BROfiles", "Browse published member BROfiles and the BRO Directory."),
     PermissionDefinition("brofiles.edit", "Community", "Edit own BROfile", "Create and customize the signed-in member's own BROfile."),
     PermissionDefinition("brofiles.manage", "Community", "Manage BROfiles", "Manage role-driven BROfile badge mappings and profile infrastructure."),

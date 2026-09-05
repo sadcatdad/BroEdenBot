@@ -4,6 +4,7 @@
   <div><p class="eyebrow">The Garden</p><h1>Events</h1><p class="muted">Gatherings from Discord, with reminder timing that belongs to you.</p></div>
   {% if view_mode == 'dashboard' %}<div class="action-buttons">{% if can('features.manage') %}<a class="button secondary" href="{{ url_for('feature_detail', feature_key='events') }}">Event settings</a>{% endif %}{% if can_create %}<a class="button event-create-button" href="{{ url_for('events_new') }}">Create an event</a>{% endif %}</div>{% endif %}
 </section>
+{% if can('event_drops.manage') %}<nav class="action-buttons" aria-label="Events sections"><a class="button secondary" href="{{ url_for('event_drops_list') }}">Event Drops</a></nav>{% endif %}
 {% if message %}<div class="notice success">{{ message }}</div>{% endif %}
 {% if error %}<div class="notice error">{{ error }}</div>{% endif %}
 {% if tracked_action %}<div class="notice" data-event-action-url="{{ url_for('events_action_status', action_id=tracked_action) }}">Checking event action #{{ tracked_action }}…</div>{% endif %}

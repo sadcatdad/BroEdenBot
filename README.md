@@ -135,6 +135,31 @@ action finishes. Full setup,
 permissions, migration, validation, and recovery guidance is
 in [`docs/events.md`](docs/events.md).
 
+## The Garden: Event Drops
+
+**Events → Event Drops** creates reusable collectible campaigns with explicit
+individual channel selection, fixed/random intervals, themed embeds/buttons,
+optional uploaded images, role eligibility, and optional drop/member limits.
+Defaults award one point per member per drop, allow unlimited different
+collectors, and expire after ten minutes. Claims, schedules, results, and buttons
+survive restarts; missed automatic drops are skipped instead of replayed.
+
+Members use `/event score` and `/event leaderboard`; configured bot admins can
+use `/eventdrop status`, `/eventdrop drop`, `/eventdrop pause`, and
+`/eventdrop resume`. Existing `/events` commands remain unchanged. Garden offers
+campaign creation/editing, scheduled start/end, pause/resume, manual drops,
+confirmation before ending, duplication, live status, per-drop claimers,
+participants, and CSV results. All management/results routes require the existing
+RBAC catalog's new `event_drops.manage` permission, grantable to an existing role.
+
+The bot loads Event Drops with the `events` module and uses the shared
+`DATABASE_PATH`. No new dependency or service changes are needed. Apply the
+additive `scripts/migrate_event_drops.py` migration with `--database` and
+`--backup-dir` during deployment; startup also initializes the same schema.
+See [Event Drops configuration, reliability, and Pi deployment](docs/event_drops.md)
+for permission requirements, timing semantics, image limits, recovery behavior,
+and the live smoke test.
+
 ## The Garden: My BROfile
 
 The authenticated member view now includes **My BROfile** and the **BRO

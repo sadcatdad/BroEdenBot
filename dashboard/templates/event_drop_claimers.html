@@ -1,0 +1,4 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="page-heading"><div><p class="eyebrow">{{ campaign.name }} / Event Drops</p><h1>Drop #{{ drop_id }} · Claimers</h1></div><a class="button secondary" href="{{ url_for('event_drops_detail',campaign_id=campaign.id) }}">Back to campaign</a></div><section class="card"><div class="table-wrap"><table><thead><tr><th>Member</th><th>Points</th><th>Claimed</th></tr></thead><tbody>{% for claim in claims %}<tr><td>{{ claim.display_name or ('Unknown/Former Member (' ~ claim.user_id ~ ')') }}<br><small>{{ claim.user_id }}</small></td><td>{{ claim.points }}</td><td>{{ claim.claimed_at|drop_time }}</td></tr>{% else %}<tr><td colspan="3">No claims for this drop.</td></tr>{% endfor %}</tbody></table></div></section>
+{% endblock %}

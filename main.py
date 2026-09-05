@@ -37,6 +37,7 @@ COG_MODULE_REQUIREMENTS = {
     "checklist.py": {"checklists"},
     "disboard_bumps.py": {"bumps"},
     "events.py": {"events"},
+    "event_drops.py": {"events"},
     "knowledge_sources.py": {"knowledge"},
     "leaderboards.py": {"stats"},
     "message_context.py": {"message_context"},

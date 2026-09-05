@@ -73,6 +73,7 @@ from dashboard.reminders_manager import (
     reminder_detail as dashboard_reminder_detail,
     reminder_overview as dashboard_reminder_overview,
 )
+from dashboard.event_drops_routes import install_event_drop_routes
 from dashboard.events_manager import (
     MAX_EVENT_IMAGE_BYTES,
     calendar_month,
@@ -385,6 +386,8 @@ if dashboard_enabled():
     initialize_brofile_schema()
     from utils.events import initialize_events_schema
     initialize_events_schema()
+    from utils.event_drops import EventDrops
+    EventDrops().initialize()
 
 app = FastAPI(
     title="The Garden",
@@ -415,6 +418,8 @@ def required_permission(path: str, method: str) -> str | None:
         parts = [part for part in path.split("/") if part]
         feature = FEATURES_BY_KEY.get(parts[1]) if len(parts) > 1 else None
         return feature.permission if feature else "features.view"
+    if path.startswith("/events/drops"):
+        return "event_drops.manage"
     if path.startswith("/events"):
         if path == "/events/new":
             return "events.create"
@@ -4847,6 +4852,10 @@ async def health() -> JSONResponse:
             "time": datetime.now().astimezone().isoformat(),
         }
     )
+
+
+# Event Drops uses the same authentication, CSRF, templates and audit middleware.
+install_event_drop_routes(app, templates, template_context)
 
 
 def main() -> None:
