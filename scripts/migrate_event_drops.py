@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """Apply or validate the additive Event Drops migration without touching other data."""
+
 from __future__ import annotations
 import argparse
 import sqlite3
@@ -37,20 +38,21 @@ def validate(path):
             raise RuntimeError(
                 "Missing tables: " + ", ".join(sorted(required - tables))
             )
-        if db.execute("SELECT MAX(version) FROM event_drop_schema").fetchone()[0] != 2:
+        if db.execute("SELECT MAX(version) FROM event_drop_schema").fetchone()[0] != 3:
             raise RuntimeError("Unexpected migration version.")
         for table, expected in {
-            "event_drop_campaigns": {"variants_enabled"},
+            "event_drop_campaigns": {"variants_enabled", "ping_role_id"},
             "event_drop_assets": {"campaign_pool"},
             "event_drops": {
                 "variant_id",
                 "variant_name",
                 "rarity",
                 "variant_selection",
+                "ping_role_id",
             },
         }.items():
             if expected - {row[1] for row in db.execute(f"PRAGMA table_info({table})")}:
-                raise RuntimeError(f"Missing Drop Variant columns in {table}.")
+                raise RuntimeError(f"Missing Event Drops columns in {table}.")
         if db.execute(
             "SELECT 1 FROM event_drops d LEFT JOIN event_drop_snapshots s ON s.drop_id=d.id WHERE s.drop_id IS NULL LIMIT 1"
         ).fetchone():

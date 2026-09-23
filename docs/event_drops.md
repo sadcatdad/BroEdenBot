@@ -47,6 +47,23 @@ permanently completes the campaign and closes live drops. Scheduled end does the
 same. History and scores remain available. Only unused drafts can be deleted;
 duplication creates a fresh draft with configuration/images but no scores or dates.
 
+## Role pings
+
+Open **Events → Event Drops → your campaign → Edit campaign → Drop notifications**
+and choose **Role to ping with each drop**, then save. Pause active or scheduled
+campaigns before editing and resume when ready. Choose **No role ping** to turn
+notifications off. Existing campaigns and existing drops default to no ping.
+
+The selected role is mentioned in the message above the embed for every future
+automatic, manual, and forced rare drop. The role must be mentionable or the bot
+must have Mention Everyone permission in the destination channel. Only the
+selected role is allowed to ping; `@everyone`, `@here`, user mentions, and other
+roles remain suppressed. This setting is independent of claim eligibility.
+The role is frozen when a drop is queued; later edits do not change that drop.
+If the role is deleted, the bot still sends the drop without a ping and logs the
+unavailable role. A missing role remains visible in the editor until replaced or
+cleared, so a metadata refresh cannot silently erase a saved selection.
+
 ## Drop Variants (Rare Drops)
 
 In a saved campaign, open **Drop Variants** or the Drop Variants section of its
@@ -223,6 +240,10 @@ maintenance window and run the additive migration with an SQLite online backup:
 ```
 
 Bot and dashboard startup also apply the same idempotent schema initializer.
+Version 3 adds `ping_role_id` to campaigns and drops with an empty default. It
+never recreates or resets campaigns, schedules, variants, assets, drops, or claims.
+Queued and historical drops retain no ping when upgraded. The migration tool
+validates version 3 and supports upgrading directly from version 1 or 2.
 Version 2 adds `event_drop_variants`, `event_drop_variant_assets`, and
 `event_drop_snapshots`; campaign/asset/drop columns and variant indexes are added
 in one SQLite transaction. The original version 1 schema and all feature data

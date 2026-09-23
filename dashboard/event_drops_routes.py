@@ -141,8 +141,8 @@ def install_event_drop_routes(app, templates, context):
         known_roles = {r["id"] for r in roles}
         for rid in (
             set(campaign.get("eligible_roles", []) + campaign.get("excluded_roles", []))
-            - known_roles
-        ):
+            | ({campaign["ping_role_id"]} if campaign.get("ping_role_id") else set())
+        ) - known_roles:
             roles.append(dict(id=rid, name=f"Unavailable role ({rid})"))
         values = dict(campaign)
         for key in ("start_at", "end_at"):
@@ -160,6 +160,7 @@ def install_event_drop_routes(app, templates, context):
             campaign=values,
             channels=channels,
             roles=roles,
+            server_id=guild_id(),
             assets=assets,
             error=error,
             timezone_label=str(event_timezone()),
@@ -181,6 +182,8 @@ def install_event_drop_routes(app, templates, context):
         values = dict(form)
         try:
             values = form_values(form)
+            if "ping_role_id" not in form:
+                values["ping_role_id"] = existing.get("ping_role_id", "")
             channels, roles = picker(svc)
             known = {c["id"] for c in channels} | set(existing.get("channels", []))
             selected = form.getlist("channels")
@@ -197,6 +200,10 @@ def install_event_drop_routes(app, templates, context):
             excluded = form.getlist("excluded_roles")
             if (set(eligible) | set(excluded)) - role_ids:
                 raise ValueError("Select roles from this server.")
+            ping_role = str(values.get("ping_role_id") or "").strip()
+            ping_roles = {r["id"] for r in roles} | {existing.get("ping_role_id", "")}
+            if ping_role and (ping_role == guild_id() or ping_role not in ping_roles):
+                raise ValueError("Select a specific role from this server to ping.")
             uploads = [u for u in form.getlist("images") if getattr(u, "filename", "")]
             if len(uploads) > 10:
                 raise ValueError("Upload at most 10 campaign images.")

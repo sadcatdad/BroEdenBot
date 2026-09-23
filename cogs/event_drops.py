@@ -234,6 +234,23 @@ class EventDropsCog(commands.Cog):
                     allowed_mentions=discord.AllowedMentions.none(),
                     nonce=f"eventdrop:{drop_id}",
                 )
+                ping_role_id = drop["ping_role_id"]
+                if ping_role_id and ping_role_id != str(campaign["guild_id"]):
+                    role = channel.guild.get_role(int(ping_role_id))
+                    if role is not None:
+                        kwargs["content"] = f"<@&{ping_role_id}>"
+                        kwargs["allowed_mentions"] = discord.AllowedMentions(
+                            everyone=False,
+                            users=False,
+                            roles=[role],
+                            replied_user=False,
+                        )
+                    else:
+                        log.warning(
+                            "Event Drop %s ping role %s is unavailable; sending without ping",
+                            drop_id,
+                            ping_role_id,
+                        )
                 if assets:
                     kwargs["file"] = discord.File(
                         io.BytesIO(assets[0]["image_bytes"]), filename="event-drop.webp"

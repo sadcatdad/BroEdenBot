@@ -102,7 +102,21 @@ DEFAULTS = dict(
     avoid_recent=3,
     max_drops=None,
     max_user_points=None,
+    ping_role_id="",
 )
+
+
+def migrate_role_pings(db):
+    """Version 3 adds opt-in pings without rewriting campaigns or drop history."""
+    if db.execute("SELECT MAX(version) FROM event_drop_schema").fetchone()[0] >= 3:
+        return
+    for table in ("event_drop_campaigns", "event_drops"):
+        columns = {row[1] for row in db.execute(f"PRAGMA table_info({table})")}
+        if "ping_role_id" not in columns:
+            db.execute(
+                f"ALTER TABLE {table} ADD COLUMN ping_role_id TEXT NOT NULL DEFAULT ''"
+            )
+    db.execute("INSERT INTO event_drop_schema VALUES(3,unixepoch())")
 
 
 class EventDrops:
@@ -132,6 +146,7 @@ class EventDrops:
 
         with self.connect(True) as db:
             migrate_variants(db)
+            migrate_role_pings(db)
 
     def rows(self, sql, args=()):
         with self.connect() as db:
@@ -447,6 +462,17 @@ class EventDrops:
     @staticmethod
     def validate(values, channels, starting=False):
         data = {key: values.get(key, default) for key, default in DEFAULTS.items()}
+        data["ping_role_id"] = str(data["ping_role_id"] or "").strip()
+        role_id = data["ping_role_id"]
+        if role_id and (
+            not role_id.isascii()
+            or not role_id.isdigit()
+            or len(role_id) > 20
+            or not 0 < int(role_id) < 2**64
+        ):
+            raise ValueError("Choose a valid Discord role to ping.")
+        if role_id:
+            data["ping_role_id"] = str(int(role_id))
         for key, maximum in [
             ("name", 100),
             ("singular", 50),
@@ -545,6 +571,8 @@ class EventDrops:
         excluded_roles=(),
     ):
         data = self.validate(values, channels)
+        if data["ping_role_id"] == str(guild_id):
+            raise ValueError("Choose a specific role to ping, not @everyone.")
         ids = {str(c) for c in channels}
         if not str(guild_id).isdigit() or any(not c.isdigit() for c in ids):
             raise ValueError(
@@ -554,6 +582,8 @@ class EventDrops:
         with self.connect(True) as db:
             if campaign_id:
                 old = self._campaign(db, campaign_id, guild_id)
+                if "ping_role_id" not in values:
+                    data["ping_role_id"] = old["ping_role_id"]
                 if old["status"] not in ("draft", "paused"):
                     raise ValueError(
                         "Pause the campaign before editing. Completed campaigns can be duplicated."
@@ -825,7 +855,7 @@ class EventDrops:
                 )
         appearance = resolve_appearance(c, variant)
         cur = db.execute(
-            "INSERT INTO event_drops(campaign_id,channel_id,kind,scheduled_at,created_at,status,asset_id,points,request_key,variant_id,variant_name,rarity,variant_selection) VALUES(?,?,?,?,?,'pending',?,?,?,?,?,?,?)",
+            "INSERT INTO event_drops(campaign_id,channel_id,kind,scheduled_at,created_at,status,asset_id,points,request_key,variant_id,variant_name,rarity,variant_selection,ping_role_id) VALUES(?,?,?,?,?,'pending',?,?,?,?,?,?,?,?)",
             (
                 c["id"],
                 channel_id,
@@ -843,6 +873,7 @@ class EventDrops:
                     if forced_variant_id is not None
                     else ("random" if variant else "standard")
                 ),
+                c["ping_role_id"],
             ),
         )
         drop_id = cur.lastrowid

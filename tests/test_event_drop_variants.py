@@ -468,7 +468,7 @@ class VariantStorageTests(unittest.TestCase):
             migrated.rows("SELECT MAX(version) AS version FROM event_drop_schema")[0][
                 "version"
             ],
-            2,
+            3,
         )
         from scripts.migrate_event_drops import validate
 

@@ -162,9 +162,18 @@ Pause before changing variant configuration. Existing drops retain their
 appearance and reward snapshots; all awards feed the same campaign leaderboard.
 Existing campaigns remain standard until variants are explicitly enabled.
 
+Optional **Drop notifications → Role to ping with each drop** in the campaign
+editor mentions one selected role on automatic, manual, and rare drops. Existing
+campaigns default to **No role ping**. Migration v3 only adds blank notification
+fields; campaign settings, schedules, variants, images, history, and scores stay
+intact. Pause an active campaign to edit this setting. The role must be mentionable
+or the bot needs Mention Everyone permission in the drop channels. Only the
+selected role is allowed to ping; notifications do not change claim eligibility.
+
+
 The bot loads Event Drops with the `events` module and uses the shared
 `DATABASE_PATH`. No new dependency or service changes are needed. Apply the
-additive version 2 `scripts/migrate_event_drops.py` migration with `--database`
+additive version 3 `scripts/migrate_event_drops.py` migration with `--database`
 and `--backup-dir` while both old services are stopped during deployment; startup also initializes the same schema.
 See [Event Drops configuration, reliability, and Pi deployment](docs/event_drops.md)
 for permission requirements, timing semantics, image limits, recovery behavior,

@@ -1,4 +1,3 @@
-import asyncio
 import os
 import re
 import sqlite3
@@ -33,6 +32,102 @@ class EventDropsStorageTests(unittest.TestCase):
 
     def tearDown(self):
         self.temp.cleanup()
+
+    def test_role_ping_migration_preserves_all_existing_data(self):
+        from utils.event_drop_variants import VARIANT_DEFAULTS
+        from scripts.migrate_event_drops import validate
+
+        self.s.transition(self.c, "1", "pause")
+        self.s.set_variants_enabled(self.c, "1", True)
+        variant = self.s.save_variant(
+            self.c, "1", dict(VARIANT_DEFAULTS, name="Golden", points=5)
+        )
+        self.s.execute(
+            "INSERT INTO event_drop_assets(campaign_id,image_bytes,content_type,created_at) VALUES(?,?,?,?)",
+            (self.c, b"preserved-image", "image/webp", time.time()),
+        )
+        self.s.execute(
+            "INSERT INTO event_drop_roles VALUES(?, '88', 'excluded')", (self.c,)
+        )
+        self.s.transition(self.c, "1", "resume")
+        live = self.drop("live")
+        self.assertTrue(self.s.claim(live, "55", "1")["ok"])
+        pending = self.s.queue_manual(self.c, "1", "pending", variant_id=variant)
+        self.s.execute("CREATE TABLE unrelated_data(value TEXT)")
+        self.s.execute("INSERT INTO unrelated_data VALUES('keep me')")
+        # Recreate the exact v2 shape in this temporary, populated database.
+        self.s.execute("ALTER TABLE event_drop_campaigns DROP COLUMN ping_role_id")
+        self.s.execute("ALTER TABLE event_drops DROP COLUMN ping_role_id")
+        self.s.execute("DELETE FROM event_drop_schema WHERE version=3")
+        tables = [
+            r["name"]
+            for r in self.s.rows(
+                "SELECT name FROM sqlite_master WHERE type='table' AND name!='event_drop_schema'"
+            )
+        ]
+        before = {table: self.s.rows(f"SELECT * FROM {table}") for table in tables}
+        self.s.initialize()
+        self.s.initialize()
+        for table in tables:
+            after = self.s.rows(f"SELECT * FROM {table}")
+            if table in ("event_drop_campaigns", "event_drops"):
+                for row in after:
+                    self.assertEqual(row.pop("ping_role_id"), "")
+            self.assertEqual(after, before[table], table)
+        validate(self.s.path)
+        self.assertTrue(self.s.claim(live, "56", "1")["ok"])
+        self.assertEqual(self.s.take_pending(pending)[0]["ping_role_id"], "")
+
+    def test_role_ping_snapshot_duplicate_and_validation(self):
+        self.s.transition(self.c, "1", "pause")
+        values = dict(self.s.campaign(self.c), ping_role_id="123")
+        self.s.save("1", "admin", values, values["channels"], self.c)
+        d = self.s.queue_manual(self.c, "1", "ping")
+        self.s.set_variants_enabled(self.c, "1", True)
+        variant = self.s.variants(self.c)[0]["id"]
+        rare = self.s.queue_manual(self.c, "1", "rare-ping", variant_id=variant)
+        self.assertEqual(
+            self.s.rows("SELECT ping_role_id FROM event_drops WHERE id=?", (rare,))[0][
+                "ping_role_id"
+            ],
+            "123",
+        )
+        values["ping_role_id"] = "456"
+        self.s.save("1", "admin", values, values["channels"], self.c)
+        self.assertEqual(
+            self.s.rows("SELECT ping_role_id FROM event_drops WHERE id=?", (d,))[0][
+                "ping_role_id"
+            ],
+            "123",
+        )
+        copied = self.s.duplicate(self.c, "1", "admin")
+        self.assertEqual(self.s.campaign(copied)["ping_role_id"], "456")
+        del values["ping_role_id"]
+        self.s.save("1", "admin", values, values["channels"], self.c)
+        self.assertEqual(self.s.campaign(self.c)["ping_role_id"], "456")
+        self.s.transition(self.c, "1", "resume")
+        due = self.s.campaign(self.c)["next_drop_at"]
+        self.s.tick(now=due)
+        self.assertEqual(
+            self.s.rows("SELECT ping_role_id FROM event_drops WHERE kind='automatic'")[
+                0
+            ]["ping_role_id"],
+            "456",
+        )
+        self.s.transition(self.c, "1", "pause")
+        for bad in ("@everyone", "<@&123>", "-1", "0", "1", str(2**64), "１２３"):
+            with self.subTest(role=bad), self.assertRaises(ValueError):
+                self.s.save(
+                    "1",
+                    "admin",
+                    dict(values, ping_role_id=bad),
+                    values["channels"],
+                    self.c,
+                )
+        self.s.save(
+            "1", "admin", dict(values, ping_role_id=""), values["channels"], self.c
+        )
+        self.assertEqual(self.s.campaign(self.c)["ping_role_id"], "")
 
     def drop(self, key="first"):
         d = self.s.queue_manual(self.c, "1", key)
@@ -295,6 +390,42 @@ class EventDropsDiscordTests(unittest.IsolatedAsyncioTestCase):
         a.permissions_for.assert_called_once()
         extra.permissions_for.assert_not_called()
 
+    async def test_drop_pings_only_frozen_role_and_missing_role_still_sends(self):
+        self.s.transition(self.c, "1", "pause")
+        values = dict(self.s.campaign(self.c), ping_role_id="123")
+        self.s.save("1", "admin", values, values["channels"], self.c)
+        d = self.s.queue_manual(self.c, "1", "ping")
+        self.s.save(
+            "1", "admin", dict(values, ping_role_id="456"), values["channels"], self.c
+        )
+        channel = self.channel(10)
+        channel.guild.get_role.return_value = discord.Object(id=123)
+        self.cog.eligible_channels = AsyncMock(return_value=[channel])
+        with patch("cogs.event_drops.publish_audit", new=AsyncMock()):
+            await self.cog.send_drop(d)
+        channel.guild.get_role.assert_called_with(123)
+        sent = channel.send.call_args.kwargs
+        self.assertEqual(sent["content"], "<@&123>")
+        mentions = sent["allowed_mentions"].to_dict()
+        self.assertEqual(mentions["roles"], [123])
+        self.assertEqual(mentions["parse"], [])
+        self.assertFalse(sent["allowed_mentions"].replied_user)
+        channel.guild.get_role.return_value = None
+        missing = self.s.queue_manual(self.c, "1", "missing-role")
+        with patch("cogs.event_drops.publish_audit", new=AsyncMock()):
+            await self.cog.send_drop(missing)
+        sent = channel.send.call_args.kwargs
+        self.assertNotIn("content", sent)
+        self.assertEqual(
+            sent["allowed_mentions"].to_dict(), discord.AllowedMentions.none().to_dict()
+        )
+        self.assertEqual(
+            self.s.rows("SELECT status FROM event_drops WHERE id=?", (missing,))[0][
+                "status"
+            ],
+            "active",
+        )
+
     async def test_avoidance_and_small_pool(self):
         pool = [SimpleNamespace(id=i) for i in [10, 20, 30, 40]]
         self.assertEqual(channel_order(pool, ["10", "20", "30"], 3)[0].id, 40)
@@ -517,6 +648,62 @@ class EventDropsRouteTests(unittest.TestCase):
             ]:
                 self.assertEqual(self.client.get(path).status_code, 403)
         self.assertTrue(csrf)
+
+    def test_role_ping_picker_save_preserve_and_clear(self):
+        for role_id, guild, name in [
+            ("1", "1", "@everyone"),
+            ("123", "1", "Drop fans"),
+            ("999", "2", "Other server"),
+        ]:
+            self.s.execute(
+                "INSERT INTO dashboard_discord_roles(id,guild_id,name,updated_at) VALUES(?,?,?,'now')",
+                (role_id, guild, name),
+            )
+        csrf = self.login()
+        page = self.client.get("/events/drops/new")
+        picker = re.search(
+            r'<select name="ping_role_id">(.*?)</select>', page.text, re.S
+        )[1]
+        self.assertIn("No role ping", picker)
+        self.assertIn("Drop fans", picker)
+        self.assertNotIn("@everyone", picker)
+        self.assertNotIn("Other server", picker)
+        values = {
+            k: v
+            for k, v in dict(
+                DEFAULTS,
+                name="Ping campaign",
+                csrf=csrf,
+                channels="10",
+                ping_role_id="123",
+            ).items()
+            if v is not None
+        }
+        response = self.client.post("/events/drops/new", data=values)
+        self.assertEqual(response.status_code, 200)
+        campaign = self.s.campaigns("1")[0]
+        self.assertEqual(campaign["ping_role_id"], "123")
+        cid = campaign["id"]
+        for bad in ("1", "999", "789"):
+            response = self.client.post(
+                f"/events/drops/{cid}/edit", data=dict(values, ping_role_id=bad)
+            )
+            self.assertEqual(response.status_code, 400)
+            self.assertEqual(self.s.campaign(cid)["ping_role_id"], "123")
+        self.s.execute("DELETE FROM dashboard_discord_roles WHERE id='123'")
+        page = self.client.get(f"/events/drops/{cid}/edit")
+        self.assertIn('value="123" selected>Unavailable role (123)', page.text)
+        del values[
+            "ping_role_id"
+        ]  # A form opened before the upgrade must preserve the setting.
+        response = self.client.post(f"/events/drops/{cid}/edit", data=values)
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(self.s.campaign(cid)["ping_role_id"], "123")
+        response = self.client.post(
+            f"/events/drops/{cid}/edit", data=dict(values, ping_role_id="")
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(self.s.campaign(cid)["ping_role_id"], "")
 
     def test_crud_actions_preview_export_and_confirmation(self):
         csrf = self.login()
