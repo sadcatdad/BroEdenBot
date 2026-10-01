@@ -38,10 +38,25 @@ def validate(path):
             raise RuntimeError(
                 "Missing tables: " + ", ".join(sorted(required - tables))
             )
-        if db.execute("SELECT MAX(version) FROM event_drop_schema").fetchone()[0] != 3:
+        if db.execute("SELECT MAX(version) FROM event_drop_schema").fetchone()[0] != 4:
             raise RuntimeError("Unexpected migration version.")
         for table, expected in {
-            "event_drop_campaigns": {"variants_enabled", "ping_role_id"},
+            "event_drop_campaigns": {
+                "variants_enabled",
+                "ping_role_id",
+                "reward_mode",
+                "points_min",
+                "points_max",
+                "message_text",
+            },
+            "event_drop_variants": {
+                "reward_mode",
+                "points_min",
+                "points_max",
+                "empty_claim_message",
+                "message_text_override",
+                "drought_after",
+            },
             "event_drop_assets": {"campaign_pool"},
             "event_drops": {
                 "variant_id",
@@ -49,6 +64,8 @@ def validate(path):
                 "rarity",
                 "variant_selection",
                 "ping_role_id",
+                "message_text",
+                "empty_claim_message",
             },
         }.items():
             if expected - {row[1] for row in db.execute(f"PRAGMA table_info({table})")}:

@@ -144,6 +144,63 @@ reward, manual/automatic mode, selection method, posting time, claims, and statu
 All variant routes, assets, participant details, and exports retain
 `event_drops.manage`, CSRF protection for mutations, and safe CSV escaping.
 
+## Reward types, empty drops, and message text
+
+Choose **Fixed amount** or **Random amount per drop** in the campaign editor's
+Standard reward section or the variant editor's Reward section. Random ranges
+are inclusive, use whole numbers from 1 to 1,000,000, and require minimum ≤ maximum.
+The bot rolls **once per drop**, stores the result, and awards the same number to
+every eligible member. Retries, channel fallback, edits, and restarts do not
+reroll. The preview shows an example roll and labels the configured range.
+A full-award member cap still applies to the actual rolled amount.
+
+A variant can use **Empty / gotcha · 0 points**, or a fixed amount of 0. Customize
+the private reply under Reward. A member can check the empty drop once; the
+zero-point claim is retained in history/statistics without increasing their
+score. Further clicks report that the member already checked it. Members who
+only checked empty drops are omitted from the ranked leaderboard; detailed
+claim exports retain their zero-point interactions. Eligibility and expiry still
+apply. Leave “Show the rolled reward” unchecked to keep the surprise hidden in
+the posted embed. The reply and zero reward are frozen with the drop.
+
+Under **Message & role ping**, customize the content above the embed. Variants
+can inherit, override, or explicitly clear this text. Supported placeholders:
+`{campaign}`, `{variant}`, `{points}`, `{currency}`. Empty replies additionally
+support `{total}`. Unknown braces/placeholders remain literal. Templates support
+Discord markdown. Post templates are limited to 1,800 characters, reserving room
+for the separate selected-role mention; oversized rendered posts are rejected.
+Only the configured role may ping, even if custom text includes other mentions.
+Both message text and the selected role are frozen when reserving a drop.
+
+## Understanding missing rare variants
+
+Open the variant manager and check **Drop Variants are ON**, then the variant's
+**Enabled** badge and **Next draw chance**. Saved variants in an OFF campaign have
+0% next-draw chance even if their individual enabled flag is set. Rarity labels
+are descriptive; weight determines probability. A default is an ordinary weighted
+variant, not a fallback that replaces all rare results.
+
+When protection is due, the prioritized variant shows 100% next-draw chance;
+other variants show 0% for that draw. Its ordinary base chance remains visible.
+The cards show deliveries during the last seven days and expected counts using
+today's weights and the actual number of delivered drops. Historical weight/mode
+changes, forced drops, and protection can affect this comparison. Worker heartbeat,
+pending/uncertain delivery, and failure messages remain on the campaign page.
+Successful delivery logs now record campaign/drop/variant, selection method,
+reward, and channel. Existing upgraded databases no longer take schema write
+locks on every dashboard page or asset read.
+
+Independent weighted draws can have long dry spells. Optional **Dry-spell
+protection** on a non-default variant prioritizes it once the configured number
+of other drops has accumulated since its last selection. Set 0 to disable.
+Posted drops and pending/sending reservations count, preventing concurrent
+requests from repeatedly selecting the same overdue variant; failed/missed
+unsent attempts do not count. A forced manual choice takes priority. Multiple
+overdue variants use relative overdue age, then stable ID order, so they take
+turns rather than starving each other. Protection changes realized frequencies;
+base percentages describe ordinary weighted draws. Selection is labelled
+**Dry-spell protection** in history. Changes follow the draft/paused edit lock.
+
 ## Discord commands
 
 - `/event score [campaign_id]`: ephemeral personal total and rank.
@@ -240,10 +297,15 @@ maintenance window and run the additive migration with an SQLite online backup:
 ```
 
 Bot and dashboard startup also apply the same idempotent schema initializer.
+Version 4 adds reward type/range settings, post text, empty replies, and optional
+dry-spell thresholds. Old settings default to static rewards and protection off.
+A transaction copies the existing variant and claim tables to relax the
+positive-point CHECK constraints to allow zero, preserving IDs, columns, rows,
+indexes, foreign-key references, and scores. Historical post text defaults blank.
 Version 3 adds `ping_role_id` to campaigns and drops with an empty default. It
 never recreates or resets campaigns, schedules, variants, assets, drops, or claims.
 Queued and historical drops retain no ping when upgraded. The migration tool
-validates version 3 and supports upgrading directly from version 1 or 2.
+validates version 4 and supports upgrading directly from versions 1–3.
 Version 2 adds `event_drop_variants`, `event_drop_variant_assets`, and
 `event_drop_snapshots`; campaign/asset/drop columns and variant indexes are added
 in one SQLite transaction. The original version 1 schema and all feature data
@@ -255,6 +317,10 @@ it does not edit their Discord messages. Migration retries are idempotent.
 Stop both old processes before migrating and restart both on the new code;
 version 1 workers do not write the snapshots required by version 2. Keep the existing Python environment and pinned discord.py 2.7.1;
 Python 3.11+ remains recommended by the main README.
+Railway startup now validates Event Drops and takes a migration backup under
+`/data/backups/migrations` before upgrading, then starts the bot and dashboard.
+Do not run older workers alongside the v4 schema: their zero-point assumptions
+and missing snapshot fields are incompatible with these new settings.
 
 Restart the services and check logs for successful cog loading/command sync, then
 check worker readiness and live channel metadata in The Garden. Create a small
@@ -268,6 +334,7 @@ real guild permissions and production service health require this live check.
 ```bash
 .venv/bin/python -B -m unittest discover -s tests -p test_event_drops.py -v
 .venv/bin/python -B -m unittest discover -s tests -p test_event_drop_variants.py -v
+.venv/bin/python -B -m unittest discover -s tests -p test_event_drop_enhancements.py -v
 .venv/bin/python -B -m unittest discover -s tests
 ```
 

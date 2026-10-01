@@ -58,7 +58,7 @@ class EventDropsStorageTests(unittest.TestCase):
         # Recreate the exact v2 shape in this temporary, populated database.
         self.s.execute("ALTER TABLE event_drop_campaigns DROP COLUMN ping_role_id")
         self.s.execute("ALTER TABLE event_drops DROP COLUMN ping_role_id")
-        self.s.execute("DELETE FROM event_drop_schema WHERE version=3")
+        self.s.execute("DELETE FROM event_drop_schema WHERE version>=3")
         tables = [
             r["name"]
             for r in self.s.rows(

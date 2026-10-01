@@ -298,7 +298,8 @@ def install_event_drop_routes(app, templates, context):
             campaign=c,
             scores=scores,
             history=history[:50],
-            variants=svc.variants(campaign_id),
+            variants=svc.variant_health(campaign_id)["variants"],
+            variant_health=svc.variant_health(campaign_id),
             variant_stats=svc.variant_results(campaign_id),
             more=len(history) > 50,
             page=page,
@@ -439,6 +440,13 @@ def install_event_drop_routes(app, templates, context):
                 "singular",
                 "plural",
                 "claim_minutes",
+                "message_text",
+                "ping_role_id",
+                "reward_mode",
+                "points_min",
+                "points_max",
+                "name",
+                "variants_enabled",
             )
         }
         base["image_urls"] = [
@@ -448,7 +456,18 @@ def install_event_drop_routes(app, templates, context):
         ]
         for v in variants:
             v["image_urls"] = [image_url(a) for a in v["asset_ids"]]
-        return dict(variants=variants, preview_campaign=base, preview_variants=variants)
+        return dict(
+            variants=(
+                svc.variant_health(campaign["id"])["variants"]
+                if campaign.get("id")
+                else []
+            ),
+            variant_health=(
+                svc.variant_health(campaign["id"]) if campaign.get("id") else None
+            ),
+            preview_campaign=base,
+            preview_variants=variants,
+        )
 
     @app.get(
         "/events/drops/{campaign_id:int}/variants",
@@ -542,8 +561,9 @@ def install_event_drop_routes(app, templates, context):
         form = await checked_form(request)
         svc = service()
         c = scoped_campaign(svc, campaign_id)
-        if variant_id:
-            scoped_variant(svc, campaign_id, variant_id)
+        saved_variant = (
+            scoped_variant(svc, campaign_id, variant_id) if variant_id else None
+        )
         values = {k: form.get(k, default) for k, default in VARIANT_DEFAULTS.items()}
         for flag in ("enabled", "is_default", "show_reward", "show_rarity"):
             values[flag] = form.get(flag) == "on"
@@ -553,6 +573,21 @@ def install_event_drop_routes(app, templates, context):
                 if form.get("override_" + field) == "on"
                 else None
             )
+        values["message_text_override"] = (
+            str(form.get("message_text_override", ""))
+            if form.get("override_message_text") == "on"
+            else None
+        )
+        if saved_variant and "reward_mode" not in form:
+            for field in (
+                "reward_mode",
+                "points_min",
+                "points_max",
+                "message_text_override",
+                "empty_claim_message",
+                "drought_after",
+            ):
+                values[field] = saved_variant[field]
         ids = form.getlist("asset_ids")
         try:
             uploads = [u for u in form.getlist("images") if getattr(u, "filename", "")]

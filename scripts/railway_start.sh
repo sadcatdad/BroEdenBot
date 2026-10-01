@@ -45,6 +45,14 @@ python scripts/migrate_reminders.py --database "$DATABASE_PATH" --validate-only
 python scripts/migrate_events.py --database "$DATABASE_PATH"
 python scripts/migrate_events.py --database "$DATABASE_PATH" --validate-only
 
+# Upgrade Event Drops before either process starts, retaining a rollback backup.
+if ! python scripts/migrate_event_drops.py --database "$DATABASE_PATH" --validate-only; then
+  python scripts/migrate_event_drops.py \
+    --database "$DATABASE_PATH" \
+    --backup-dir "$DATA_DIR/backups/migrations"
+fi
+python scripts/migrate_event_drops.py --database "$DATABASE_PATH" --validate-only
+
 if ! python scripts/migrate_visual_content_studio.py \
   --database "$DATABASE_PATH" \
   --asset-dir "$VISUAL_ASSET_DIR" \

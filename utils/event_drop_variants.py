@@ -30,6 +30,12 @@ VARIANT_DEFAULTS = dict(
     sort_order=0,
     show_reward=True,
     show_rarity=False,
+    reward_mode="static",
+    points_min=None,
+    points_max=None,
+    empty_claim_message="",
+    message_text_override=None,
+    drought_after=0,
     **{field + "_override": None for field in APPEARANCE_FIELDS},
 )
 SNAPSHOT_FIELDS = (
@@ -80,6 +86,19 @@ def select_drop_variant(variants, forced_id=None):
         if draw < 0:
             return variant
     return eligible[-1]  # Floating-point rounding at the upper boundary.
+
+
+def protected_variant(variants, history):
+    """Choose the most overdue eligible variant using reserved/delivered IDs."""
+    due = []
+    for v in variants:
+        threshold = v.get("drought_after", 0)
+        if not v["enabled"] or not threshold or v["is_default"]:
+            continue
+        misses = history.index(v["id"]) if v["id"] in history else len(history)
+        if misses >= threshold:
+            due.append((misses / threshold, -v["id"], v))
+    return max(due, key=lambda item: item[:2])[2] if due else None
 
 
 def resolve_appearance(campaign, variant=None):

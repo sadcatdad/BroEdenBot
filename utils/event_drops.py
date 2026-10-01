@@ -23,9 +23,20 @@ from utils.event_drop_variants import (
     migrate_variants,
     resolve_appearance,
     select_drop_variant,
+    protected_variant,
     valid_weight,
 )
 from utils.settings import settings_database_path
+from utils.event_drop_rewards import (
+    REWARD_DEFAULTS,
+    MESSAGE_LIMIT,
+    EMPTY_MESSAGE,
+    migrate_rewards,
+    validate_reward,
+    roll_reward,
+    render_text,
+    reward_label,
+)
 from utils.sqlite import AutoClosingSQLiteConnection, configure_sync_connection
 
 log = logging.getLogger(__name__)
@@ -103,6 +114,8 @@ DEFAULTS = dict(
     max_drops=None,
     max_user_points=None,
     ping_role_id="",
+    message_text="",
+    **REWARD_DEFAULTS,
 )
 
 
@@ -136,6 +149,20 @@ class EventDrops:
 
     def initialize(self):
         self.path.parent.mkdir(parents=True, exist_ok=True)
+        # Dashboard pages/assets call initialize too. An already upgraded DB
+        # needs a read, not repeated schema write locks against the live bot.
+        if self.path.is_file():
+            with self.connect() as db:
+                try:
+                    version = db.execute(
+                        "SELECT MAX(version) FROM event_drop_schema"
+                    ).fetchone()[0]
+                except sqlite3.OperationalError as exc:
+                    if "no such table" not in str(exc):
+                        raise
+                else:
+                    if version is not None and version >= 4:
+                        return
         with self.connect() as db:
             # Additive, idempotent schema migration, matching the Events Hub.
             db.executescript(
@@ -147,6 +174,19 @@ class EventDrops:
         with self.connect(True) as db:
             migrate_variants(db)
             migrate_role_pings(db)
+        with self.connect() as db:
+            db.execute("PRAGMA foreign_keys=OFF")
+            db.execute("BEGIN IMMEDIATE")
+            migrate_rewards(db)
+            for table in (
+                "event_drops",
+                "event_drop_claims",
+                "event_drop_variant_assets",
+            ):
+                if db.execute(f"PRAGMA foreign_key_check({table})").fetchone():
+                    raise ValueError(
+                        "Event Drops upgrade failed its foreign-key check."
+                    )
 
     def rows(self, sql, args=()):
         with self.connect() as db:
@@ -203,6 +243,7 @@ class EventDrops:
         ]
         total = sum(row["weight"] for row in rows if row["enabled"])
         for row in rows:
+            row["reward_label"] = reward_label(row)
             row["asset_ids"] = [
                 r[0]
                 for r in db.execute(
@@ -219,6 +260,54 @@ class EventDrops:
         with self.connect() as db:
             self._campaign(db, campaign_id, guild_id)
             return self._variants(db, campaign_id)
+
+    def variant_health(self, campaign_id):
+        with self.connect() as db:
+            c = self._campaign(db, campaign_id)
+            variants = self._variants(db, campaign_id)
+            history = [
+                dict(r)
+                for r in db.execute(
+                    "SELECT variant_id,variant_selection,status,posted_at FROM event_drops WHERE campaign_id=? AND (posted_at IS NOT NULL OR status IN ('pending','sending')) ORDER BY id DESC",
+                    (campaign_id,),
+                )
+            ]
+            week = [
+                r
+                for r in history
+                if r["posted_at"] and r["posted_at"] >= time.time() - 7 * 86400
+            ]
+            for v in variants:
+                misses = 0
+                for r in history:
+                    if r["variant_id"] == v["id"]:
+                        break
+                    misses += 1
+                v.update(
+                    effective_chance=v["chance"] if c["variants_enabled"] else 0,
+                    delivered_week=sum(r["variant_id"] == v["id"] for r in week),
+                    expected_week=(
+                        len(week) * v["chance"] / 100 if c["variants_enabled"] else 0
+                    ),
+                    dry_spell=misses,
+                )
+            next_protected = (
+                protected_variant(variants, [r["variant_id"] for r in history])
+                if c["variants_enabled"]
+                else None
+            )
+            for v in variants:
+                v["protection_due"] = bool(
+                    next_protected and next_protected["id"] == v["id"]
+                )
+                if next_protected:
+                    v["effective_chance"] = 100 if v["protection_due"] else 0
+            return dict(
+                variants=variants,
+                week_drops=len(week),
+                standard_week=sum(r["variant_id"] is None for r in week),
+                protected_week=sum(r["variant_selection"] == "protected" for r in week),
+            )
 
     @staticmethod
     def _validate_variant_set(db, campaign):
@@ -241,11 +330,26 @@ class EventDrops:
         with self.connect(True) as db:
             c = self._campaign(db, campaign_id, guild_id)
             self._editable(c)
-            if enabled and not self._variants(db, campaign_id):
+            variants = self._variants(db, campaign_id)
+            if enabled and not any(v["is_default"] for v in variants):
+                if len(variants) >= 30:
+                    raise ValueError(
+                        "Make an enabled variant the default before enabling this campaign."
+                    )
                 now = time.time()
                 db.execute(
-                    "INSERT INTO event_drop_variants(campaign_id,name,weight,points,is_default,created_at,updated_at) VALUES(?,?,?,?,1,?,?)",
-                    (campaign_id, "Standard Drop", 100, c["points"], now, now),
+                    "INSERT INTO event_drop_variants(campaign_id,name,weight,points,is_default,created_at,updated_at,reward_mode,points_min,points_max) VALUES(?,?,?,?,1,?,?,?,?,?)",
+                    (
+                        campaign_id,
+                        "Standard Drop",
+                        100,
+                        c["points"],
+                        now,
+                        now,
+                        c["reward_mode"],
+                        c["points_min"],
+                        c["points_max"],
+                    ),
                 )
             c["variants_enabled"] = int(bool(enabled))
             self._validate_variant_set(db, c)
@@ -265,17 +369,30 @@ class EventDrops:
                 "Variant name is required (up to 100 characters); rarity may be up to 60 characters."
             )
         data["weight"] = valid_weight(data["weight"], bool(data["enabled"]))
+        data.update(validate_reward(data, allow_empty=True))
         try:
-            data["points"] = int(str(data["points"]))
+            data["drought_after"] = int(str(data["drought_after"]))
             data["sort_order"] = int(str(data["sort_order"]))
         except (ValueError, TypeError):
             raise ValueError(
                 "Reward and display order must be whole numbers."
             ) from None
-        if not 1 <= data["points"] <= 1_000_000 or not 0 <= data["sort_order"] <= 10000:
+        if (
+            not 0 <= data["drought_after"] <= 10000
+            or not 0 <= data["sort_order"] <= 10000
+        ):
+            raise ValueError("Protection and display order must be 0–10,000.")
+        if data["is_default"] and data["drought_after"]:
             raise ValueError(
-                "Reward must be 1–1,000,000 points; display order must be 0–10,000."
+                "Dry-spell protection is for special variants, not the default."
             )
+        data["empty_claim_message"] = str(data["empty_claim_message"] or "").strip()
+        if len(data["empty_claim_message"]) > MESSAGE_LIMIT:
+            raise ValueError("Empty-drop reply must be at most 1,800 characters.")
+        if data["message_text_override"] is not None:
+            data["message_text_override"] = str(data["message_text_override"]).strip()
+            if len(data["message_text_override"]) > MESSAGE_LIMIT:
+                raise ValueError("Message text must be at most 1,800 characters.")
         if data["image_mode"] not in ("inherit", "single", "pool", "none"):
             raise ValueError("Choose a valid image behavior.")
         for field in APPEARANCE_FIELDS:
@@ -284,7 +401,13 @@ class EventDrops:
                 data[key] = str(data[key]).strip()
         appearance = resolve_appearance(campaign, data)
         self.validate(
-            dict(campaign, **appearance, points=data["points"], max_user_points=None),
+            dict(
+                campaign,
+                **appearance,
+                points=max(1, data["points"]),
+                reward_mode="static",
+                max_user_points=None,
+            ),
             campaign["channels"],
         )
         return data
@@ -295,6 +418,22 @@ class EventDrops:
         with self.connect(True) as db:
             c = self._campaign(db, campaign_id, guild_id)
             self._editable(c)
+            if variant_id:
+                saved = db.execute(
+                    "SELECT * FROM event_drop_variants WHERE id=? AND campaign_id=? AND deleted_at IS NULL",
+                    (variant_id, campaign_id),
+                ).fetchone()
+                if saved:
+                    values = dict(values)
+                    for field in (
+                        "reward_mode",
+                        "points_min",
+                        "points_max",
+                        "message_text_override",
+                        "empty_claim_message",
+                        "drought_after",
+                    ):
+                        values.setdefault(field, saved[field])
             data = self.validate_variant(c, values)
             variants = self._variants(db, campaign_id)
             if variant_id and not any(v["id"] == int(variant_id) for v in variants):
@@ -393,6 +532,10 @@ class EventDrops:
                     [(variant_id, a) for a in variant["asset_ids"]],
                 )
             elif action == "default":
+                if variant["drought_after"]:
+                    raise ValueError(
+                        "Turn off dry-spell protection before making this variant the default."
+                    )
                 if not variant["enabled"]:
                     raise ValueError(
                         "Enable this variant before making it the default."
@@ -462,6 +605,10 @@ class EventDrops:
     @staticmethod
     def validate(values, channels, starting=False):
         data = {key: values.get(key, default) for key, default in DEFAULTS.items()}
+        data.update(validate_reward(data))
+        data["message_text"] = str(data["message_text"] or "").strip()
+        if len(data["message_text"]) > MESSAGE_LIMIT:
+            raise ValueError("Message text must be at most 1,800 characters.")
         data["ping_role_id"] = str(data["ping_role_id"] or "").strip()
         role_id = data["ping_role_id"]
         if role_id and (
@@ -520,7 +667,7 @@ class EventDrops:
                 )
         if (
             data["max_user_points"] is not None
-            and data["max_user_points"] < data["points"]
+            and data["max_user_points"] < data["points_min"]
         ):
             raise ValueError("User maximum must allow at least one full claim.")
         if data["schedule_mode"] not in ("fixed", "random") or data[
@@ -584,6 +731,14 @@ class EventDrops:
                 old = self._campaign(db, campaign_id, guild_id)
                 if "ping_role_id" not in values:
                     data["ping_role_id"] = old["ping_role_id"]
+                for field in (
+                    "message_text",
+                    "reward_mode",
+                    "points_min",
+                    "points_max",
+                ):
+                    if field not in values:
+                        data[field] = old[field]
                 if old["status"] not in ("draft", "paused"):
                     raise ValueError(
                         "Pause the campaign before editing. Completed campaigns can be duplicated."
@@ -829,11 +984,23 @@ class EventDrops:
         forced_variant_id=None,
     ):
         variant = None
+        protected = False
         if c.get("variants_enabled"):
             EventDrops._validate_variant_set(db, c)
-            variant = select_drop_variant(
-                EventDrops._variants(db, c["id"]), forced_variant_id
-            )
+            variants = EventDrops._variants(db, c["id"])
+            if forced_variant_id is None:
+                history = [
+                    r[0]
+                    for r in db.execute(
+                        "SELECT variant_id FROM event_drops WHERE campaign_id=? AND (posted_at IS NOT NULL OR status IN ('pending','sending')) ORDER BY id DESC",
+                        (c["id"],),
+                    )
+                ]
+                variant = protected_variant(variants, history)
+            if variant:
+                protected = True
+            else:
+                variant = select_drop_variant(variants, forced_variant_id)
         elif forced_variant_id is not None:
             raise ValueError("Enable Drop Variants before forcing a variant.")
         mode = variant["image_mode"] if variant else "inherit"
@@ -854,8 +1021,21 @@ class EventDrops:
                     "Variant images are unavailable. Edit its image settings."
                 )
         appearance = resolve_appearance(c, variant)
+        points = roll_reward(variant or c)
+        message_text = c["message_text"]
+        if variant and variant["message_text_override"] is not None:
+            message_text = variant["message_text_override"]
+        message_text = render_text(
+            message_text,
+            campaign=c["name"],
+            variant=variant["name"] if variant else "Standard Drop",
+            points=points,
+            currency=c["singular"] if points == 1 else c["plural"],
+        )
+        if len(message_text) > MESSAGE_LIMIT:
+            raise ValueError("Rendered message is too long; shorten the post text.")
         cur = db.execute(
-            "INSERT INTO event_drops(campaign_id,channel_id,kind,scheduled_at,created_at,status,asset_id,points,request_key,variant_id,variant_name,rarity,variant_selection,ping_role_id) VALUES(?,?,?,?,?,'pending',?,?,?,?,?,?,?,?)",
+            "INSERT INTO event_drops(campaign_id,channel_id,kind,scheduled_at,created_at,status,asset_id,points,request_key,variant_id,variant_name,rarity,variant_selection,ping_role_id,message_text,empty_claim_message) VALUES(?,?,?,?,?,'pending',?,?,?,?,?,?,?,?,?,?)",
             (
                 c["id"],
                 channel_id,
@@ -863,7 +1043,7 @@ class EventDrops:
                 scheduled,
                 now,
                 random.choice(assets) if assets else None,
-                variant["points"] if variant else c["points"],
+                points,
                 key,
                 variant["id"] if variant else None,
                 variant["name"] if variant else "Standard Drop",
@@ -871,9 +1051,19 @@ class EventDrops:
                 (
                     "forced"
                     if forced_variant_id is not None
-                    else ("random" if variant else "standard")
+                    else (
+                        "protected"
+                        if protected
+                        else ("random" if variant else "standard")
+                    )
                 ),
                 c["ping_role_id"],
+                message_text,
+                (
+                    (variant["empty_claim_message"] or EMPTY_MESSAGE)
+                    if variant
+                    else EMPTY_MESSAGE
+                ),
             ),
         )
         drop_id = cur.lastrowid
@@ -1093,7 +1283,11 @@ class EventDrops:
             ).fetchone():
                 return {
                     "ok": False,
-                    "message": f'You have already collected this {c["singular"]}! {c["emoji"]}',
+                    "message": (
+                        "You already checked this empty drop."
+                        if d["points"] == 0
+                        else f'You have already collected this {c["singular"]}! {c["emoji"]}'
+                    ),
                 }
             total = db.execute(
                 "SELECT COALESCE(SUM(points),0) FROM event_drop_claims WHERE campaign_id=? AND user_id=?",
@@ -1129,6 +1323,20 @@ class EventDrops:
                 snapshot["singular"] if d["points"] == 1 else snapshot["plural"]
             )
             total_name = snapshot["singular"] if total == 1 else snapshot["plural"]
+            if d["points"] == 0:
+                return {
+                    "ok": True,
+                    "empty": True,
+                    "total": total,
+                    "message": render_text(
+                        d["empty_claim_message"] or EMPTY_MESSAGE,
+                        campaign=c["name"],
+                        variant=d["variant_name"],
+                        points=0,
+                        currency=snapshot["plural"],
+                        total=total,
+                    )[:2000],
+                }
             confirmation = (
                 f"{snapshot['emoji']} Collected {d['variant_name']}!"
                 if d["variant_id"]
@@ -1144,7 +1352,7 @@ class EventDrops:
     def leaderboard(self, campaign_id):
         return self.rows(
             """SELECT t.*, RANK() OVER(ORDER BY total_points DESC) AS rank,m.display_name FROM
-          (SELECT user_id,SUM(points) AS total_points,COUNT(*) AS drops_claimed FROM event_drop_claims WHERE campaign_id=? GROUP BY user_id) t
+          (SELECT user_id,SUM(points) AS total_points,COUNT(*) AS drops_claimed FROM event_drop_claims WHERE campaign_id=? GROUP BY user_id HAVING SUM(points)>0) t
           JOIN event_drop_campaigns c ON c.id=? LEFT JOIN event_drop_members m ON m.guild_id=c.guild_id AND m.user_id=t.user_id
           ORDER BY total_points DESC,t.user_id""",
             (campaign_id, campaign_id),

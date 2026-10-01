@@ -234,11 +234,14 @@ class EventDropsCog(commands.Cog):
                     allowed_mentions=discord.AllowedMentions.none(),
                     nonce=f"eventdrop:{drop_id}",
                 )
+                content = drop["message_text"]
                 ping_role_id = drop["ping_role_id"]
                 if ping_role_id and ping_role_id != str(campaign["guild_id"]):
                     role = channel.guild.get_role(int(ping_role_id))
                     if role is not None:
-                        kwargs["content"] = f"<@&{ping_role_id}>"
+                        content = f"<@&{ping_role_id}>" + (
+                            f"\n{content}" if content else ""
+                        )
                         kwargs["allowed_mentions"] = discord.AllowedMentions(
                             everyone=False,
                             users=False,
@@ -251,6 +254,8 @@ class EventDropsCog(commands.Cog):
                             drop_id,
                             ping_role_id,
                         )
+                if content:
+                    kwargs["content"] = content
                 if assets:
                     kwargs["file"] = discord.File(
                         io.BytesIO(assets[0]["image_bytes"]), filename="event-drop.webp"
@@ -270,6 +275,15 @@ class EventDropsCog(commands.Cog):
                     drop_id,
                     message.id,
                     message.created_at.timestamp(),
+                )
+                log.info(
+                    "Event Drop delivered campaign=%s drop=%s variant=%s selection=%s points=%s channel=%s",
+                    campaign["id"],
+                    drop_id,
+                    drop["variant_id"],
+                    drop["variant_selection"],
+                    drop["points"],
+                    channel.id,
                 )
                 if drop["kind"] == "manual":
                     await publish_audit(

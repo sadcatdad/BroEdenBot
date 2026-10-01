@@ -162,6 +162,27 @@ Pause before changing variant configuration. Existing drops retain their
 appearance and reward snapshots; all awards feed the same campaign leaderboard.
 Existing campaigns remain standard until variants are explicitly enabled.
 
+Campaigns and variants can use **Fixed amount** or **Random amount per drop**
+(inclusive minimum/maximum). One amount is rolled and frozen for the entire drop;
+every eligible claimer receives that amount. Variants also support **Empty / gotcha**
+with zero points and a custom private claim reply. Empty interactions are recorded
+once and included in claim history; they do not create a leaderboard entry by
+themselves. Post message text can accompany the role ping, inherit from the
+campaign, or be overridden per variant. Supported tokens are `{campaign}`,
+`{variant}`, `{points}`, and `{currency}`; empty claim replies also support `{total}`.
+
+The revised variant manager makes the campaign's ON/OFF mode and each variant's
+effective state/chance explicit. Saving a variant does not automatically enable
+campaign variant mode. It shows seven-day delivered counts and expected counts
+at current weights. Optional **Dry-spell protection** prioritizes a special
+variant after a configured number of other drops; 0 keeps independent weighted
+selection. Protection changes realized frequencies and is recorded in history.
+The editor groups reward/chance settings up front and collapses optional
+appearance, text, image, and default/order settings. Version 4 preserves existing
+static rewards and history, expands zero-point constraints with a transactional
+copy of existing rows, and avoids repeated schema write locks on dashboard reads.
+
+
 Optional **Drop notifications → Role to ping with each drop** in the campaign
 editor mentions one selected role on automatic, manual, and rare drops. Existing
 campaigns default to **No role ping**. Migration v3 only adds blank notification
@@ -173,8 +194,8 @@ selected role is allowed to ping; notifications do not change claim eligibility.
 
 The bot loads Event Drops with the `events` module and uses the shared
 `DATABASE_PATH`. No new dependency or service changes are needed. Apply the
-additive version 3 `scripts/migrate_event_drops.py` migration with `--database`
-and `--backup-dir` while both old services are stopped during deployment; startup also initializes the same schema.
+version 4 `scripts/migrate_event_drops.py` migration with `--database`
+and `--backup-dir` while both old services are stopped during deployment; startup also initializes the same schema. Railway validates/upgrades it with a backup before starting either process.
 See [Event Drops configuration, reliability, and Pi deployment](docs/event_drops.md)
 for permission requirements, timing semantics, image limits, recovery behavior,
 and the live smoke test.
