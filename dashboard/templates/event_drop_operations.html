@@ -1,0 +1,13 @@
+<section class="card" id="staff-operations">
+  <div class="page-heading"><div><h2>Staff operations</h2><p class="muted">Manual sends, awards, and removals. Points adjustments update scores; original claims remain unchanged.</p></div><a class="button secondary" href="{{ url_for('event_drop_detailed_export',campaign_id=campaign.id,export_type='operations') }}">Export operations CSV</a></div>
+  <div class="table-wrap"><table><thead><tr><th>Time / source</th><th>Action / staff member</th><th>Recipient</th><th>Reward / change</th><th>Balance / delivery</th><th>Reason</th></tr></thead><tbody>
+  {% for row in operations %}<tr>
+    <td>{{ row.created_at|drop_time }}<br><small>#{{ row.id }} · {{ row.source }}</small></td>
+    <td>{{ 'Drop now' if row.action=='now' else row.action|title }}<br><small>{{ row.actor_id or 'Unrecorded' }}</small></td>
+    <td>{% if row.user_id %}<a href="{{ url_for('event_drop_participant',campaign_id=campaign.id,user_id=row.user_id) }}">{{ row.display_name or row.user_id }}</a><br><small>{{ row.user_id }}</small>{% else %}—{% endif %}</td>
+    <td>{% if row.action!='now' %}{{ '+' if row.points>=0 else '' }}{{ row.points }} {{ campaign.plural }}{% if row.variant_name %}<br><small>{{ row.variant_name }}{% if row.rarity %} · {{ row.rarity }}{% endif %}</small>{% endif %}{% else %}{{ row.drop_variant_name }}<br><small>{{ row.drop_points }} {{ campaign.singular if row.drop_points==1 else campaign.plural }} per claim</small>{% endif %}</td>
+    <td>{% if row.action=='now' %}Drop #{{ row.drop_id }} · {{ row.drop_status|title }}{% if row.channel_id %}<br><small>Channel {{ row.channel_id }}</small>{% endif %}{% if row.drop_error %}<p class="warning-text">{{ row.drop_error }}</p>{% endif %}{% else %}{{ row.before_total }} → {{ row.after_total }}{% endif %}</td><td>{{ row.reason or '—' }}</td>
+  </tr>{% else %}<tr><td colspan="6">No staff operations recorded. Earlier manual drops remain in Drop history.</td></tr>{% endfor %}
+  </tbody></table></div>
+  <div class="action-buttons">{% if operations_page>1 %}<a class="button secondary" href="?operations_page={{ operations_page-1 }}#staff-operations">Newer operations</a>{% endif %}{% if operations_more %}<a class="button secondary" href="?operations_page={{ operations_page+1 }}#staff-operations">Older operations</a>{% endif %}</div>
+</section>

@@ -494,7 +494,8 @@ class EventDropsDiscordTests(unittest.IsolatedAsyncioTestCase):
         with patch.object(EventDropsCog, "cog_load", new=AsyncMock()):
             await bot.add_cog(EventDropsCog(bot))
         self.assertEqual(
-            {c.name for c in bot.tree.get_commands()}, {"event", "eventdrop"}
+            {c.name for c in bot.tree.get_commands()},
+            {"event", "eventdrop", "drop", "drop-now", "drop-give", "drop-remove"},
         )
         self.assertEqual(
             {c.name for c in bot.tree.get_command("event").commands},

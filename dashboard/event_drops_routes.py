@@ -90,6 +90,14 @@ def install_event_drop_routes(app, templates, context):
             context=context(request, page_title="Event Drops", **values),
         )
 
+    def operation_context(request, svc, campaign_id, user_id=None):
+        raw = request.query_params.get("operations_page", "1")
+        page = max(1, int(raw)) if raw.isdigit() and len(raw) < 9 else 1
+        rows = svc.operations(campaign_id, user_id, 51, (page - 1) * 50)
+        return dict(
+            operations=rows[:50], operations_page=page, operations_more=len(rows) > 50
+        )
+
     def audit(request, action, target):
         user = current_user(request)
         record_audit(
@@ -312,6 +320,7 @@ def install_event_drop_routes(app, templates, context):
             ),
             message=request.session.pop("drops_message", None),
             error=request.session.pop("drops_error", None),
+            **operation_context(request, svc, campaign_id),
         )
 
     @app.post("/events/drops/{campaign_id:int}/action", name="event_drops_action")
@@ -348,6 +357,8 @@ def install_event_drop_routes(app, templates, context):
                     f"garden:{campaign_id}:{token}",
                     form.get("channel_id") or None,
                     variant_id,
+                    actor_id=current_user(request).get("id", "dashboard"),
+                    source="garden",
                 )
                 label = "Rare drop" if kind == "rare_drop" else "Manual drop"
                 request.session["drops_message"] = (
@@ -670,7 +681,8 @@ def install_event_drop_routes(app, templates, context):
         if not user_id.isdigit():
             raise HTTPException(404, "Participant not found.")
         score = next(
-            (r for r in svc.leaderboard(campaign_id) if r["user_id"] == user_id), None
+            (r for r in svc.participant_scores(campaign_id) if r["user_id"] == user_id),
+            None,
         )
         if not score:
             raise HTTPException(404, "Participant not found.")
@@ -680,6 +692,7 @@ def install_event_drop_routes(app, templates, context):
             campaign=c,
             score=score,
             breakdown=svc.variant_results(campaign_id, user_id),
+            **operation_context(request, svc, campaign_id, user_id),
         )
 
     @app.get(
@@ -691,7 +704,42 @@ def install_event_drop_routes(app, templates, context):
         c = scoped_campaign(svc, campaign_id)
         output = io.StringIO(newline="")
         writer = SafeCSVWriter(output)
-        if export_type == "claims":
+        if export_type == "operations":
+            fields = [
+                "id",
+                "action",
+                "actor_id",
+                "user_id",
+                "points",
+                "variant_id",
+                "variant_name",
+                "rarity",
+                "drop_id",
+                "drop_status",
+                "drop_variant_name",
+                "drop_points",
+                "channel_id",
+                "drop_error",
+                "before_total",
+                "after_total",
+                "reason",
+                "source",
+                "request_key",
+                "created_at",
+            ]
+            writer.writerow(fields)
+            for row in svc.operations(campaign_id, limit=-1):
+                writer.writerow(
+                    [
+                        (
+                            datetime.fromtimestamp(row[key], timezone.utc).isoformat()
+                            if key == "created_at"
+                            else row[key]
+                        )
+                        for key in fields
+                    ]
+                )
+        elif export_type == "claims":
             writer.writerow(
                 [
                     "campaign",

@@ -3,7 +3,8 @@
 Each write uses its own connection and BEGIN IMMEDIATE: unrelated cogs cannot
 accidentally commit a claim or reservation on the bot's shared connection.
 Discord sends are at-most-once attempts. Ambiguous attempts are reconciled by
-message marker, never resent. Claims, rather than counters, are authoritative.
+message marker, never resent. Claims and staff adjustments, rather than counters,
+are authoritative.
 """
 
 from __future__ import annotations
@@ -27,6 +28,7 @@ from utils.event_drop_variants import (
     valid_weight,
 )
 from utils.settings import settings_database_path
+from utils.event_drop_operations import OperationsMixin, migrate_operations
 from utils.event_drop_rewards import (
     REWARD_DEFAULTS,
     MESSAGE_LIMIT,
@@ -132,7 +134,7 @@ def migrate_role_pings(db):
     db.execute("INSERT INTO event_drop_schema VALUES(3,unixepoch())")
 
 
-class EventDrops:
+class EventDrops(OperationsMixin):
     def __init__(self, path: Path | str | None = None):
         self.path = Path(path) if path is not None else settings_database_path()
 
@@ -161,7 +163,7 @@ class EventDrops:
                     if "no such table" not in str(exc):
                         raise
                 else:
-                    if version is not None and version >= 4:
+                    if version is not None and version >= 5:
                         return
         with self.connect() as db:
             # Additive, idempotent schema migration, matching the Events Hub.
@@ -187,6 +189,9 @@ class EventDrops:
                     raise ValueError(
                         "Event Drops upgrade failed its foreign-key check."
                     )
+
+        with self.connect(True) as db:
+            migrate_operations(db)
 
     def rows(self, sql, args=()):
         with self.connect() as db:
@@ -556,7 +561,8 @@ class EventDrops:
                 )
             elif action == "delete":
                 if db.execute(
-                    "SELECT 1 FROM event_drops WHERE variant_id=?", (variant_id,)
+                    "SELECT 1 FROM event_drops WHERE variant_id=? UNION ALL SELECT 1 FROM event_drop_operations WHERE variant_id=? LIMIT 1",
+                    (variant_id, variant_id),
                 ).fetchone():
                     db.execute(
                         "UPDATE event_drop_variants SET enabled=0,is_default=0,deleted_at=?,updated_at=? WHERE id=?",
@@ -933,7 +939,14 @@ class EventDrops:
         log.info("Event Drops campaign %s id=%s", action, campaign_id)
 
     def queue_manual(
-        self, campaign_id, guild_id, key, channel_id=None, variant_id=None
+        self,
+        campaign_id,
+        guild_id,
+        key,
+        channel_id=None,
+        variant_id=None,
+        actor_id=None,
+        source="internal",
     ):
         now = time.time()
         with self.connect(True) as db:
@@ -947,7 +960,7 @@ class EventDrops:
             self._can_send(db, c, now, manual=True)
             if channel_id and str(channel_id) not in c["channels"]:
                 raise ValueError("Choose a channel from this campaign’s allowlist.")
-            return self._reserve(
+            drop_id = self._reserve(
                 db,
                 c,
                 now,
@@ -956,6 +969,20 @@ class EventDrops:
                 key=key,
                 forced_variant_id=variant_id,
             )
+            db.execute(
+                """INSERT INTO event_drop_operations
+                (campaign_id,action,actor_id,drop_id,source,request_key,created_at)
+                VALUES(?,'now',?,?,?,?,?)""",
+                (
+                    campaign_id,
+                    str(actor_id) if actor_id is not None else None,
+                    drop_id,
+                    source,
+                    key,
+                    now,
+                ),
+            )
+            return drop_id
 
     @staticmethod
     def _can_send(db, c, now, manual=False):
@@ -1289,10 +1316,7 @@ class EventDrops:
                         else f'You have already collected this {c["singular"]}! {c["emoji"]}'
                     ),
                 }
-            total = db.execute(
-                "SELECT COALESCE(SUM(points),0) FROM event_drop_claims WHERE campaign_id=? AND user_id=?",
-                (c["id"], str(user_id)),
-            ).fetchone()[0]
+            total = self._score_total(db, c["id"], user_id)
             if (
                 c["max_user_points"] is not None
                 and total + d["points"] > c["max_user_points"]
@@ -1350,20 +1374,16 @@ class EventDrops:
             }
 
     def leaderboard(self, campaign_id):
-        return self.rows(
-            """SELECT t.*, RANK() OVER(ORDER BY total_points DESC) AS rank,m.display_name FROM
-          (SELECT user_id,SUM(points) AS total_points,COUNT(*) AS drops_claimed FROM event_drop_claims WHERE campaign_id=? GROUP BY user_id HAVING SUM(points)>0) t
-          JOIN event_drop_campaigns c ON c.id=? LEFT JOIN event_drop_members m ON m.guild_id=c.guild_id AND m.user_id=t.user_id
-          ORDER BY total_points DESC,t.user_id""",
-            (campaign_id, campaign_id),
-        )
+        return [
+            r for r in self.participant_scores(campaign_id) if r["total_points"] > 0
+        ]
 
     def campaigns(self, guild_id):
         return self.rows(
             """SELECT c.*,
          (SELECT COUNT(*) FROM event_drops d WHERE d.campaign_id=c.id AND d.posted_at IS NOT NULL) total_drops,
          (SELECT COUNT(*) FROM event_drop_claims q WHERE q.campaign_id=c.id) total_claims,
-         (SELECT COUNT(DISTINCT user_id) FROM event_drop_claims q WHERE q.campaign_id=c.id) participants
+         (SELECT COUNT(*) FROM (SELECT user_id FROM event_drop_claims q WHERE q.campaign_id=c.id UNION SELECT user_id FROM event_drop_operations o WHERE o.campaign_id=c.id AND o.user_id IS NOT NULL)) participants
          FROM event_drop_campaigns c WHERE guild_id=? ORDER BY CASE status WHEN 'active' THEN 0 WHEN 'scheduled' THEN 1 WHEN 'paused' THEN 2 WHEN 'draft' THEN 3 ELSE 4 END,c.id DESC""",
             (str(guild_id),),
         )

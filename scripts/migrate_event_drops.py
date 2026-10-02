@@ -33,14 +33,32 @@ def validate(path):
             "event_drop_variants",
             "event_drop_variant_assets",
             "event_drop_snapshots",
+            "event_drop_operations",
         }
         if required - tables:
             raise RuntimeError(
                 "Missing tables: " + ", ".join(sorted(required - tables))
             )
-        if db.execute("SELECT MAX(version) FROM event_drop_schema").fetchone()[0] != 4:
+        if db.execute("SELECT MAX(version) FROM event_drop_schema").fetchone()[0] != 5:
             raise RuntimeError("Unexpected migration version.")
         for table, expected in {
+            "event_drop_operations": {
+                "campaign_id",
+                "action",
+                "actor_id",
+                "user_id",
+                "points",
+                "variant_id",
+                "variant_name",
+                "rarity",
+                "drop_id",
+                "before_total",
+                "after_total",
+                "reason",
+                "source",
+                "request_key",
+                "created_at",
+            },
             "event_drop_campaigns": {
                 "variants_enabled",
                 "ping_role_id",

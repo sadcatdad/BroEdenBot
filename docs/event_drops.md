@@ -203,16 +203,41 @@ base percentages describe ordinary weighted draws. Selection is labelled
 
 ## Discord commands
 
+- `/drop`: private listing of active, paused, and scheduled campaigns, status,
+  end time/time remaining, and next drop. Discord timestamps render in each
+  member's local timezone. Paused campaigns show that automatic drops are paused.
+- `/drop-now campaign:`: immediately attempt a normal weighted/protected variant
+  drop in a random available allowlisted channel, using existing recent-channel
+  avoidance and delivery recovery. It also works without variants enabled.
+- `/drop-give campaign: user: points:` **or** `drop:`: award exact points or one
+  enabled variant's reward to a human member of the server. Choose exactly one
+  reward input. Random rewards roll once per operation; empty variants award zero
+  and remain logged. The recipient is pinged in the command channel with the
+  campaign, variant (when selected), and actual points. The staff receipt is private.
+- `/drop-remove campaign: user: points:`: subtract a positive whole number of
+  points without changing original claims or allowing a negative balance.
+- Give/remove accept optional `reason:` (up to 500 characters). Exact amounts
+  are 1–1,000,000. Awards respect the campaign's per-member points cap; they are
+  direct staff awards, so claim-role restrictions and claim expiry do not apply.
+  Both awards and removals are atomic and deduplicated by interaction ID. An award
+  notification failure leaves the saved reward intact and warns the staff member.
+
+The three staff selectors include active and paused campaigns in the current
+server, within their start/end dates. Scheduled and completed campaigns are
+unavailable. A variant award contributes to the campaign score without creating
+a drop/claim or affecting drop probabilities and dry-spell protection.
+
 - `/event score [campaign_id]`: ephemeral personal total and rank.
 - `/event leaderboard [campaign_id]`: public top 10 without member pings.
 - `/eventdrop status|drop|pause|resume [campaign_id]`: lightweight administration
   for configured owners/admin roles or Discord administrators.
 
-Commands default to the current active/paused campaign, or the most relevant
+The existing `/event` and `/eventdrop` commands default to the current active/paused campaign, or the most relevant
 historical/scheduled campaign when none is running. An ID selects a specific
 campaign in the same guild. All eligible humans can collect each live drop once;
 there is no first-winner or global claimer cap. Successful and duplicate claim
-responses are ephemeral. Scores come from individual claim rows.
+responses are ephemeral. Scores come from individual claims plus the signed
+staff-award/removal ledger. Claim counts still count actual claims only.
 
 ## Authorization and results
 
@@ -222,6 +247,26 @@ permission catalog. Grant it to an appropriate existing role through **Admin
 Dashboard → Access** when Party Captains should operate campaigns. Ordinary
 Verified Member event access does not expose participant results or editing.
 No new role system or automatic expansion of Party Captain access is introduced.
+
+Discord commands use separate capabilities: `event_drops.send`,
+`event_drops.give`, and `event_drops.remove`. Grant them in **Admin Dashboard →
+Access**, mapping the Garden role to the appropriate Discord role. Current
+Discord membership roles are checked, even before a member's first Garden login;
+stale OAuth role assignments cannot grant command access. Explicit account
+restrictions and user overrides apply to mapped staff. Configured bot owners,
+admin roles, and Discord administrators retain command access. Owners and Garden
+Administrators receive the new capabilities; other roles keep their existing
+permissions. `event_drops.manage` controls dashboard access separately.
+
+Each campaign and participant page includes **Staff operations**, paginated at
+50 entries, recording actor/recipient IDs, frozen variant name and actual reward,
+signed change, balance before/after, optional reason, source, and timestamp.
+Manual sends link to their drop's current delivery status and errors. Export the
+complete operations CSV, including entries outside the current page. Earlier
+manual sends remain in Drop history; the migration does not invent their actors.
+Zero-balance participants retain their history page but are not ranked. Overall
+score CSVs include adjustments; claim/variant delivery reports retain their
+original meaning, and direct variant awards appear in the operations export.
 
 The campaign page shows worker readiness, last/next drop, live messages, pending
 or uncertain delivery, claims, history (50 drops per page), and participants.
@@ -248,7 +293,8 @@ claim count, and rank, with formula-leading display names escaped.
 - `event_drop_campaigns`, `event_drop_channels`, `event_drop_roles`,
   `event_drop_assets`, `event_drops`, `event_drop_claims`, `event_drop_members`,
   `event_drop_worker`, `event_drop_schema`, `event_drop_variants`,
-  `event_drop_variant_assets`, and `event_drop_snapshots` are additive tables. Unique
+  `event_drop_variant_assets`, `event_drop_snapshots`, and `event_drop_operations`
+  are additive tables. Unique
   `(campaign_id, scheduled_at)`, manual request keys, and `(drop_id, user_id)`
   protect occurrences, repeated form submissions, and claims respectively.
 
@@ -297,6 +343,9 @@ maintenance window and run the additive migration with an SQLite online backup:
 ```
 
 Bot and dashboard startup also apply the same idempotent schema initializer.
+Version 5 adds the staff-operations ledger and index, preserving every existing
+campaign, variant, drop, claim, asset, schedule, and score. Point totals aggregate
+claims and staff adjustments under the same write transaction for caps/removals.
 Version 4 adds reward type/range settings, post text, empty replies, and optional
 dry-spell thresholds. Old settings default to static rewards and protection off.
 A transaction copies the existing variant and claim tables to relax the
@@ -305,7 +354,7 @@ indexes, foreign-key references, and scores. Historical post text defaults blank
 Version 3 adds `ping_role_id` to campaigns and drops with an empty default. It
 never recreates or resets campaigns, schedules, variants, assets, drops, or claims.
 Queued and historical drops retain no ping when upgraded. The migration tool
-validates version 4 and supports upgrading directly from versions 1–3.
+validates version 5 and supports upgrading directly from versions 1–4.
 Version 2 adds `event_drop_variants`, `event_drop_variant_assets`, and
 `event_drop_snapshots`; campaign/asset/drop columns and variant indexes are added
 in one SQLite transaction. The original version 1 schema and all feature data

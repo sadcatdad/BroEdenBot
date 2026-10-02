@@ -40,6 +40,9 @@ PERMISSIONS = (
     PermissionDefinition("events.publish", "Community", "Publish events", "Publish or approve server events."),
     PermissionDefinition("events.delete", "Community", "Delete events", "Delete server events."),
     PermissionDefinition("event_drops.manage", "Community", "Manage Event Drops", "Create campaigns, operate drops, and view or export participant results."),
+    PermissionDefinition("event_drops.send", "Community", "Send drops in Discord", "Use /drop-now to send a campaign drop."),
+    PermissionDefinition("event_drops.give", "Community", "Award drop points", "Use /drop-give to award exact points or a variant reward."),
+    PermissionDefinition("event_drops.remove", "Community", "Remove drop points", "Use /drop-remove to deduct campaign points."),
     PermissionDefinition("brofiles.view", "Community", "View BROfiles", "Browse published member BROfiles and the BRO Directory."),
     PermissionDefinition("brofiles.edit", "Community", "Edit own BROfile", "Create and customize the signed-in member's own BROfile."),
     PermissionDefinition("brofiles.manage", "Community", "Manage BROfiles", "Manage role-driven BROfile badge mappings and profile infrastructure."),
@@ -317,6 +320,29 @@ def initialize_rbac_schema() -> None:
                         role_id,
                     ),
                 )
+        drop_commands_migration = "2026_10_drop_command_permissions"
+        if (
+            connection.execute(
+                "SELECT 1 FROM dashboard_rbac_migrations WHERE migration_key=?",
+                (drop_commands_migration,),
+            ).fetchone()
+            is None
+        ):
+            for role_key in ("owner", "administrator"):
+                role_id = connection.execute(
+                    "SELECT id FROM dashboard_roles WHERE role_key=?", (role_key,)
+                ).fetchone()[0]
+                connection.executemany(
+                    "INSERT OR IGNORE INTO dashboard_role_permissions(role_id,permission_key) VALUES(?,?)",
+                    [
+                        (role_id, "event_drops." + action)
+                        for action in ("send", "give", "remove")
+                    ],
+                )
+            connection.execute(
+                "INSERT INTO dashboard_rbac_migrations(migration_key,applied_at) VALUES(?,?)",
+                (drop_commands_migration, now),
+            )
         full_admin_migration = "2026_07_administrator_full_access"
         if connection.execute(
             "SELECT 1 FROM dashboard_rbac_migrations WHERE migration_key = ?",
@@ -512,6 +538,82 @@ def permissions_for_user(user_id: int) -> set[str]:
                 permissions.add(key)
             else:
                 permissions.discard(key)
+        return permissions
+
+
+def permissions_for_discord_member(
+    user_id: int, live_role_ids: Iterable[int]
+) -> set[str]:
+    """Resolve command capabilities from current roles, without requiring a Garden login.
+
+    Cached OAuth role assignments never confer command access after a role removal.
+    Explicit account restrictions and permission overrides still apply.
+    """
+    initialize_rbac_schema()
+    with _connect() as connection:
+        user = (
+            connection.execute(
+                "SELECT role,status,access_source FROM dashboard_users WHERE id=?",
+                (int(user_id),),
+            ).fetchone()
+            if _table_exists(connection, "dashboard_users")
+            else None
+        )
+        if user is not None and str(user["status"]).casefold() != "active":
+            return set()
+        role_ids = set()
+        live_roles = [str(r) for r in live_role_ids]
+        if live_roles:
+            placeholders = ",".join("?" for _ in live_roles)
+            role_ids.update(
+                row[0]
+                for row in connection.execute(
+                    f"SELECT role_id FROM dashboard_discord_role_mappings WHERE discord_role_id IN ({placeholders})",
+                    live_roles,
+                )
+            )
+        if user is not None:
+            role_ids.update(
+                row[0]
+                for row in connection.execute(
+                    "SELECT role_id FROM dashboard_user_role_assignments WHERE user_id=? AND source NOT IN ('discord','legacy')",
+                    (int(user_id),),
+                )
+            )
+            if str(user["access_source"] or "").casefold() != "discord_role":
+                legacy = LEGACY_ROLE_MAP.get(
+                    str(user["role"] or "viewer").casefold(), "viewer"
+                )
+                row = connection.execute(
+                    "SELECT id FROM dashboard_roles WHERE role_key=?", (legacy,)
+                ).fetchone()
+                if row:
+                    role_ids.add(row[0])
+        permissions = set()
+        for role_id in role_ids:
+            if (
+                connection.execute(
+                    "SELECT role_key FROM dashboard_roles WHERE id=?", (role_id,)
+                ).fetchone()[0]
+                == "owner"
+            ):
+                return set(PERMISSION_KEYS)
+            permissions.update(
+                row[0]
+                for row in connection.execute(
+                    "SELECT permission_key FROM dashboard_role_permissions WHERE role_id=?",
+                    (role_id,),
+                )
+            )
+        if user is not None:
+            for override in connection.execute(
+                "SELECT permission_key,allowed FROM dashboard_user_permission_overrides WHERE user_id=?",
+                (int(user_id),),
+            ):
+                if override["allowed"]:
+                    permissions.add(override["permission_key"])
+                else:
+                    permissions.discard(override["permission_key"])
         return permissions
 
 

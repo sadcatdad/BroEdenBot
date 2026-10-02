@@ -144,7 +144,25 @@ Defaults award one point per member per drop, allow unlimited different
 collectors, and expire after ten minutes. Claims, schedules, results, and buttons
 survive restarts; missed automatic drops are skipped instead of replayed.
 
-Members use `/event score` and `/event leaderboard`; configured bot admins can
+Members use `/drop` to see ongoing campaigns, time remaining, and the next drop
+in their Discord timezone, plus `/event score` and `/event leaderboard` for scores.
+Staff use `/drop-now campaign:`, `/drop-give campaign: user: points:` **or**
+`drop:` for a variant reward, and `/drop-remove campaign: user: points:`.
+Give/remove accept an optional `reason`. Configure **Send drops in Discord**,
+**Award drop points**, and **Remove drop points** separately through **Admin
+Dashboard → Access**, then map the Garden role to a Discord role. Current Discord
+roles are checked on every command; no dashboard login is required. Configured
+bot owners/admin roles and Discord administrators retain full command access.
+Selectors include active and paused campaigns; scheduled/ended campaigns cannot
+receive staff operations. Awards ping only the recipient in the command channel,
+and random variant rewards roll once. Awards respect campaign point caps, removals
+cannot create negative balances, and retried requests never change points twice.
+**Events → Event Drops → campaign → Staff operations** records the actor, recipient,
+reward, reason, balance change, and manual-send delivery status, with a CSV export.
+Scores include staff adjustments while original claims remain intact; the v5
+upgrade adds a ledger without rewriting existing campaign data.
+
+Configured bot admins can
 use `/eventdrop status`, `/eventdrop drop`, `/eventdrop pause`, and
 `/eventdrop resume`. Existing `/events` commands remain unchanged. Garden offers
 campaign creation/editing, scheduled start/end, pause/resume, manual drops,
@@ -194,7 +212,7 @@ selected role is allowed to ping; notifications do not change claim eligibility.
 
 The bot loads Event Drops with the `events` module and uses the shared
 `DATABASE_PATH`. No new dependency or service changes are needed. Apply the
-version 4 `scripts/migrate_event_drops.py` migration with `--database`
+version 5 `scripts/migrate_event_drops.py` migration with `--database`
 and `--backup-dir` while both old services are stopped during deployment; startup also initializes the same schema. Railway validates/upgrades it with a backup before starting either process.
 See [Event Drops configuration, reliability, and Pi deployment](docs/event_drops.md)
 for permission requirements, timing semantics, image limits, recovery behavior,

@@ -19,6 +19,7 @@ from utils.access import configured_admin_role_ids, is_configured_owner
 from utils.audit_log import publish_audit
 from utils.display_names import normalize_display_name
 from utils.event_drops import EventDrops
+from dashboard.rbac import permissions_for_discord_member
 
 log = logging.getLogger(__name__)
 
@@ -541,6 +542,285 @@ class EventDropsCog(commands.Cog):
         except ValueError as exc:
             await interaction.followup.send(str(exc), ephemeral=True)
 
+    async def command_allowed(self, interaction, action):
+        user = interaction.user
+        if not interaction.guild_id or user.bot:
+            return False
+        if (
+            is_configured_owner(user)
+            or user.guild_permissions.administrator
+            or any(r.id in configured_admin_role_ids() for r in user.roles)
+        ):
+            return True
+        permissions = await self.call(
+            permissions_for_discord_member, user.id, [r.id for r in user.roles]
+        )
+        return "event_drops." + action in permissions
+
+    async def require_command(self, interaction, action):
+        # Permission reads can wait behind schema initialization. Acknowledge
+        # first so the interaction remains usable beyond Discord's three seconds.
+        await interaction.response.defer(ephemeral=True)
+        if await self.command_allowed(interaction, action):
+            return True
+        await interaction.followup.send(
+            f"You need the Event Drops {action} permission. An administrator can grant it through The Garden’s Access role mappings.",
+            ephemeral=True,
+        )
+        return False
+
+    @app_commands.command(
+        name="drop",
+        description="List running drop campaigns, their time remaining, and next drops",
+    )
+    @app_commands.guild_only()
+    async def drop_status(self, interaction: discord.Interaction):
+        await interaction.response.defer(ephemeral=True)
+        campaigns = await self.call(self.service.campaigns, interaction.guild_id)
+        campaigns = [
+            c for c in campaigns if c["status"] in ("active", "paused", "scheduled")
+        ]
+        if not campaigns:
+            await interaction.followup.send(
+                "No running Event Drops campaigns.", ephemeral=True
+            )
+            return
+        # One compact embed per page keeps every campaign within Discord's limits.
+        for start in range(0, len(campaigns), 10):
+            embed = discord.Embed(title="Event Drops campaigns", color=0x57F287)
+            for c in campaigns[start : start + 10]:
+                end = (
+                    f"Ends <t:{int(c['end_at'])}:F> (<t:{int(c['end_at'])}:R>)"
+                    if c["end_at"]
+                    else "No scheduled end"
+                )
+                next_at = c["next_drop_at"] if c["status"] != "paused" else None
+                next_label = (
+                    f"<t:{int(next_at)}:F> (<t:{int(next_at)}:R>)"
+                    if next_at
+                    else (
+                        "Paused" if c["status"] == "paused" else "Waiting for scheduler"
+                    )
+                )
+                embed.add_field(
+                    name=f"{c['name']} · #{c['id']}"[:256],
+                    value=f"{c['status'].title()} · {end}\nNext drop: {next_label}",
+                    inline=False,
+                )
+            embed.set_footer(
+                text="Times use your Discord timezone. Paused campaigns allow staff awards and manual drops."
+            )
+            await interaction.followup.send(
+                embed=embed,
+                ephemeral=True,
+                allowed_mentions=discord.AllowedMentions.none(),
+            )
+
+    @app_commands.command(
+        name="drop-now",
+        description="Send a weighted random drop in a campaign's allowed channels",
+    )
+    @app_commands.guild_only()
+    @app_commands.describe(campaign="Select a running campaign")
+    async def drop_now(self, interaction: discord.Interaction, campaign: int):
+        if not await self.require_command(interaction, "send"):
+            return
+        try:
+            drop_id = await self.call(
+                self.service.queue_manual,
+                campaign,
+                interaction.guild_id,
+                f"discord:{interaction.id}",
+                actor_id=interaction.user.id,
+                source="discord",
+            )
+            await self.send_drop(drop_id)
+            row = (
+                await self.call(
+                    self.service.rows,
+                    "SELECT status,error FROM event_drops WHERE id=?",
+                    (drop_id,),
+                )
+            )[0]
+            text = f"Drop #{drop_id}: {row['status']}." + (
+                f" {row['error']}" if row["error"] else ""
+            )
+            await interaction.followup.send(
+                text, ephemeral=True, allowed_mentions=discord.AllowedMentions.none()
+            )
+        except ValueError as exc:
+            await interaction.followup.send(str(exc), ephemeral=True)
+
+    @app_commands.command(
+        name="drop-give",
+        description="Award a member exact points OR one drop variant's reward",
+    )
+    @app_commands.guild_only()
+    @app_commands.describe(
+        campaign="Select a running campaign",
+        user="Member receiving the award",
+        points="Exact points (choose points OR drop)",
+        drop="Variant reward (choose drop OR points)",
+        reason="Optional reason saved to campaign history",
+    )
+    async def drop_give(
+        self,
+        interaction: discord.Interaction,
+        campaign: int,
+        user: discord.Member,
+        points: Optional[app_commands.Range[int, 1, 1000000]] = None,
+        drop: Optional[int] = None,
+        reason: Optional[app_commands.Range[str, 1, 500]] = None,
+    ):
+        await self.adjust_command(
+            interaction, campaign, user, "give", points, drop, reason or ""
+        )
+
+    @app_commands.command(
+        name="drop-remove",
+        description="Remove an exact number of a member's campaign points",
+    )
+    @app_commands.guild_only()
+    @app_commands.describe(
+        campaign="Select a running campaign",
+        user="Member whose points will be removed",
+        points="Positive number to remove; cannot exceed their balance",
+        reason="Optional reason saved to campaign history",
+    )
+    async def drop_remove(
+        self,
+        interaction: discord.Interaction,
+        campaign: int,
+        user: discord.Member,
+        points: app_commands.Range[int, 1, 1000000],
+        reason: Optional[app_commands.Range[str, 1, 500]] = None,
+    ):
+        await self.adjust_command(
+            interaction, campaign, user, "remove", points, None, reason or ""
+        )
+
+    async def adjust_command(
+        self, interaction, campaign, user, action, points, variant_id, reason
+    ):
+        if not await self.require_command(interaction, action):
+            return
+        try:
+            if user.bot or user.guild.id != interaction.guild_id:
+                raise ValueError("Choose a human member of this server.")
+            c = await self.call(self.service.campaign, campaign, interaction.guild_id)
+            result = await self.call(
+                self.service.adjust_points,
+                campaign,
+                interaction.guild_id,
+                f"discord:{interaction.id}",
+                interaction.user.id,
+                user.id,
+                action,
+                points,
+                variant_id,
+                reason,
+                user.display_name,
+            )
+        except ValueError as exc:
+            await interaction.followup.send(
+                str(exc),
+                ephemeral=True,
+                allowed_mentions=discord.AllowedMentions.none(),
+            )
+            return
+        if result["duplicate"]:
+            await interaction.followup.send(
+                f"Operation #{result['id']} was already recorded; no points changed again.",
+                ephemeral=True,
+            )
+            return
+        await interaction.followup.send(
+            f"Recorded {action} operation #{result['id']}. New total: {result['after_total']} {c['plural']}.",
+            ephemeral=True,
+            allowed_mentions=discord.AllowedMentions.none(),
+        )
+        if action == "give":
+            variant = (
+                f"{discord.utils.escape_markdown(result['variant_name'])} with "
+                if result["variant_name"]
+                else ""
+            )
+            text = f"<@{user.id}> received {variant}{result['points']} {discord.utils.escape_markdown(c['plural'])} in **{discord.utils.escape_markdown(c['name'])}**!"
+            try:
+                await interaction.followup.send(
+                    text,
+                    ephemeral=False,
+                    allowed_mentions=discord.AllowedMentions(
+                        everyone=False,
+                        roles=False,
+                        users=[discord.Object(id=user.id)],
+                        replied_user=False,
+                    ),
+                )
+            except discord.HTTPException:
+                await interaction.followup.send(
+                    "The award is saved, but Discord could not post the recipient notification. The score was not rolled back.",
+                    ephemeral=True,
+                )
+        await publish_audit(
+            self.bot,
+            interaction.guild,
+            "Event Drops: " + action,
+            f"Campaign #{campaign} · operation #{result['id']} · actor {interaction.user.id} · recipient {user.id} · {result['points']:+} points · total {result['after_total']}",
+        )
+
+    @drop_now.autocomplete("campaign")
+    @drop_give.autocomplete("campaign")
+    @drop_remove.autocomplete("campaign")
+    async def active_campaign_choices(
+        self, interaction: discord.Interaction, current: str
+    ):
+        action = {"drop-now": "send", "drop-give": "give", "drop-remove": "remove"}.get(
+            interaction.command.name
+        )
+        if not action or not await self.command_allowed(interaction, action):
+            return []
+        campaigns = await self.call(self.service.campaigns, interaction.guild_id)
+        now = time.time()
+        return [
+            app_commands.Choice(
+                name=f"{c['name']} · {c['status']} · #{c['id']}"[:100], value=c["id"]
+            )
+            for c in campaigns
+            if c["status"] in ("active", "paused")
+            and (not c["start_at"] or c["start_at"] <= now)
+            and (not c["end_at"] or c["end_at"] > now)
+            and (current.casefold() in c["name"].casefold() or current == str(c["id"]))
+        ][:25]
+
+    @drop_give.autocomplete("drop")
+    async def award_variant_choices(
+        self, interaction: discord.Interaction, current: str
+    ):
+        if not await self.command_allowed(interaction, "give"):
+            return []
+        campaign_id = getattr(interaction.namespace, "campaign", None)
+        if not campaign_id:
+            return []
+        try:
+            c = await self.call(
+                self.service.campaign, int(campaign_id), interaction.guild_id
+            )
+            if not c["variants_enabled"] or c["status"] not in ("active", "paused"):
+                return []
+            variants = await self.call(self.service.variants, c["id"])
+        except (ValueError, TypeError):
+            return []
+        return [
+            app_commands.Choice(
+                name=f"{v['name']} · {v['reward_label']} · #{v['id']}"[:100],
+                value=v["id"],
+            )
+            for v in variants
+            if v["enabled"]
+            and (current.casefold() in v["name"].casefold() or current == str(v["id"]))
+        ][:25]
+
     async def admin_action(self, interaction, action, campaign_id):
         user = interaction.user
         admin = (
@@ -567,6 +847,8 @@ class EventDropsCog(commands.Cog):
                     c["id"],
                     interaction.guild_id,
                     f"discord:{interaction.id}",
+                    actor_id=user.id,
+                    source="discord",
                 )
                 text = f"Manual drop #{drop_id} queued."
             else:
