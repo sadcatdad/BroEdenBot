@@ -2,7 +2,7 @@
 {% block content %}
 <div class="page-heading">
   <div><p class="eyebrow">Operations</p><h1>Reminders</h1></div>
-  <a class="button secondary" href="{{ url_for('operations_page') }}">Back to operations</a>
+  {% if can('operations.view') %}<a class="button secondary" href="{{ url_for('operations_page') }}">Back to operations</a>{% endif %}
 </div>
 {% if message %}<div class="alert success">{{ message }}</div>{% endif %}
 {% if error %}<div class="alert error">{{ error }}</div>{% endif %}

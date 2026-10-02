@@ -5,9 +5,9 @@
     <p class="eyebrow">Fixed local controls</p>
     <h1>Bot Operations</h1>
   </div>
+  {% if can('reminders.view') %}<a class="button secondary" href="{{ url_for('reminders_page') }}">View reminders</a>{% endif %}
 </div>
 <p class="muted">Only predefined service operations are available. There is no terminal, deploy, pull, or arbitrary command input.</p>
-<p><a class="button" href="{{ url_for('reminders_page') }}">Manage reminders</a></p>
 {% if message %}<div class="alert success">{{ message }}</div>{% endif %}
 {% if error %}<div class="alert error">{{ error }}</div>{% endif %}
 
@@ -24,27 +24,27 @@
   {% endfor %}
 </section>
 
-<section class="card operation-actions">
+{% if can('operations.manage') or can('bot.restart') %}<section class="card operation-actions">
   <div>
     <p class="eyebrow">Safe actions</p>
     <h2>Service controls</h2>
     <p class="muted">Restarts use fixed systemd unit names and may briefly interrupt the selected service.</p>
   </div>
   <div class="action-buttons">
-    <form method="post" action="{{ url_for('restart_bot') }}">
+    {% if can('bot.restart') %}<form method="post" action="{{ url_for('restart_bot') }}">
       <input type="hidden" name="csrf" value="{{ csrf_token }}">
       <button class="button danger" type="submit">Restart bot service</button>
     </form>
     <form method="post" action="{{ url_for('restart_dashboard') }}">
       <input type="hidden" name="csrf" value="{{ csrf_token }}">
       <button class="button danger" type="submit">Restart dashboard service</button>
-    </form>
-    <form method="post" action="{{ url_for('backup_active_database') }}">
+    </form>{% endif %}
+    {% if can('operations.manage') %}<form method="post" action="{{ url_for('backup_active_database') }}">
       <input type="hidden" name="csrf" value="{{ csrf_token }}">
       <button class="button" type="submit">Back up database</button>
-    </form>
+    </form>{% endif %}
   </div>
-</section>
+</section>{% endif %}
 
 <section class="card">
   <p class="eyebrow">Host</p>

@@ -3,22 +3,23 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <meta name="theme-color" content="#0b0b11">
+  <meta name="theme-color" content="#101116">
   <title>{{ page_title or "Login" }} · The Garden</title>
   {% if canonical_url %}<link rel="canonical" href="{{ canonical_url }}">{% endif %}
   <link rel="icon" type="image/png" href="{{ url_for('static', path='broeden-pride-icon.png') }}">
   <link rel="stylesheet" href="{{ url_for('static', path='styles.css') }}?v=hardening1">
+  <link rel="stylesheet" href="{{ url_for('static', path='garden_redesign.css') }}?v=6">
   <script src="{{ url_for('static', path='dashboard_nav.js') }}?v=keyboard-nav2" defer></script>
   <script src="{{ url_for('static', path='dashboard_forms.js') }}" defer></script>
   <script src="{{ url_for('static', path='discord_pickers.js') }}?v=picker-single-values2" defer></script>
 </head>
-<body class="{{ 'authenticated' if authenticated else 'login-page' }}">
+<body class="{{ 'authenticated' if authenticated else 'login-page' }} {{ 'view-' ~ view_mode if authenticated else '' }}">
   <a class="skip-link" href="#main-content">Skip to main content</a>
   {% if authenticated %}
   <div class="app-shell">
     <aside class="site-sidebar" id="dashboard-navigation" aria-label="The Garden navigation">
       <div class="sidebar-heading">
-        <a class="brand" href="{{ (url_for('events_page') if can('events.view') else url_for('my_brofile_page')) if view_mode == 'member' else url_for('home') }}" aria-label="The Garden home">
+        <a class="brand" href="{{ (url_for('events_page') if can('events.view') else (url_for('my_brofile_page') if can('brofiles.edit') else url_for('brofile_directory'))) if view_mode == 'member' else dashboard_home_url }}" aria-label="The Garden home">
           <img class="brand-logo" src="{{ url_for('static', path='broeden-pride-icon.png') }}" alt="">
           <span class="brand-copy"><strong>BRO EDEN</strong><small>The Garden</small></span>
         </a>
@@ -26,6 +27,7 @@
           <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m6 6 12 12M18 6 6 18"/></svg>
         </button>
       </div>
+      <div class="sidebar-context"><span class="context-dot" aria-hidden="true"></span>{{ 'Member View' if view_mode == 'member' else 'Admin Dashboard' }}</div>
 
       {% if dashboard_view_available and member_view_available %}
       <form method="post" action="{{ url_for('set_view_mode') }}" class="view-switcher">
@@ -39,7 +41,7 @@
             <path d="M12 4 4 8v5c0 4 3.2 6.7 8 8 4.8-1.3 8-4 8-8V8l-8-4Zm-3 9 2 2 4-5"/>
             {% endif %}
           </svg>
-          <span>{{ 'Dashboard' if view_mode == 'member' else 'Member View' }}</span>
+          <span>Switch to {{ 'Admin Dashboard' if view_mode == 'member' else 'Member View' }}</span>
         </button>
       </form>
       {% endif %}
@@ -86,7 +88,7 @@
         </div>
         {% endif %}
 
-        {% if can('features.view') or can('streaks.view') or can('events.view') or can('brofiles.manage') %}
+        {% if can('features.view') or can('streaks.view') or can('events.view') or can('event_drops.manage') or can('brofiles.manage') %}
         <div class="nav-group">
           <p class="nav-group-label">Community</p>
           {% if can('features.view') %}
@@ -107,12 +109,30 @@
             <span>Events</span>
           </a>
           {% endif %}
+          {% if can('event_drops.manage') and not can('events.view') %}
+          <a class="nav-item {{ 'active' if current_path.startswith('/events/drops') else '' }}" href="{{ url_for('event_drops_list') }}" {% if current_path.startswith('/events/drops') %}aria-current="page"{% endif %}>
+            <svg class="nav-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="m12 2 2.5 6.5L21 11l-6.5 2.5L12 20l-2.5-6.5L3 11l6.5-2.5L12 2Z"/></svg>
+            <span>Event Drops</span>
+          </a>
+          {% endif %}
           {% if can('brofiles.manage') %}
           <a class="nav-item {{ 'active' if current_path.startswith('/brofiles/manage') else '' }}" href="{{ url_for('brofile_management') }}" {% if current_path.startswith('/brofiles/manage') %}aria-current="page"{% endif %}>
             <svg class="nav-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 12a4 4 0 1 0 0-8 4 4 0 0 0 0 8Zm-8 9a8 8 0 0 1 16 0M18 8h4m-2-2v4M17 15h5m-2.5-2.5v5"/></svg>
             <span><span class="bro-mark">BRO</span>file Management</span>
           </a>
           {% endif %}
+        </div>
+        {% endif %}
+
+        {% if feature_shortcuts %}
+        <div class="nav-group">
+          <p class="nav-group-label">Features</p>
+          {% for feature in feature_shortcuts %}
+          <a class="nav-item {{ 'active' if current_path == '/features/' ~ feature.key else '' }}" href="{{ url_for('feature_detail', feature_key=feature.key) }}" {% if current_path == '/features/' ~ feature.key %}aria-current="page"{% endif %}>
+            <svg class="nav-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 6h7v5H4V6Zm9 0h7v5h-7V6ZM4 13h7v5H4v-5Zm9 0h7v5h-7v-5Z"/></svg>
+            <span>{{ feature.name }}</span>
+          </a>
+          {% endfor %}
         </div>
         {% endif %}
 
@@ -174,14 +194,20 @@
         </div>
         {% endif %}
 
-        {% if can('settings.view') or can('access.manage') or can('audit_log.view') %}
+        {% if can('settings.view') or can('access.manage') or can('audit_log.view') or can('discord_metadata.view') or can('imports.view') %}
         <div class="nav-group nav-group-system">
           <p class="nav-group-label">Admin Dashboard</p>
           {% if can('settings.view') %}
-          <a class="nav-item {{ 'active' if current_path in ['/settings', '/settings/discord', '/settings/imports', '/settings/advanced'] else '' }}" href="{{ url_for('settings') }}" {% if current_path in ['/settings', '/settings/discord', '/settings/imports', '/settings/advanced'] %}aria-current="page"{% endif %}>
+          <a class="nav-item {{ 'active' if current_path in ['/settings', '/settings/advanced'] else '' }}" href="{{ url_for('settings') }}" {% if current_path in ['/settings', '/settings/advanced'] %}aria-current="page"{% endif %}>
             <svg class="nav-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 8a4 4 0 1 0 0 8 4 4 0 0 0 0-8Zm8 4 2-1-2-4-2 .5a8 8 0 0 0-2-1.2L15.5 4h-5L10 6.3a8 8 0 0 0-2 1.2L6 7 4 11l2 1v2l-2 1 2 4 2-.5a8 8 0 0 0 2 1.2l.5 2.3h5l.5-2.3a8 8 0 0 0 2-1.2l2 .5 2-4-2-1v-2Z"/></svg>
             <span>Settings</span>
           </a>
+          {% endif %}
+          {% if can('discord_metadata.view') and not can('settings.view') %}
+          <a class="nav-item {{ 'active' if current_path == '/settings/discord' else '' }}" href="{{ url_for('settings_discord') }}" {% if current_path == '/settings/discord' %}aria-current="page"{% endif %}><span class="nav-icon" aria-hidden="true">◌</span><span>Discord Connection</span></a>
+          {% endif %}
+          {% if can('imports.view') and not can('settings.view') %}
+          <a class="nav-item {{ 'active' if current_path == '/settings/imports' else '' }}" href="{{ url_for('imports') }}" {% if current_path == '/settings/imports' %}aria-current="page"{% endif %}><span class="nav-icon" aria-hidden="true">▤</span><span>Data &amp; Storage</span></a>
           {% endif %}
           {% if can('access.manage') %}
           <a class="nav-item {{ 'active' if current_path.startswith('/settings/access') else '' }}" href="{{ url_for('settings_access') }}" {% if current_path.startswith('/settings/access') %}aria-current="page"{% endif %}>
@@ -221,7 +247,7 @@
 
     <div class="app-workspace">
       <header class="mobile-header">
-        <a class="mobile-brand" href="{{ (url_for('events_page') if can('events.view') else url_for('my_brofile_page')) if view_mode == 'member' else url_for('home') }}" aria-label="The Garden home">
+        <a class="mobile-brand" href="{{ (url_for('events_page') if can('events.view') else (url_for('my_brofile_page') if can('brofiles.edit') else url_for('brofile_directory'))) if view_mode == 'member' else dashboard_home_url }}" aria-label="The Garden home">
           <img src="{{ url_for('static', path='broeden-pride-icon.png') }}" alt="">
           <strong>The Garden</strong>
         </a>

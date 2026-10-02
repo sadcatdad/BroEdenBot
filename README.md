@@ -1871,12 +1871,21 @@ live together in Dashboard Access. Older `/stats`, `/settings/knowledge`,
 `/imports`, `/users`, `/settings/features`, and `/settings/permissions` URLs
 redirect to their current locations so existing bookmarks remain usable.
 
+The Garden uses a shared dark interface system in `dashboard/static/garden_redesign.css`
+for spacing, type, cards, controls, tables, and responsive navigation. Events keeps
+its primary create action in the page header, places Event Drops in section
+navigation, and uses a compact next-event summary and scannable event cards.
+Artwork-free events use a short branded marker, while uploaded artwork retains a
+larger preview. Permission-filtered menus and read-only pages hide unavailable
+actions. Custom roles with access to an individual dashboard section land on
+their first authorized section rather than a forbidden Overview.
+
 Verified Members use a separate member-facing menu containing the working
 **My BROfile**, **BRO Directory**, and **Events** surfaces; they do not see
 Overview, Analytics, or other back-end navigation. BRO is rendered as the
 branded rainbow wordmark in member labels. Roles that have both member access
-and `dashboard.view` receive a fixed menu switcher between **Member View** and
-**Dashboard**, allowing staff to preview the member experience without
+and a dashboard section receive a fixed menu switcher between **Member View** and
+**Admin Dashboard**, allowing staff to preview the member experience without
 changing their effective permissions.
 
 ### Message Studio (Embed/Message Editor)

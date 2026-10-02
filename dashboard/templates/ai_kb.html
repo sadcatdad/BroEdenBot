@@ -5,7 +5,7 @@
     <p class="eyebrow">Editable AI sources</p>
     <h1>AI Knowledge Base</h1>
   </div>
-  <a class="button" href="{{ url_for('ai_kb_new') }}">Add source</a>
+  {% if can('ai.manage') %}<a class="button" href="{{ url_for('ai_kb_new') }}">Add source</a>{% endif %}
 </div>
 <p class="muted">Public sources can be used by member-facing /ask responses. Staff-only sources are only available to staff tools like context summaries and rulecard drafting.</p>
 {% if message %}<div class="alert success">{{ message }}</div>{% endif %}
@@ -37,14 +37,14 @@
         <td>{{ source.chunk_count }}</td>
         <td>{{ source.updated_at }}</td>
         <td>
-          <div class="table-actions">
+          {% if can('ai.manage') %}<div class="table-actions">
             <a class="button secondary small" href="{{ url_for('ai_kb_edit', source_name=source.source_name) }}">Edit</a>
             <form method="post" action="{{ url_for('ai_kb_delete', source_name=source.source_name) }}">
               <input type="hidden" name="csrf" value="{{ csrf_token }}">
               <input type="hidden" name="confirm" value="{{ source.source_name }}">
               <button class="button danger small" type="submit">Delete</button>
             </form>
-          </div>
+          </div>{% else %}<span class="muted">View only</span>{% endif %}
         </td>
       </tr>
       {% else %}

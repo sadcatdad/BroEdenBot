@@ -15,7 +15,7 @@
     {% endif %}
   </div>
 </div>
-<p class="muted">Manage public and staff knowledge in one place. AI-enabled sources can be retrieved by AI tools according to their visibility; staff-only knowledge is never used for member-facing answers.</p>
+<p class="muted">{{ 'Manage' if can('knowledge.manage') else 'Browse' }} public and staff knowledge in one place. AI-enabled sources can be retrieved by AI tools according to their visibility; staff-only knowledge is never used for member-facing answers.</p>
 {% if message %}<div class="alert success">{{ message }}</div>{% endif %}
 {% if error %}<div class="alert error">{{ error }}</div>{% endif %}
 

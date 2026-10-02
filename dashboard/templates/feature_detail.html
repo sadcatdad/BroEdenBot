@@ -14,12 +14,12 @@
 {% if feature.key == 'advanced' %}<div class="settings-layout">{% include "_settings_nav.html" %}<div>{% endif %}
 {% if feature.missing_settings %}<div class="alert warning">Configuration is incomplete. Required values: {% for key in feature.missing_settings %}<code>{{ key }}</code>{{ ', ' if not loop.last else '' }}{% endfor %}.</div>{% endif %}
 
-{% if feature.dashboard_path and feature.dashboard_path != current_path %}
+{% if feature.dashboard_path and feature.dashboard_path != current_path and feature_dashboard_available %}
 <p><a class="button secondary" href="{{ feature.dashboard_path }}">Open operational dashboard</a></p>
 {% endif %}
 
-<form method="post" action="{{ save_url }}" data-settings-form>
-  <input type="hidden" name="csrf" value="{{ csrf_token }}">
+{% if settings_editable %}<form method="post" action="{{ save_url }}" data-settings-form>{% else %}<div class="read-only-settings">{% endif %}
+  {% if settings_editable %}<input type="hidden" name="csrf" value="{{ csrf_token }}">{% endif %}
   {% if not settings_editable %}<div class="alert warning">Your role can review these values but cannot change them.</div>{% endif %}
   <fieldset class="settings-fieldset" {{ 'disabled' if not settings_editable else '' }}>
     {% include "_setting_fields.html" %}
@@ -30,7 +30,7 @@
     <div class="action-buttons"><button class="button secondary" type="button" data-discard-settings>Discard</button><button class="button" type="submit" data-save-settings disabled>Save changes</button></div>
   </div>
   {% endif %}
-</form>
+{% if settings_editable %}</form>{% else %}</div>{% endif %}
 {% if feature.key == 'advanced' %}</div></div>{% endif %}
 <script src="{{ url_for('static', path='settings_message_editor.js') }}?v=message-editor1" defer></script>
 <script src="{{ url_for('static', path='settings_form.js') }}?v=settings-form1" defer></script>

@@ -31,7 +31,7 @@
         <td>
           <div class="table-actions">
             <a class="button secondary small" href="{{ url_for('stats_detail', stat_id=stat.stat_id) }}">View</a>
-            {% if stat.editable %}<a class="button secondary small" href="{{ url_for('stats_edit', stat_id=stat.stat_id) }}">Edit</a>{% endif %}
+            {% if stat.editable and can('analytics.manage') %}<a class="button secondary small" href="{{ url_for('stats_edit', stat_id=stat.stat_id) }}">Edit</a>{% endif %}
             <a class="button secondary small" href="{{ url_for('stats_export', stat_id=stat.stat_id) }}">CSV</a>
           </div>
         </td>

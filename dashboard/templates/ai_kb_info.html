@@ -5,7 +5,7 @@
     <p class="eyebrow">AI retrieval</p>
     <h1>Connected Knowledge Sources</h1>
   </div>
-  <a class="button" href="{{ url_for('knowledge_page') }}">Manage Knowledge</a>
+  {% if can('knowledge.view') %}<a class="button secondary" href="{{ url_for('knowledge_page') }}">{{ 'Manage Knowledge' if can('knowledge.manage') else 'View Knowledge' }}</a>{% endif %}
 </div>
 <p class="muted">This page shows what the AI retrieval layer can use. Changes are made from the unified Knowledge tab.</p>
 

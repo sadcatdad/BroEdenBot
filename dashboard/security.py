@@ -17,6 +17,7 @@ LOGIN_ATTEMPTS = 5
 LOGIN_WINDOW_SECONDS = 300
 MAX_LOGIN_CLIENTS = 1024
 FORM_BODY_LIMIT = 1024 * 1024
+FORM_FIELD_LIMIT = 1000
 UPLOAD_BODY_LIMIT = 12 * 1024 * 1024
 DROP_BODY_LIMIT = 81 * 1024 * 1024  # Ten 8 MiB images plus form metadata.
 CONTENT_SECURITY_POLICY = "; ".join(
@@ -140,16 +141,25 @@ class DashboardSecurityMiddleware:
 
         received = 0
         exceeded = False
+        too_many_fields = False
+        urlencoded = headers.get("content-type", "").lower().startswith("application/x-www-form-urlencoded")
+        separators = 0
         rejected = False
 
         async def limited_receive():
-            nonlocal received, exceeded
+            nonlocal received, exceeded, too_many_fields, separators
             message = await receive()
             if message["type"] == "http.request":
-                received += len(message.get("body", b""))
+                body = message.get("body", b"")
+                received += len(body)
                 if received > limit:
                     exceeded = True
                     raise HTTPException(413, "Request body is too large.")
+                if urlencoded:
+                    separators += body.count(b"&")
+                    if received and separators >= FORM_FIELD_LIMIT:
+                        too_many_fields = True
+                        raise HTTPException(400, "Too many form fields.")
             return message
 
         async def limited_send(message):
@@ -159,6 +169,11 @@ class DashboardSecurityMiddleware:
                 if not rejected:
                     rejected = True
                     await reject(413, "Request body is too large.")
+                return
+            if too_many_fields:
+                if not rejected:
+                    rejected = True
+                    await reject(400, "Too many form fields.")
                 return
             await secure_send(message)
 

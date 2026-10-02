@@ -51,7 +51,7 @@
       <h2>VC XP Role-Pulse Readiness</h2>
     </div>
     <div class="action-buttons">
-      <a class="button secondary small" href="{{ url_for('feature_detail', feature_key='voice') }}">Open VC XP Settings</a>
+      {% if can('voice.view') %}<a class="button secondary small" href="{{ url_for('feature_detail', feature_key='voice') }}">Open VC XP Settings</a>{% endif %}
       {% if can('operations.manage') and vcxp.failed_24h %}
       <form method="post" action="{{ url_for('clear_failed_vcxp_pulses') }}" data-confirm="Clear all failed VC XP pulse records? Successful pulses and reward accounting will not be changed.">
         <input type="hidden" name="csrf" value="{{ csrf_token }}">

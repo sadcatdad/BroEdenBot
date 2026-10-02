@@ -4,7 +4,7 @@
   <div>
     <p class="eyebrow">Reusable Discord messages</p>
     <h1>Embed/Message Editor</h1>
-    <p class="muted">Create message and embed designs that bot features can send.</p>
+    <p class="muted">{{ 'Create and manage' if can('message_studio.manage') else 'Browse' }} message and embed designs that bot features can send.</p>
   </div>
   {% if can('message_studio.manage') %}
   <details class="create-asset-menu">

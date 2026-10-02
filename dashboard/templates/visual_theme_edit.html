@@ -5,11 +5,9 @@
 {% include "_visual_nav.html" %}
 {% if error %}<div class="alert error">{{ error }}</div>{% endif %}
 <section class="card">
-  <form method="post" action="{{ url_for('visual_theme_save') }}" class="stack">
-    <input type="hidden" name="csrf" value="{{ csrf_token }}">
-    {% if theme %}<input type="hidden" name="theme_id" value="{{ theme.id }}">{% endif %}
+  {% if can('visual.manage') %}<form method="post" action="{{ url_for('visual_theme_save') }}" class="stack"><input type="hidden" name="csrf" value="{{ csrf_token }}">{% if theme %}<input type="hidden" name="theme_id" value="{{ theme.id }}">{% endif %}{% else %}<div class="stack"><p class="muted">Your role can review this theme but cannot change it.</p>{% endif %}
     {% if theme and theme.is_builtin %}<div class="alert warning">The built-in production theme is read-only. Duplicate it from the Themes page to create an editable copy.</div>{% endif %}
-    <fieldset {{ 'disabled' if theme and theme.is_builtin else '' }} class="stack">
+    <fieldset {{ 'disabled' if not can('visual.manage') or (theme and theme.is_builtin) else '' }} class="stack">
     <label>Name<input name="name" maxlength="80" required value="{{ theme.name if theme else '' }}"></label>
     <label>Description<textarea name="description" maxlength="300" rows="3">{{ theme.description if theme else '' }}</textarea></label>
     <div class="form-grid">
@@ -29,6 +27,6 @@
     <p class="muted">Supported values include colors, bundled fonts, panel styling, typography sizes, avatar style, background effects, footer settings, and accessibility flags. Invalid or unsupported values are rejected.</p>
     {% if can('visual.manage') and not (theme and theme.is_builtin) %}<button class="button" type="submit">Save theme</button>{% endif %}
     </fieldset>
-  </form>
+  {% if can('visual.manage') %}</form>{% else %}</div>{% endif %}
 </section>
 {% endblock %}

@@ -458,8 +458,12 @@ def required_permission(path: str, method: str) -> str | None:
     if path.startswith("/bank"):
         return "bank.manage" if normalized_method != "GET" else "bank.view"
     if path.startswith("/embeds"):
+        if normalized_method == "GET" and path == "/embeds/new":
+            return "message_studio.manage"
         return "message_studio.manage" if normalized_method != "GET" else "message_studio.view"
     if path.startswith("/visual") or path.startswith("/api/visual"):
+        if normalized_method == "GET" and path in {"/visual/assets/upload", "/visual/themes/new"}:
+            return "visual.manage"
         return "visual.manage" if normalized_method != "GET" else "visual.view"
     if path.startswith("/knowledge"):
         return "knowledge.manage" if normalized_method != "GET" or path.endswith("/edit") else "knowledge.view"
@@ -592,10 +596,11 @@ def template_context(request: Request, **values: Any) -> dict[str, Any]:
         ) if has_permission(request, permission)
     ) if is_authenticated(request) else []
     dashboard_view_available = bool(
-        {"dashboard.view", "brofiles.manage"} & set(permissions)
+        (DASHBOARD_LANDING_PAGES.keys() | FEATURE_ONLY_LANDING_PAGES.keys())
+        & set(permissions)
     )
     member_view_available = bool(
-        {"events.view", "brofiles.view"} & set(permissions)
+        {"events.view", "brofiles.view", "brofiles.edit"} & set(permissions)
     )
     requested_view = str(request.session.get("garden_view_mode") or "").casefold()
     if (
@@ -621,6 +626,13 @@ def template_context(request: Request, **values: Any) -> dict[str, Any]:
         "view_mode": view_mode,
         "dashboard_view_available": dashboard_view_available,
         "member_view_available": member_view_available,
+        "dashboard_home_url": dashboard_landing_url(request),
+        "feature_shortcuts": [
+            feature for feature in FEATURES_BY_KEY.values()
+            if feature.permission in permissions
+            and feature.permission in FEATURE_ONLY_LANDING_PAGES
+            and "features.view" not in permissions
+        ],
         "ai_dashboard_visible": ai_dashboard_visible(),
         "csrf_token": csrf_token(request),
         "canonical_url": canonical_dashboard_url(request),
@@ -683,14 +695,54 @@ def login_response(
     )
 
 
+DashboardLandingPages = dict[str, str]
+DASHBOARD_LANDING_PAGES: DashboardLandingPages = {
+    "dashboard.view": "home",
+    "analytics.view": "analytics_page",
+    "features.view": "features_page",
+    "streaks.view": "streaks_page",
+    "brofiles.manage": "brofile_management",
+    "operations.view": "operations_page",
+    "reminders.view": "reminders_page",
+    "visual.view": "visual_templates",
+    "message_studio.view": "embed_templates",
+    "knowledge.view": "knowledge_page",
+    "ai.view": "ai_page",
+    "bank.view": "bank",
+    "settings.view": "settings",
+    "discord_metadata.view": "settings_discord",
+    "imports.view": "imports",
+    "access.manage": "settings_access",
+    "audit_log.view": "settings_audit",
+    "event_drops.manage": "event_drops_list",
+}
+FEATURE_ONLY_LANDING_PAGES = {
+    feature.permission: feature.key
+    for feature in FEATURES_BY_KEY.values()
+    if feature.dashboard_path and feature.dashboard_path.startswith("/features/")
+}
+
+
+def dashboard_landing_url(request: Request) -> Any:
+    for permission, route_name in DASHBOARD_LANDING_PAGES.items():
+        if has_permission(request, permission):
+            return request.url_for(route_name)
+    for permission, feature_key in FEATURE_ONLY_LANDING_PAGES.items():
+        if has_permission(request, permission):
+            return request.url_for("feature_detail", feature_key=feature_key)
+    return None
+
+
 def authenticated_landing_url(request: Request) -> Any:
-    if has_permission(request, "dashboard.view"):
-        return request.url_for("home")
-    if has_permission(request, "brofiles.manage"):
-        return request.url_for("brofile_management")
+    if destination := dashboard_landing_url(request):
+        return destination
     if has_permission(request, "events.view"):
         return request.url_for("events_page")
-    return request.url_for("my_brofile_page")
+    if has_permission(request, "brofiles.edit"):
+        return request.url_for("my_brofile_page")
+    if has_permission(request, "brofiles.view"):
+        return request.url_for("brofile_directory")
+    return request.url_for("login_page")
 
 
 @app.get("/login", response_class=HTMLResponse, name="login_page")
@@ -906,26 +958,20 @@ async def set_view_mode(request: Request) -> RedirectResponse:
         if not (
             has_permission(request, "events.view")
             or has_permission(request, "brofiles.view")
+            or has_permission(request, "brofiles.edit")
         ):
             raise HTTPException(status_code=403, detail="Member view is unavailable.")
         request.session["garden_view_mode"] = "member"
         destination = (
             request.url_for("events_page")
             if has_permission(request, "events.view")
-            else request.url_for("my_brofile_page")
+            else (request.url_for("my_brofile_page") if has_permission(request, "brofiles.edit") else request.url_for("brofile_directory"))
         )
     elif mode == "dashboard":
-        if not (
-            has_permission(request, "dashboard.view")
-            or has_permission(request, "brofiles.manage")
-        ):
+        destination = dashboard_landing_url(request)
+        if destination is None:
             raise HTTPException(status_code=403, detail="Dashboard view is unavailable.")
         request.session["garden_view_mode"] = "dashboard"
-        destination = (
-            request.url_for("home")
-            if has_permission(request, "dashboard.view")
-            else request.url_for("brofile_management")
-        )
     else:
         raise HTTPException(status_code=400, detail="Unknown Garden view.")
     return RedirectResponse(
@@ -1039,7 +1085,10 @@ def _event_manage_allowed(request: Request, event: dict[str, Any]) -> bool:
     user, discord_user_id = _events_user(request)
     return bool(
         has_permission(request, "events.edit_all")
-        or event_is_owned_by(event, user.get("id"), discord_user_id)
+        or (
+            has_permission(request, "events.edit_own")
+            and event_is_owned_by(event, user.get("id"), discord_user_id)
+        )
     )
 
 
@@ -3759,6 +3808,10 @@ async def feature_detail(request: Request, feature_key: str) -> HTMLResponse:
             request,
             page_title=definition.name,
             feature=feature_snapshot(definition),
+            feature_dashboard_available=bool(
+                not definition.dashboard_path
+                or has_permission(request, required_permission(urlsplit(definition.dashboard_path).path, "GET") or "")
+            ),
             feature_settings=settings_for_feature(feature_key),
             save_url=request.url_for("feature_settings_save", feature_key=feature_key),
             settings_editable=has_permission(request, "features.manage"),

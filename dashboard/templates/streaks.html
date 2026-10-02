@@ -6,7 +6,7 @@
     <h1>Streaks</h1>
     <p class="muted">Review source days, repair individual records, and recover qualifying messages after bot downtime.</p>
   </div>
-  <a class="button secondary" href="{{ url_for('settings_features') }}#streaks">Configure Streaks</a>
+  {% if can('settings.view') %}<a class="button secondary" href="{{ url_for('settings_features') }}#streaks">Configure Streaks</a>{% endif %}
 </div>
 
 {% if message %}<div class="alert success">{{ message }}</div>{% endif %}

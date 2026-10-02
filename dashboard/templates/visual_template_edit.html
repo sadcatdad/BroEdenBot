@@ -24,8 +24,10 @@
       </div>
     </section>
 
-    <form method="post" action="{{ url_for('visual_template_save_draft', template_key=visual_template.template_key) }}" class="stack">
-      <input type="hidden" name="csrf" value="{{ csrf_token }}">
+    {% if can('visual.manage') %}<form method="post" action="{{ url_for('visual_template_save_draft', template_key=visual_template.template_key) }}" class="stack">{% else %}<div class="stack">{% endif %}
+      {% if can('visual.manage') %}<input type="hidden" name="csrf" value="{{ csrf_token }}">{% endif %}
+      {% if not can('visual.manage') %}<p class="muted">Your role can review this design but cannot change it.</p>{% endif %}
+      <fieldset class="viewer-fields" {{ 'disabled' if not can('visual.manage') else '' }}>
       <section class="card">
         <p class="eyebrow">Inheritance</p><h2>Theme and content</h2>
         <label>Theme
@@ -52,7 +54,7 @@
           <label>Select {{ slot.label }}
             <select name="asset_{{ slot.key }}"><option value="">Inherit or use legacy default</option>{% for asset in assets if not asset.archived_at and asset.asset_type in [slot.asset_type, 'other'] %}<option value="{{ asset.id }}" {{ 'selected' if s.assets and s.assets.get(slot.key) == asset.id else '' }}>#{{ asset.id }} · {{ asset.name }} ({{ asset.width }}×{{ asset.height }})</option>{% endfor %}</select>
           </label>
-          <a class="button secondary small" href="{{ url_for('visual_asset_upload') }}?template_key={{ visual_template.template_key }}&slot_key={{ slot.key }}">Upload for this slot</a>
+          {% if can('visual.manage') %}<a class="button secondary small" href="{{ url_for('visual_asset_upload') }}?template_key={{ visual_template.template_key }}&slot_key={{ slot.key }}">Upload for this slot</a>{% endif %}
         </div>
         {% endfor %}
         {% if 'background_fit' in visual_template.supported_settings %}<label>Fit mode <select name="background_fit">{% for value in ['cover','contain','stretch','tile'] %}<option value="{{ value }}" {{ 'selected' if (s.background_fit or 'cover') == value else '' }}>{{ value|title }}</option>{% endfor %}</select></label>{% endif %}
@@ -78,8 +80,9 @@
         </div>
         <details><summary>Advanced renderer settings JSON</summary><p class="muted">Only registered settings are accepted. Server-side validation rejects unsupported keys and unsafe ranges.</p><textarea name="settings_json" rows="12">{{ s|tojson(indent=2) }}</textarea></details>
       </section>
+      </fieldset>
       {% if can('visual.manage') %}<div class="sticky-actions"><button class="button" type="submit">Save draft</button><span class="muted">Saving never changes live bot output.</span></div>{% endif %}
-    </form>
+    {% if can('visual.manage') %}</form>{% else %}</div>{% endif %}
   </div>
 
   <aside class="stack visual-editor-sidebar">

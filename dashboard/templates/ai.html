@@ -57,7 +57,7 @@
       <p class="eyebrow">Member feedback</p>
       <h2>Recent /ask Feedback</h2>
     </div>
-    <a class="button secondary" href="{{ url_for('knowledge_page') }}">Manage Knowledge</a>
+    {% if can('knowledge.view') %}<a class="button secondary" href="{{ url_for('knowledge_page') }}">View Knowledge</a>{% endif %}
   </div>
   <div class="table-wrap">
     <table>

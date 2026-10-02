@@ -4,8 +4,8 @@
   <div>
     <p class="eyebrow">Read-only ledger</p>
     <h1>Bank Overview</h1>
+    <p class="muted">Contribution and transaction totals from the bank ledger.</p>
   </div>
-  <p class="path">{{ bank.database.path }}</p>
 </div>
 
 {% if bank.error %}
@@ -13,7 +13,7 @@
 {% elif not bank.tables_found %}
 <div class="empty-state">No bank tables found yet.</div>
 {% else %}
-<section class="card-grid three">
+<section class="card-grid three bank-metrics">
   <article class="card"><p class="label">Balance</p><p class="metric">${{ "%.2f"|format(bank.totals.balance) }}</p></article>
   <article class="card"><p class="label">Contributions</p><p class="metric">${{ "%.2f"|format(bank.totals.contributions) }}</p></article>
   <article class="card"><p class="label">Expenses</p><p class="metric">${{ "%.2f"|format(bank.totals.expenses) }}</p></article>

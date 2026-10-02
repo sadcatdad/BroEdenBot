@@ -11,7 +11,7 @@ from fastapi.testclient import TestClient
 
 from dashboard.app import app, required_permission
 from dashboard.features import FEATURES_BY_KEY, feature_snapshot
-from dashboard.rbac import initialize_rbac_schema, list_roles
+from dashboard.rbac import initialize_rbac_schema, list_roles, permissions_for_user, set_user_permission_override
 from dashboard.users import hash_password, initialize_dashboard_users
 from utils.settings import initialize_settings_from_env
 from utils.settings import get_setting
@@ -194,7 +194,7 @@ class DashboardFeatureAccessTests(unittest.TestCase):
         self.login("owner", "owner-password")
         dashboard = self.client.get("/events")
         self.assertIn("<span>Overview</span>", dashboard.text)
-        self.assertIn("<span>Member View</span>", dashboard.text)
+        self.assertIn("<span>Switch to Member View</span>", dashboard.text)
         token = re.search(
             r'name="csrf" value="([^"]+)"',
             dashboard.text,
@@ -207,7 +207,7 @@ class DashboardFeatureAccessTests(unittest.TestCase):
         self.assertEqual(switched.status_code, 303)
         self.assertTrue(switched.headers["location"].endswith("/events"))
         member = self.client.get("/events")
-        self.assertIn("<span>Dashboard</span>", member.text)
+        self.assertIn("<span>Switch to Admin Dashboard</span>", member.text)
         self.assertIn("My <span class=\"bro-mark\">BRO</span>file", member.text)
         self.assertNotIn("<span>Overview</span>", member.text)
         self.assertNotIn("<span>Analytics</span>", member.text)
@@ -227,6 +227,60 @@ class DashboardFeatureAccessTests(unittest.TestCase):
         )
         self.assertEqual(restored.status_code, 303)
         self.assertEqual(restored.headers["location"], "http://testserver/")
+
+    def test_single_section_role_lands_on_its_authorized_dashboard_page(self):
+        self.add_password_user("reminder-auditor", "auditor-password", "viewer")
+        with sqlite3.connect(self.database) as connection:
+            user_id = connection.execute(
+                "SELECT id FROM dashboard_users WHERE username = 'reminder-auditor'"
+            ).fetchone()[0]
+        for permission in (
+            "dashboard.view", "analytics.view", "bot.status.view",
+            "events.view", "events.subscribe", "brofiles.view", "brofiles.edit",
+        ):
+            set_user_permission_override(user_id, permission, "deny", changed_by="test")
+        set_user_permission_override(user_id, "reminders.view", "allow", changed_by="test")
+        self.login("reminder-auditor", "auditor-password")
+        response = self.client.get("/login", follow_redirects=False)
+        self.assertEqual(response.headers["location"], "http://testserver/operations/reminders")
+        page = self.client.get("/operations/reminders")
+        self.assertEqual(page.status_code, 200)
+        self.assertIn("<span>Reminders</span>", page.text)
+        self.assertNotIn("Back to operations", page.text)
+        self.assertNotIn("<span>Overview</span>", page.text)
+        self.assertNotIn("Switch to Member View", page.text)
+
+    def test_isolated_feature_and_system_views_have_a_usable_landing(self):
+        for index, (permission, path, nav_label) in enumerate((
+            ("voice.view", "/features/voice", "Voice Stats &amp; XP"),
+            ("visual.view", "/visual", "Visual Content Studio"),
+            ("message_studio.view", "/embeds", "Message Studio"),
+            ("discord_metadata.view", "/settings/discord", "Discord Connection"),
+            ("imports.view", "/settings/imports", "Data &amp; Storage"),
+        )):
+            with self.subTest(permission=permission):
+                username = "isolated-{}".format(index)
+                self.add_password_user(username, "auditor-password", "viewer")
+                with sqlite3.connect(self.database) as connection:
+                    user_id = connection.execute(
+                        "SELECT id FROM dashboard_users WHERE username = ?", (username,)
+                    ).fetchone()[0]
+                for inherited in permissions_for_user(user_id):
+                    set_user_permission_override(user_id, inherited, "deny", changed_by="test")
+                set_user_permission_override(user_id, permission, "allow", changed_by="test")
+                self.client.cookies.clear()
+                self.login(username, "auditor-password")
+                landing = self.client.get("/login", follow_redirects=False)
+                self.assertEqual(landing.headers["location"], "http://testserver" + path)
+                page = self.client.get(path)
+                self.assertEqual(page.status_code, 200)
+                self.assertIn(nav_label, page.text)
+                self.assertNotIn("<span>Overview</span>", page.text)
+                if permission == "visual.view":
+                    self.assertEqual(self.client.get("/visual/themes/new").status_code, 403)
+                    self.assertEqual(self.client.get("/visual/assets/upload").status_code, 403)
+                if permission == "message_studio.view":
+                    self.assertEqual(self.client.get("/embeds/new").status_code, 403)
 
     def test_administrator_access_page_can_edit_only_lower_roles(self):
         self.add_password_user("administrator", "administrator-password", "admin")

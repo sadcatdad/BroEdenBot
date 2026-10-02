@@ -12,7 +12,7 @@
     <div class="split-heading"><h2>{{ theme.name }}</h2>{% if theme.is_default %}<span class="badge">Default</span>{% elif theme.archived_at %}<span class="badge">Archived</span>{% endif %}</div>
     <p>{{ theme.description }}</p><p class="muted">{{ theme.template_count }} templates · {{ theme.asset_count }} assets{% if theme.is_builtin %} · Built in/read-only{% endif %}</p>
     <div class="action-buttons">
-      <a class="button secondary" href="{{ url_for('visual_theme_edit', theme_id=theme.id) }}">{{ 'View' if theme.is_builtin else 'Edit' }}</a>
+      <a class="button secondary" href="{{ url_for('visual_theme_edit', theme_id=theme.id) }}">{{ 'Edit' if can('visual.manage') and not theme.is_builtin else 'View' }}</a>
       {% if can('visual.manage') and not theme.archived_at %}<form method="post" action="{{ url_for('visual_theme_duplicate', theme_id=theme.id) }}"><input type="hidden" name="csrf" value="{{ csrf_token }}"><button class="button secondary">Duplicate</button></form>{% endif %}
       {% if can('visual.manage') and theme.archived_at %}
       <form method="post" action="{{ url_for('visual_theme_restore', theme_id=theme.id) }}"><input type="hidden" name="csrf" value="{{ csrf_token }}"><button class="button secondary">Restore</button></form>

@@ -1,19 +1,19 @@
 {% extends "base.html" %}
 {% block content %}
-<section class="events-heading" data-events-revision="{{ events_revision }}" data-events-state-url="{{ url_for('events_state') }}">
-  <div><p class="eyebrow">The Garden</p><h1>Events</h1><p class="muted">Gatherings from Discord, with reminder timing that belongs to you.</p></div>
-  {% if view_mode == 'dashboard' %}<div class="action-buttons">{% if can('features.manage') %}<a class="button secondary" href="{{ url_for('feature_detail', feature_key='events') }}">Event settings</a>{% endif %}{% if can_create %}<a class="button event-create-button" href="{{ url_for('events_new') }}">Create an event</a>{% endif %}</div>{% endif %}
+<section class="events-heading page-heading" data-events-revision="{{ events_revision }}" data-events-state-url="{{ url_for('events_state') }}">
+  <div><p class="eyebrow">Community / Events</p><h1>Events</h1><p class="muted">Gatherings from Discord, with reminders on your schedule.</p></div>
+  {% if view_mode == 'dashboard' %}<div class="action-buttons event-page-actions">{% if can('features.manage') %}<a class="button secondary" href="{{ url_for('feature_detail', feature_key='events') }}">Event settings</a>{% endif %}{% if can_create %}<a class="button event-create-button" href="{{ url_for('events_new') }}">Create event</a>{% endif %}</div>{% endif %}
 </section>
-{% if can('event_drops.manage') %}<nav class="action-buttons" aria-label="Events sections"><a class="button secondary" href="{{ url_for('event_drops_list') }}">Event Drops</a></nav>{% endif %}
+{% if view_mode == 'dashboard' and can('event_drops.manage') %}<nav class="event-section-nav" aria-label="Events sections"><span aria-current="page">Scheduled events</span><a href="{{ url_for('event_drops_list') }}">Event Drops</a></nav>{% endif %}
 {% if message %}<div class="notice success">{{ message }}</div>{% endif %}
 {% if error %}<div class="notice error">{{ error }}</div>{% endif %}
 {% if tracked_action %}<div class="notice" data-event-action-url="{{ url_for('events_action_status', action_id=tracked_action) }}">Checking event action #{{ tracked_action }}…</div>{% endif %}
 
 {% if next_event %}
-<section class="event-hero">
+<section class="event-hero {{ 'has-artwork' if next_event.image_url else '' }}">
   {% if next_event.image_url %}<img src="{{ next_event.image_url }}" alt="" loading="eager" referrerpolicy="no-referrer">{% endif %}
   <div class="event-hero-shade"></div>
-  <div class="event-hero-copy"><p class="eyebrow">Next gathering · {{ 'Text/Other' if next_event.entity_type == 'external' else (next_event.entity_type|title) }}</p><h2>{{ next_event.name }}</h2><p>{{ next_event.date_label }} · {{ next_event.time_label }} · {{ next_event.location }}</p><a class="button secondary" href="#event-{{ next_event.scheduled_event_id }}">See details</a></div>
+  <div class="event-hero-copy"><p class="eyebrow">Up next · {{ 'Text/Other' if next_event.entity_type == 'external' else (next_event.entity_type|title) }}</p><h2>{{ next_event.name }}</h2><p>{{ next_event.date_label }} · {{ next_event.time_label }}{% if next_event.location %} · {{ next_event.location }}{% endif %}</p><a class="button secondary" href="#event-{{ next_event.scheduled_event_id }}">View event</a></div>
 </section>
 {% else %}<section class="event-empty"><span aria-hidden="true">✦</span><h2>The next gathering is still taking shape</h2><p>When a Discord Scheduled Event is published, it will appear here automatically.</p></section>{% endif %}
 
@@ -22,7 +22,7 @@
 <section class="event-list {{ 'member-event-grid' if view_mode == 'member' else '' }}" aria-label="Upcoming events">
 {% for event in events %}
   {% if loop.changed(event.month_key) %}<h2 class="event-month">{{ event.month_label }}</h2>{% endif %}
-  <article class="event-card" id="event-{{ event.scheduled_event_id }}" data-event-type="{{ event.entity_type }}">
+  <article class="event-card {{ 'no-artwork' if not event.image_url else '' }}" id="event-{{ event.scheduled_event_id }}" data-event-type="{{ event.entity_type }}">
     {% if event.image_url %}<img class="event-cover" src="{{ event.image_url }}" alt="Cover artwork for {{ event.name }}" loading="lazy" referrerpolicy="no-referrer">{% else %}<div class="event-cover event-cover-fallback" aria-hidden="true"><span>BE</span></div>{% endif %}
     <div class="event-card-body">
       <div class="event-card-top"><div><span class="status-chip {{ event.status }}">{{ event.status|title }}</span>{% if event.is_recurring %}<span class="status-chip recurring">Recurring · Discord managed</span>{% endif %}<h3>{{ event.name }}</h3></div><span class="event-type">{{ 'Text/Other' if event.entity_type == 'external' else (event.entity_type|title) }}</span></div>
@@ -34,7 +34,7 @@
         {% else %}<form method="post" action="{{ url_for('events_subscribe', event_id=event.scheduled_event_id) }}"><input type="hidden" name="csrf" value="{{ csrf_token }}"><button class="button" type="submit">Quick subscribe</button></form>{% endif %}
       {% endif %}
       {% if view_mode == 'dashboard' and event.can_manage %}<a class="button secondary" href="{{ url_for('events_edit', event_id=event.scheduled_event_id) }}">Edit event</a>{% endif %}</div>
-      {% if event.subscribed %}<details class="event-reminder-settings"><summary>Customize reminders</summary><form method="post" action="{{ url_for('events_timing', event_id=event.scheduled_event_id) }}"><input type="hidden" name="csrf" value="{{ csrf_token }}"><fieldset><legend>Send me a DM</legend>{% for value, label in [(360, '6 hours before'), (60, '1 hour before'), (15, '15 minutes before'), (0, 'When it starts')] %}<label><input type="checkbox" name="timing" value="{{ value }}" {{ 'checked' if value in event.effective_offsets else '' }}> {{ label }}</label>{% endfor %}</fieldset><button class="button secondary" type="submit">Save timing</button></form></details>{% endif %}
+      {% if can('events.subscribe') and event.subscribed %}<details class="event-reminder-settings"><summary>Customize reminders</summary><form method="post" action="{{ url_for('events_timing', event_id=event.scheduled_event_id) }}"><input type="hidden" name="csrf" value="{{ csrf_token }}"><fieldset><legend>Send me a DM</legend>{% for value, label in [(360, '6 hours before'), (60, '1 hour before'), (15, '15 minutes before'), (0, 'When it starts')] %}<label><input type="checkbox" name="timing" value="{{ value }}" {{ 'checked' if value in event.effective_offsets else '' }}> {{ label }}</label>{% endfor %}</fieldset><button class="button secondary" type="submit">Save timing</button></form></details>{% endif %}
       {% if view_mode == 'dashboard' and event.can_manage %}<details class="event-cancel"><summary>Cancel this event</summary><p>This marks the Discord event as cancelled. History remains available.</p><form method="post" action="{{ url_for('events_cancel', event_id=event.scheduled_event_id) }}"><input type="hidden" name="csrf" value="{{ csrf_token }}"><label>Type CANCEL to confirm<input name="confirmation" autocomplete="off" required></label><button class="button danger" type="submit">Cancel event</button></form></details>{% endif %}
     </div>
   </article>

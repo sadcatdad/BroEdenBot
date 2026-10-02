@@ -34,8 +34,8 @@
   <div class="action-buttons">
     <a class="button secondary" href="{{ url_for('knowledge_page') }}">Back to Knowledge</a>
     <a class="button secondary" href="{{ url_for('knowledge_preview', doc_key=document.doc_key) }}">Preview</a>
-    {% if document.editable %}<a class="button" href="{{ url_for('knowledge_edit', doc_key=document.doc_key) }}">Edit</a>{% endif %}
-    {% if document.reindex_supported %}
+    {% if document.editable and can('knowledge.manage') %}<a class="button" href="{{ url_for('knowledge_edit', doc_key=document.doc_key) }}">Edit</a>{% endif %}
+    {% if document.reindex_supported and can('knowledge.manage') %}
     <form method="post" action="{{ url_for('knowledge_reindex', doc_key=document.doc_key) }}">
       <input type="hidden" name="csrf" value="{{ csrf_token }}">
       <button class="button" type="submit">Queue reindex</button>

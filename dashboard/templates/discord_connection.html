@@ -7,7 +7,7 @@
 {% if message %}<div class="alert success">{{ message }}</div>{% endif %}{% if error %}<div class="alert error">{{ error }}</div>{% endif %}
 {% if discord_metadata.status.last_error %}<div class="alert error"><strong>Metadata refresh failed.</strong> {{ discord_metadata.status.last_error }}</div>{% endif %}
 <section class="card settings-section">
-  <div class="section-heading"><div><p class="eyebrow">Connection status</p><h2>{{ 'Connected' if not discord_metadata.status.last_error else 'Needs attention' }}</h2></div>{% if can('discord_metadata.refresh') %}<form method="post" action="{{ url_for('refresh_discord_metadata') }}"><input type="hidden" name="csrf" value="{{ csrf_token }}"><button class="button secondary" type="submit">Refresh metadata</button></form>{% endif %}</div>
+  <div class="section-heading"><div><p class="eyebrow">Connection status</p><h2>{{ 'Needs attention' if discord_metadata.status.last_error else ('Synced' if discord_metadata.status.last_refreshed_at else 'Not synced') }}</h2></div>{% if can('discord_metadata.refresh') %}<form method="post" action="{{ url_for('refresh_discord_metadata') }}"><input type="hidden" name="csrf" value="{{ csrf_token }}"><button class="button secondary" type="submit">Refresh metadata</button></form>{% endif %}</div>
   <div class="card-grid compact-grid">
     <article class="card soft-card"><p class="label">Roles</p><p class="metric">{{ discord_metadata.status.roles_count or 0 }}</p></article>
     <article class="card soft-card"><p class="label">Channels</p><p class="metric">{{ discord_metadata.status.channels_count or 0 }}</p></article>
