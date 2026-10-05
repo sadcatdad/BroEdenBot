@@ -148,6 +148,13 @@ Members use `/drop` to see ongoing campaigns, time remaining, and the next drop
 in their Discord timezone, plus `/event score` and `/event leaderboard` for scores.
 Staff use `/drop-now campaign:`, `/drop-give campaign: user: points:` **or**
 `drop:` for a variant reward, and `/drop-remove campaign: user: points:`.
+Focus **campaign** to choose an active campaign by name without typing an ID.
+Paused campaigns are also offered for manual staff actions. The same named
+picker is available on `/eventdrop` commands and `/event score|leaderboard`;
+older `campaign_id` option labels are now **campaign**. Resume lists paused
+campaigns, and pause lists active/scheduled campaigns. Search by name to find
+completed campaigns for scores or status. The bot syncs these command changes
+with Discord on startup after deployment.
 Give/remove accept an optional `reason`. Configure **Send drops in Discord**,
 **Award drop points**, and **Remove drop points** separately through **Admin
 Dashboard → Access**, then map the Garden role to a Discord role. Current Discord

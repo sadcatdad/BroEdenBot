@@ -227,14 +227,27 @@ server, within their start/end dates. Scheduled and completed campaigns are
 unavailable. A variant award contributes to the campaign score without creating
 a drop/claim or affecting drop probabilities and dry-spell protection.
 
-- `/event score [campaign_id]`: ephemeral personal total and rank.
-- `/event leaderboard [campaign_id]`: public top 10 without member pings.
-- `/eventdrop status|drop|pause|resume [campaign_id]`: lightweight administration
+- `/event score [campaign]`: ephemeral personal total and rank.
+- `/event leaderboard [campaign]`: public top 10 without member pings.
+- `/eventdrop status|drop|pause|resume [campaign]`: lightweight administration
   for configured owners/admin roles or Discord administrators.
 
-The existing `/event` and `/eventdrop` commands default to the current active/paused campaign, or the most relevant
-historical/scheduled campaign when none is running. An ID selects a specific
-campaign in the same guild. All eligible humans can collect each live drop once;
+Every campaign option is a name-based autocomplete picker labelled **campaign**.
+Focus the field to see current campaigns without typing an ID, or type part of
+a name to filter the live list (up to 25 suggestions). Staff actions offer only
+currently running active/paused campaigns in this server. Pause offers
+active/scheduled campaigns; resume offers paused campaigns. Score, leaderboard,
+and status show ongoing campaigns first; search a completed campaign's name to
+view its results. Duplicate display names are disambiguated with IDs in the
+suggestion labels, but selection never requires typing an ID. Choose a suggestion
+to bind the campaign's identity; arbitrary unselected names produce a helpful
+error. Existing numeric IDs remain accepted for compatibility. Deploy/restart
+the bot to sync the updated slash-command definitions with Discord.
+
+The existing `/event` and `/eventdrop` commands still default to the current
+active/paused campaign when the option is omitted, or the most relevant
+historical/scheduled campaign when none is running.
+All eligible humans can collect each live drop once;
 there is no first-winner or global claimer cap. Successful and duplicate claim
 responses are ephemeral. Scores come from individual claims plus the signed
 staff-award/removal ledger. Claim counts still count actual claims only.

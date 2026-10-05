@@ -8,6 +8,8 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
+import discord
+
 from cogs.event_drops import EventDropsCog
 from dashboard import rbac
 from dashboard.users import initialize_dashboard_users
@@ -206,7 +208,7 @@ class CommandTests(unittest.IsolatedAsyncioTestCase):
         with patch.object(
             self.cog, "command_allowed", AsyncMock(return_value=True)
         ), patch.object(self.cog, "send_drop", AsyncMock()) as send:
-            await EventDropsCog.drop_now.callback(self.cog, i, self.c)
+            await EventDropsCog.drop_now.callback(self.cog, i, str(self.c))
         operation = self.s.operations(self.c)[0]
         send.assert_awaited_once_with(operation["drop_id"])
         self.assertEqual(
@@ -223,10 +225,10 @@ class CommandTests(unittest.IsolatedAsyncioTestCase):
             self.cog, "command_allowed", AsyncMock(return_value=True)
         ), patch("cogs.event_drops.publish_audit", AsyncMock()):
             await self.cog.adjust_command(
-                i, self.c, recipient, "give", 10, None, "For helping"
+                i, str(self.c), recipient, "give", 10, None, "For helping"
             )
             await self.cog.adjust_command(
-                i, self.c, recipient, "give", 10, None, "For helping"
+                i, str(self.c), recipient, "give", 10, None, "For helping"
             )
         public = [
             call
@@ -263,10 +265,114 @@ class CommandTests(unittest.IsolatedAsyncioTestCase):
         self.s.transition(foreign, "2", "start")
         with patch.object(self.cog, "command_allowed", AsyncMock(return_value=True)):
             choices = await self.cog.active_campaign_choices(i, "")
-            self.assertEqual([c.value for c in choices], [self.c])
+            self.assertEqual([c.value for c in choices], [str(self.c)])
+            self.assertIn("Discord test", choices[0].name)
+            self.assertNotIn(f"#{self.c}", choices[0].name)
             self.assertTrue(await self.cog.award_variant_choices(i, ""))
             i.namespace.campaign = foreign
             self.assertEqual(await self.cog.award_variant_choices(i, ""), [])
+
+    async def test_all_campaign_options_use_named_string_autocomplete(self):
+        commands = [
+            self.cog.drop_now,
+            self.cog.drop_give,
+            self.cog.drop_remove,
+            self.cog.score,
+            self.cog.leaderboard,
+            self.cog.admin_status,
+            self.cog.admin_drop,
+            self.cog.admin_pause,
+            self.cog.admin_resume,
+        ]
+        for command in commands:
+            parameter = next(
+                p for p in command.parameters if p.display_name == "campaign"
+            )
+            self.assertEqual(
+                parameter.type, discord.AppCommandOptionType.string, command.name
+            )
+            self.assertTrue(parameter.autocomplete, command.name)
+        self.assertEqual(
+            (await self.cog.selected_campaign(1, str(self.c)))["id"], self.c
+        )
+
+    async def test_picker_shows_available_campaigns_before_typing(self):
+        i = self.interaction()
+        i.command = SimpleNamespace(name="drop-now")
+        paused = self.s.save("1", "admin", dict(DEFAULTS, name="Paused Garden"), ["10"])
+        self.s.transition(paused, "1", "start")
+        self.s.transition(paused, "1", "pause")
+        for status in ("draft", "completed", "scheduled"):
+            c = self.s.save("1", "admin", dict(DEFAULTS, name=status), ["10"])
+            if status == "completed":
+                self.s.transition(c, "1", "start")
+                self.s.transition(c, "1", "end")
+            elif status == "scheduled":
+                self.s.execute(
+                    "UPDATE event_drop_campaigns SET status='scheduled',start_at=? WHERE id=?",
+                    (time.time() + 3600, c),
+                )
+        expired = self.s.save("1", "admin", dict(DEFAULTS, name="Expired"), ["10"])
+        self.s.transition(expired, "1", "start")
+        self.s.execute(
+            "UPDATE event_drop_campaigns SET end_at=? WHERE id=?",
+            (time.time() - 1, expired),
+        )
+        with patch.object(self.cog, "command_allowed", AsyncMock(return_value=True)):
+            choices = await self.cog.active_campaign_choices(i, "")
+            self.assertEqual({c.value for c in choices}, {str(self.c), str(paused)})
+            filtered = await self.cog.active_campaign_choices(i, "gArDeN")
+            self.assertEqual([c.value for c in filtered], [str(paused)])
+        with patch.object(self.cog, "command_allowed", AsyncMock(return_value=False)):
+            self.assertEqual(await self.cog.active_campaign_choices(i, ""), [])
+
+    async def test_legacy_pickers_and_historical_scores(self):
+        i = self.interaction()
+        paused = self.s.save("1", "admin", dict(DEFAULTS, name="Paused Garden"), ["10"])
+        self.s.transition(paused, "1", "start")
+        self.s.transition(paused, "1", "pause")
+        completed = self.s.save(
+            "1", "admin", dict(DEFAULTS, name="Last Festival"), ["10"]
+        )
+        self.s.transition(completed, "1", "start")
+        self.s.transition(completed, "1", "end")
+        with patch.object(self.cog, "bot_admin", return_value=True):
+            for command, expected in [
+                ("resume", [str(paused)]),
+                ("pause", [str(self.c)]),
+            ]:
+                i.command = SimpleNamespace(name=command)
+                self.assertEqual(
+                    [c.value for c in await self.cog.existing_campaign_choices(i, "")],
+                    expected,
+                )
+        with patch.object(self.cog, "bot_admin", return_value=False):
+            i.command = SimpleNamespace(name="resume")
+            self.assertEqual(await self.cog.existing_campaign_choices(i, ""), [])
+            i.command = SimpleNamespace(name="score")
+            self.assertEqual(
+                {c.value for c in await self.cog.existing_campaign_choices(i, "")},
+                {str(self.c), str(paused)},
+            )
+            self.assertEqual(
+                [
+                    c.value
+                    for c in await self.cog.existing_campaign_choices(i, "festival")
+                ],
+                [str(completed)],
+            )
+
+    async def test_unknown_campaign_text_does_not_award(self):
+        i = self.interaction()
+        recipient = SimpleNamespace(
+            id=55, bot=False, guild=SimpleNamespace(id=1), display_name="Recipient"
+        )
+        with patch.object(self.cog, "command_allowed", AsyncMock(return_value=True)):
+            await self.cog.adjust_command(
+                i, "unselected campaign", recipient, "give", 10, None, ""
+            )
+        self.assertEqual(self.s.operations(self.c), [])
+        self.assertIn("suggestions", i.followup.send.await_args.args[0])
 
 
 class LiveRoleTests(unittest.TestCase):

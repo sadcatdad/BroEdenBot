@@ -478,7 +478,9 @@ class EventDropsCog(commands.Cog):
 
     async def selected_campaign(self, guild_id, campaign_id=None):
         if campaign_id is not None:
-            return await self.call(self.service.campaign, campaign_id, guild_id)
+            return await self.call(
+                self.service.campaign, self.campaign_choice_id(campaign_id), guild_id
+            )
         campaigns = await self.call(self.service.campaigns, guild_id)
         if not campaigns:
             raise ValueError("No Event Drops campaigns are available.")
@@ -487,16 +489,24 @@ class EventDropsCog(commands.Cog):
         )
 
     @event.command(name="score", description="Privately see your Event Drops score")
+    @app_commands.rename(campaign_id="campaign")
+    @app_commands.describe(
+        campaign_id="Choose a campaign by name; omit for the current campaign"
+    )
     async def score(
-        self, interaction: discord.Interaction, campaign_id: Optional[int] = None
+        self, interaction: discord.Interaction, campaign_id: Optional[str] = None
     ):
         await self.show_scores(interaction, campaign_id, personal=True)
 
     @event.command(
         name="leaderboard", description="Show the top 10 Event Drops participants"
     )
+    @app_commands.rename(campaign_id="campaign")
+    @app_commands.describe(
+        campaign_id="Choose a campaign by name; omit for the current campaign"
+    )
     async def leaderboard(
-        self, interaction: discord.Interaction, campaign_id: Optional[int] = None
+        self, interaction: discord.Interaction, campaign_id: Optional[str] = None
     ):
         await self.show_scores(interaction, campaign_id, personal=False)
 
@@ -542,15 +552,28 @@ class EventDropsCog(commands.Cog):
         except ValueError as exc:
             await interaction.followup.send(str(exc), ephemeral=True)
 
+    @staticmethod
+    def bot_admin(user):
+        return (
+            is_configured_owner(user)
+            or user.guild_permissions.administrator
+            or any(r.id in configured_admin_role_ids() for r in user.roles)
+        )
+
+    @staticmethod
+    def campaign_choice_id(value):
+        raw = str(value).strip()
+        if not raw.isdecimal() or len(raw) > 19 or not 1 <= int(raw) <= 2**63 - 1:
+            raise ValueError(
+                "Choose a campaign from the suggestions in the campaign field."
+            )
+        return int(raw)
+
     async def command_allowed(self, interaction, action):
         user = interaction.user
         if not interaction.guild_id or user.bot:
             return False
-        if (
-            is_configured_owner(user)
-            or user.guild_permissions.administrator
-            or any(r.id in configured_admin_role_ids() for r in user.roles)
-        ):
+        if self.bot_admin(user):
             return True
         permissions = await self.call(
             permissions_for_discord_member, user.id, [r.id for r in user.roles]
@@ -621,11 +644,12 @@ class EventDropsCog(commands.Cog):
         description="Send a weighted random drop in a campaign's allowed channels",
     )
     @app_commands.guild_only()
-    @app_commands.describe(campaign="Select a running campaign")
-    async def drop_now(self, interaction: discord.Interaction, campaign: int):
+    @app_commands.describe(campaign="Choose a running campaign by name from the list")
+    async def drop_now(self, interaction: discord.Interaction, campaign: str):
         if not await self.require_command(interaction, "send"):
             return
         try:
+            campaign = self.campaign_choice_id(campaign)
             drop_id = await self.call(
                 self.service.queue_manual,
                 campaign,
@@ -657,7 +681,7 @@ class EventDropsCog(commands.Cog):
     )
     @app_commands.guild_only()
     @app_commands.describe(
-        campaign="Select a running campaign",
+        campaign="Choose a running campaign by name from the list",
         user="Member receiving the award",
         points="Exact points (choose points OR drop)",
         drop="Variant reward (choose drop OR points)",
@@ -666,7 +690,7 @@ class EventDropsCog(commands.Cog):
     async def drop_give(
         self,
         interaction: discord.Interaction,
-        campaign: int,
+        campaign: str,
         user: discord.Member,
         points: Optional[app_commands.Range[int, 1, 1000000]] = None,
         drop: Optional[int] = None,
@@ -682,7 +706,7 @@ class EventDropsCog(commands.Cog):
     )
     @app_commands.guild_only()
     @app_commands.describe(
-        campaign="Select a running campaign",
+        campaign="Choose a running campaign by name from the list",
         user="Member whose points will be removed",
         points="Positive number to remove; cannot exceed their balance",
         reason="Optional reason saved to campaign history",
@@ -690,7 +714,7 @@ class EventDropsCog(commands.Cog):
     async def drop_remove(
         self,
         interaction: discord.Interaction,
-        campaign: int,
+        campaign: str,
         user: discord.Member,
         points: app_commands.Range[int, 1, 1000000],
         reason: Optional[app_commands.Range[str, 1, 500]] = None,
@@ -705,6 +729,7 @@ class EventDropsCog(commands.Cog):
         if not await self.require_command(interaction, action):
             return
         try:
+            campaign = self.campaign_choice_id(campaign)
             if user.bot or user.guild.id != interaction.guild_id:
                 raise ValueError("Choose a human member of this server.")
             c = await self.call(self.service.campaign, campaign, interaction.guild_id)
@@ -780,17 +805,31 @@ class EventDropsCog(commands.Cog):
         )
         if not action or not await self.command_allowed(interaction, action):
             return []
+        return await self.campaign_choices(
+            interaction, current, {"active", "paused"}, available_now=True
+        )
+
+    async def campaign_choices(
+        self, interaction, current, statuses, available_now=False
+    ):
+        if not interaction.guild_id:
+            return []
         campaigns = await self.call(self.service.campaigns, interaction.guild_id)
+        query = str(current or "").strip().casefold()
+        labels = [f"{c['name'][:80]} · {c['status'].title()}" for c in campaigns]
         now = time.time()
         return [
             app_commands.Choice(
-                name=f"{c['name']} · {c['status']} · #{c['id']}"[:100], value=c["id"]
+                name=(
+                    f"{label[:70]} · #{c['id']}" if labels.count(label) > 1 else label
+                ),
+                value=str(c["id"]),
             )
-            for c in campaigns
-            if c["status"] in ("active", "paused")
-            and (not c["start_at"] or c["start_at"] <= now)
-            and (not c["end_at"] or c["end_at"] > now)
-            and (current.casefold() in c["name"].casefold() or current == str(c["id"]))
+            for c, label in zip(campaigns, labels)
+            if c["status"] in statuses
+            and (not available_now or not c["start_at"] or c["start_at"] <= now)
+            and (not available_now or not c["end_at"] or c["end_at"] > now)
+            and (query in c["name"].casefold() or query == str(c["id"]))
         ][:25]
 
     @drop_give.autocomplete("drop")
@@ -823,12 +862,7 @@ class EventDropsCog(commands.Cog):
 
     async def admin_action(self, interaction, action, campaign_id):
         user = interaction.user
-        admin = (
-            is_configured_owner(user)
-            or user.guild_permissions.administrator
-            or any(r.id in configured_admin_role_ids() for r in user.roles)
-        )
-        if not admin:
+        if not self.bot_admin(user):
             await interaction.response.send_message(
                 "A configured bot administrator is required.", ephemeral=True
             )
@@ -870,28 +904,71 @@ class EventDropsCog(commands.Cog):
             await interaction.followup.send(str(exc), ephemeral=True)
 
     @eventdrop.command(name="status", description="Inspect campaign scheduling")
+    @app_commands.rename(campaign_id="campaign")
+    @app_commands.describe(
+        campaign_id="Choose a campaign by name; omit for the current campaign"
+    )
     async def admin_status(
-        self, interaction: discord.Interaction, campaign_id: Optional[int] = None
+        self, interaction: discord.Interaction, campaign_id: Optional[str] = None
     ):
         await self.admin_action(interaction, "status", campaign_id)
 
     @eventdrop.command(name="drop", description="Queue one manual Event Drop")
+    @app_commands.rename(campaign_id="campaign")
+    @app_commands.describe(
+        campaign_id="Choose a running campaign by name; omit for the current campaign"
+    )
     async def admin_drop(
-        self, interaction: discord.Interaction, campaign_id: Optional[int] = None
+        self, interaction: discord.Interaction, campaign_id: Optional[str] = None
     ):
         await self.admin_action(interaction, "drop", campaign_id)
 
     @eventdrop.command(name="pause", description="Pause automatic Event Drops")
+    @app_commands.rename(campaign_id="campaign")
+    @app_commands.describe(campaign_id="Choose an active or scheduled campaign by name")
     async def admin_pause(
-        self, interaction: discord.Interaction, campaign_id: Optional[int] = None
+        self, interaction: discord.Interaction, campaign_id: Optional[str] = None
     ):
         await self.admin_action(interaction, "pause", campaign_id)
 
     @eventdrop.command(name="resume", description="Resume automatic Event Drops")
+    @app_commands.rename(campaign_id="campaign")
+    @app_commands.describe(campaign_id="Choose a paused campaign by name")
     async def admin_resume(
-        self, interaction: discord.Interaction, campaign_id: Optional[int] = None
+        self, interaction: discord.Interaction, campaign_id: Optional[str] = None
     ):
         await self.admin_action(interaction, "resume", campaign_id)
+
+    @score.autocomplete("campaign_id")
+    @leaderboard.autocomplete("campaign_id")
+    @admin_status.autocomplete("campaign_id")
+    @admin_drop.autocomplete("campaign_id")
+    @admin_pause.autocomplete("campaign_id")
+    @admin_resume.autocomplete("campaign_id")
+    async def existing_campaign_choices(
+        self, interaction: discord.Interaction, current: str
+    ):
+        if not interaction.guild_id or interaction.user.bot:
+            return []
+        name = interaction.command.name
+        if name not in ("score", "leaderboard") and not self.bot_admin(
+            interaction.user
+        ):
+            return []
+        statuses = {"active", "paused", "scheduled"}
+        if name == "drop":
+            statuses = {"active", "paused"}
+        elif name == "pause":
+            statuses = {"active", "scheduled"}
+        elif name == "resume":
+            statuses = {"paused"}
+        elif current:
+            # Keep completed results/status discoverable by name, while the
+            # empty picker prioritizes ongoing campaigns.
+            statuses.add("completed")
+        return await self.campaign_choices(
+            interaction, current, statuses, available_now=name == "drop"
+        )
 
 
 async def setup(bot):
