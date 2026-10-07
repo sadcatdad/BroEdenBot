@@ -113,6 +113,7 @@ class StaffNotes(commands.Cog):
     ) -> None:
         if await self._deny_if_unauthorised(interaction):
             return
+        await interaction.response.defer(ephemeral=True, thinking=True)
 
         created_at = discord.utils.utcnow().isoformat()
         try:
@@ -143,13 +144,13 @@ class StaffNotes(commands.Cog):
             await cursor.close()
         except Exception as exc:
             self._log_database_error("add", exc)
-            await interaction.response.send_message(
+            await interaction.followup.send(
                 "The staff note could not be saved. Please try again later.",
                 ephemeral=True,
             )
             return
 
-        await interaction.response.send_message(
+        await interaction.followup.send(
             f"Staff note #{note_id} was added for {user.mention}.",
             ephemeral=True,
         )
@@ -214,6 +215,7 @@ class StaffNotes(commands.Cog):
                 ephemeral=True,
             )
             return
+        await interaction.response.defer(ephemeral=True, thinking=True)
 
         updated_at = discord.utils.utcnow().isoformat()
         try:
@@ -233,19 +235,19 @@ class StaffNotes(commands.Cog):
             await self.bot.db.commit()
         except Exception as exc:
             self._log_database_error("delete", exc)
-            await interaction.response.send_message(
+            await interaction.followup.send(
                 "The staff note could not be deleted. Please try again later.",
                 ephemeral=True,
             )
             return
 
         if not changed:
-            await interaction.response.send_message(
+            await interaction.followup.send(
                 "No active staff note with that ID was found in this server.",
                 ephemeral=True,
             )
             return
-        await interaction.response.send_message(
+        await interaction.followup.send(
             f"Staff note #{note_id} was soft-deleted.",
             ephemeral=True,
         )
@@ -264,6 +266,7 @@ class StaffNotes(commands.Cog):
     ) -> None:
         if await self._deny_if_unauthorised(interaction):
             return
+        await interaction.response.defer(ephemeral=True, thinking=True)
 
         try:
             cursor = await self.bot.db.execute(
@@ -280,20 +283,20 @@ class StaffNotes(commands.Cog):
             await cursor.close()
         except Exception as exc:
             self._log_database_error("edit_lookup", exc)
-            await interaction.response.send_message(
+            await interaction.followup.send(
                 "The staff note could not be loaded. Please try again later.",
                 ephemeral=True,
             )
             return
 
         if row is None:
-            await interaction.response.send_message(
+            await interaction.followup.send(
                 "No active staff note with that ID was found in this server.",
                 ephemeral=True,
             )
             return
         if not self._is_administrator(interaction) and row[0] != interaction.user.id:
-            await interaction.response.send_message(
+            await interaction.followup.send(
                 "Only administrators or the original note author can edit this note.",
                 ephemeral=True,
             )
@@ -321,13 +324,13 @@ class StaffNotes(commands.Cog):
             await self.bot.db.commit()
         except Exception as exc:
             self._log_database_error("edit", exc)
-            await interaction.response.send_message(
+            await interaction.followup.send(
                 "The staff note could not be updated. Please try again later.",
                 ephemeral=True,
             )
             return
 
-        await interaction.response.send_message(
+        await interaction.followup.send(
             f"Staff note #{note_id} was updated.",
             ephemeral=True,
         )
@@ -345,6 +348,7 @@ class StaffNotes(commands.Cog):
     ) -> None:
         if await self._deny_if_unauthorised(interaction):
             return
+        await interaction.response.defer(ephemeral=True, thinking=True)
 
         try:
             count_cursor = await self.bot.db.execute(
@@ -375,7 +379,7 @@ class StaffNotes(commands.Cog):
             await notes_cursor.close()
         except Exception as exc:
             self._log_database_error("summary", exc)
-            await interaction.response.send_message(
+            await interaction.followup.send(
                 "The staff note summary could not be loaded. Please try again later.",
                 ephemeral=True,
             )
@@ -383,7 +387,7 @@ class StaffNotes(commands.Cog):
 
         note_count = count_row[0] if count_row else 0
         if not note_count:
-            await interaction.response.send_message(
+            await interaction.followup.send(
                 f"No active staff notes were found for {user.mention}.",
                 ephemeral=True,
             )
@@ -415,7 +419,7 @@ class StaffNotes(commands.Cog):
         embed.set_footer(
             text="Manual staff notes only. This summary does not use AI."
         )
-        await interaction.response.send_message(embed=embed, ephemeral=True)
+        await interaction.followup.send(embed=embed, ephemeral=True)
 
     @staticmethod
     def _build_note_embeds(

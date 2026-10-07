@@ -267,9 +267,10 @@ class KnowledgeSources(commands.Cog):
     ) -> None:
         if await self._deny_if_needed(interaction):
             return
+        await interaction.response.defer(ephemeral=True, thinking=True)
         db = self._db()
         if db is None or interaction.guild_id is None:
-            await interaction.response.send_message(
+            await interaction.followup.send(
                 "The shared database is not ready yet.",
                 ephemeral=True,
             )
@@ -285,7 +286,7 @@ class KnowledgeSources(commands.Cog):
             enabled=True,
         )
         await db.commit()
-        await interaction.response.send_message(
+        await interaction.followup.send(
             (
                 f"{channel.mention} is now a `{source_type.value}` knowledge source.\n"
                 f"Visibility: `{visibility.value}`\n"
@@ -303,16 +304,17 @@ class KnowledgeSources(commands.Cog):
     async def list_sources(self, interaction: discord.Interaction) -> None:
         if await self._deny_if_needed(interaction):
             return
+        await interaction.response.defer(ephemeral=True, thinking=True)
         db = self._db()
         if db is None or interaction.guild_id is None:
-            await interaction.response.send_message(
+            await interaction.followup.send(
                 "The shared database is not ready yet.",
                 ephemeral=True,
             )
             return
         rows = await list_knowledge_sources(db, guild_id=interaction.guild_id)
         if not rows:
-            await interaction.response.send_message(
+            await interaction.followup.send(
                 "No live knowledge sources are configured yet.",
                 ephemeral=True,
             )
@@ -337,7 +339,7 @@ class KnowledgeSources(commands.Cog):
                 )[:1024],
                 inline=False,
             )
-        await interaction.response.send_message(embed=embed, ephemeral=True)
+        await interaction.followup.send(embed=embed, ephemeral=True)
 
     @sources.command(name="remove", description="Remove a Discord knowledge source")
     @app_commands.describe(channel="Configured source channel to remove")
@@ -350,9 +352,10 @@ class KnowledgeSources(commands.Cog):
     ) -> None:
         if await self._deny_if_needed(interaction):
             return
+        await interaction.response.defer(ephemeral=True, thinking=True)
         db = self._db()
         if db is None or interaction.guild_id is None:
-            await interaction.response.send_message(
+            await interaction.followup.send(
                 "The shared database is not ready yet.",
                 ephemeral=True,
             )
@@ -363,7 +366,7 @@ class KnowledgeSources(commands.Cog):
             channel_id=channel.id,
         )
         await db.commit()
-        await interaction.response.send_message(
+        await interaction.followup.send(
             f"Removed {channel.mention} and {deleted_entries} indexed entries.",
             ephemeral=True,
             allowed_mentions=discord.AllowedMentions.none(),

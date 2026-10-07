@@ -2113,9 +2113,16 @@ Updates are validated as a group and stored as text in the shared `data.db`
 changes. Existing database values are never overwritten during environment
 seeding. The bot reads these safe values from SQLite first and falls back to
 `.env` only when a database row is missing.
-After a successful database read, the bot keeps an in-process copy of each
-setting so a temporary SQLite read error does not drop runtime behavior back to
-older `.env` values.
+Before loading commands, the bot loads all editable settings into an in-memory
+snapshot. A background worker refreshes it every two seconds; Discord handlers
+never open SQLite connections to read settings. Dashboard changes take effect
+after the next successful refresh. Temporary locks retain the last successful
+snapshot, including permission settings; deleted overrides return to the
+environment/default after refresh. Dashboard reads still query SQLite directly.
+Database-backed commands and profile/subscription buttons acknowledge Discord
+before loading their results. This avoids the three-second interaction deadline
+while SQLite or rendering work is still running. AI knowledge-base operations
+also run off the Discord event loop.
 
 Editable settings include `/ask` channels and cooldown, staff/owner permission
 IDs, voice/channel exclusions, bank access, VC XP role-pulse controls, and the

@@ -142,9 +142,10 @@ class VCStats(commands.Cog):
         guild: Optional[discord.Guild],
     ) -> set[int]:
         excluded = set(self.excluded_user_ids)
-        if guild and self.excluded_role_ids:
+        role_ids = self.excluded_role_ids
+        if guild and role_ids:
             for member in guild.members:
-                if self._member_excluded(member):
+                if member_is_excluded(member, user_ids=excluded, role_ids=role_ids):
                     excluded.add(member.id)
         return excluded
 
@@ -153,9 +154,10 @@ class VCStats(commands.Cog):
         guild: Optional[discord.Guild],
     ) -> set[int]:
         excluded = set(self.excluded_user_ids)
-        if guild and (self.excluded_role_ids or self.vcxp_excluded_role_ids):
+        role_ids = self.excluded_role_ids | self.vcxp_excluded_role_ids
+        if guild and role_ids:
             for member in guild.members:
-                if self._member_xp_excluded(member):
+                if member_is_excluded(member, user_ids=excluded, role_ids=role_ids):
                     excluded.add(member.id)
         return excluded
 

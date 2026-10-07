@@ -171,6 +171,7 @@ class Bank(commands.Cog):
     @bank.command(name="balance", description="Show the available bank balance")
     @app_commands.check(has_bank_access)
     async def balance(self, interaction: discord.Interaction):
+        await interaction.response.defer(ephemeral=True, thinking=True)
         totals = await self.get_totals()
         embed = branded_embed(
             "🏦 Bro Eden Bank Balance",
@@ -193,7 +194,7 @@ class Bank(commands.Cog):
             value=f"{totals['contributors']:,}",
             inline=True,
         )
-        await interaction.response.send_message(
+        await interaction.followup.send(
             embed=embed,
             ephemeral=True,
         )
@@ -203,6 +204,7 @@ class Bank(commands.Cog):
     )
     @app_commands.check(has_bank_access)
     async def leaderboard(self, interaction: discord.Interaction):
+        await interaction.response.defer(ephemeral=False, thinking=True)
         contributors = await self.get_top_contributors(limit=10)
         if contributors:
             lines = [
@@ -222,7 +224,7 @@ class Bank(commands.Cog):
             color=COLOR,
             footer="Bro Eden Bank • Public contributions",
         )
-        await interaction.response.send_message(embed=embed)
+        await interaction.followup.send(embed=embed)
 
     @bank.command(
         name="refresh", description="Create or update the public bank summary here"

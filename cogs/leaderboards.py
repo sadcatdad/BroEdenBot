@@ -903,6 +903,7 @@ class Leaderboards(commands.Cog):
     ) -> None:
         if not await self._require_owner(interaction):
             return
+        await interaction.response.defer(ephemeral=True, thinking=True)
         cursor = await self.bot.db.execute(
             """
             DELETE FROM leaderboard_role_milestones
@@ -933,7 +934,7 @@ class Leaderboards(commands.Cog):
                     "Existing role assignments were left unchanged."
                 ),
             )
-        await interaction.response.send_message(
+        await interaction.followup.send(
             embed=embed,
             ephemeral=True,
             allowed_mentions=discord.AllowedMentions.none(),
@@ -950,6 +951,7 @@ class Leaderboards(commands.Cog):
     ) -> None:
         if not await self._require_owner(interaction):
             return
+        await interaction.response.defer(ephemeral=True, thinking=True)
         rows = await self._milestone_rows(interaction.guild_id)
         if not rows:
             description = "No leaderboard role milestones are configured."
@@ -965,7 +967,7 @@ class Leaderboards(commands.Cog):
             if len(rows) > 50:
                 lines.append(f"…and {len(rows) - 50} more rules.")
             description = "\n".join(lines)
-        await interaction.response.send_message(
+        await interaction.followup.send(
             embed=discord.Embed(
                 title="Leaderboard role milestones",
                 description=description[:4096],
@@ -1309,8 +1311,9 @@ class Leaderboards(commands.Cog):
         interaction: discord.Interaction,
         user: Optional[discord.Member] = None,
     ) -> None:
+        await interaction.response.defer(ephemeral=False, thinking=True)
         target = user or interaction.user
-        await interaction.response.send_message(
+        await interaction.followup.send(
             embed=await self._points_embed(target),
         )
 
@@ -1330,9 +1333,10 @@ class Leaderboards(commands.Cog):
     ) -> None:
         if not await self._require_score_staff(interaction):
             return
+        await interaction.response.defer(ephemeral=True, thinking=True)
         parsed_points = parse_points(points)
         if parsed_points is None:
-            await interaction.response.send_message(
+            await interaction.followup.send(
                 embed=error_embed(
                     "Invalid points",
                     "Enter a positive finite number greater than zero.",
@@ -1341,7 +1345,7 @@ class Leaderboards(commands.Cog):
             )
             return
         if user.bot:
-            await interaction.response.send_message(
+            await interaction.followup.send(
                 embed=error_embed(
                     "Bots are excluded",
                     "Points can only be assigned to community members.",
@@ -1350,7 +1354,7 @@ class Leaderboards(commands.Cog):
             )
             return
         if not await self._leaderboard_exists(leaderboard):
-            await interaction.response.send_message(
+            await interaction.followup.send(
                 embed=warning_embed(
                     "Leaderboard not found",
                     f"`{discord.utils.escape_markdown(leaderboard)}` does not exist.",
@@ -1379,7 +1383,7 @@ class Leaderboards(commands.Cog):
             if milestone_result["failed"]
             else ""
         )
-        await interaction.response.send_message(
+        await interaction.followup.send(
             embed=success_embed(
                 "Points added",
                 f"Added **{parsed_points:,}** to {user.mention} in "
@@ -1399,9 +1403,10 @@ class Leaderboards(commands.Cog):
     ) -> None:
         if not await self._require_score_staff(interaction):
             return
+        await interaction.response.defer(ephemeral=True, thinking=True)
         parsed_points = parse_points(points)
         if parsed_points is None:
-            await interaction.response.send_message(
+            await interaction.followup.send(
                 embed=error_embed(
                     "Invalid points",
                     "Enter a positive finite number greater than zero.",
@@ -1410,7 +1415,7 @@ class Leaderboards(commands.Cog):
             )
             return
         if user.bot:
-            await interaction.response.send_message(
+            await interaction.followup.send(
                 embed=error_embed(
                     "Bots are excluded",
                     "Points can only be removed from community members.",
@@ -1419,7 +1424,7 @@ class Leaderboards(commands.Cog):
             )
             return
         if not await self._leaderboard_exists(leaderboard):
-            await interaction.response.send_message(
+            await interaction.followup.send(
                 embed=warning_embed(
                     "Leaderboard not found",
                     f"`{discord.utils.escape_markdown(leaderboard)}` does not exist.",
@@ -1447,7 +1452,7 @@ class Leaderboards(commands.Cog):
             if milestone_result["failed"]
             else ""
         )
-        await interaction.response.send_message(
+        await interaction.followup.send(
             embed=success_embed(
                 "Points removed",
                 f"Removed **{parsed_points:,}** from {user.mention} in "
@@ -1645,15 +1650,15 @@ class Leaderboards(commands.Cog):
             or not parts[2].isdigit()
         ):
             return
+        await interaction.response.defer()
         name = await self._name_from_token(parts[3])
         if name is None:
-            await interaction.response.send_message(
+            await interaction.followup.send(
                 "This leaderboard is no longer available.",
                 ephemeral=True,
             )
             return
         page = int(parts[2]) + (1 if parts[1] == "next" else -1)
-        await interaction.response.defer()
         file, view = await self.get_leaderboard_banner(
             name,
             page,

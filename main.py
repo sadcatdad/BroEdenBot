@@ -1,4 +1,6 @@
+import asyncio
 import datetime
+from contextlib import suppress
 import logging
 import os
 import re
@@ -14,7 +16,13 @@ from config import COLOR, TOKEN
 from utils.ai_kb import initialize_ai_kb_schema_async
 from utils.ai_service import initialize_ai_usage_schema
 from utils.live_knowledge import initialize_live_knowledge_schema
-from utils.settings import initialize_settings_from_env, settings_database_path
+from utils.settings import (
+    clear_runtime_settings,
+    initialize_settings_from_env,
+    refresh_runtime_settings,
+    settings_database_path,
+    watch_runtime_settings,
+)
 from utils.sqlite import configure_connection
 from utils.ui import error_embed
 from utils.visual_studio import initialize_visual_studio_schema
@@ -127,9 +135,13 @@ class BotClient(commands.Bot):
         self.db = None
         self._ready_logged = False
         self.failed_extensions: dict[str, str] = {}
+        self._settings_task = None
 
     async def setup_hook(self):
         await self.load_data()
+        self._settings_task = asyncio.create_task(
+            watch_runtime_settings(), name="runtime-settings"
+        )
         await self.load_all_cogs()
         await self.tree.sync()
 
@@ -182,8 +194,10 @@ class BotClient(commands.Bot):
             )
 
     async def load_data(self):
-        initialize_settings_from_env()
-        initialize_visual_studio_schema()
+        await asyncio.to_thread(initialize_settings_from_env)
+        await refresh_runtime_settings()
+        logger.info("Runtime settings loaded; background refresh keeps Discord handlers off SQLite")
+        await asyncio.to_thread(initialize_visual_studio_schema)
         self.db = await aiosqlite.connect(settings_database_path())
         self.db.row_factory = aiosqlite.Row
         journal_mode = await configure_connection(
@@ -200,12 +214,18 @@ class BotClient(commands.Bot):
         await initialize_live_knowledge_schema(self.db)
 
     async def close(self):
+        if self._settings_task is not None:
+            self._settings_task.cancel()
+            with suppress(asyncio.CancelledError):
+                await self._settings_task
+            self._settings_task = None
         try:
             await super().close()
         finally:
             if self.db is not None:
                 await self.db.close()
                 self.db = None
+            clear_runtime_settings()
 
     def get_embed(self):
         embed = discord.Embed(color=COLOR)

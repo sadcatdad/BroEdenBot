@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import os
 import re
 import sqlite3
@@ -20,6 +21,49 @@ FORBIDDEN_KEY_PARTS = ("TOKEN", "API_KEY", "PASSWORD", "SECRET")
 SNOWFLAKE_RE = re.compile(r"^\d{17,20}$")
 _SETTING_CACHE: dict[tuple[str, str], str] = {}
 _SETTING_READ_WARNINGS: set[tuple[str, str, str]] = set()
+# Only the bot opts into snapshots. Dashboard/synchronous callers still read
+# current database values directly. Replace whole snapshots after a successful
+# read so deleted overrides disappear and failed refreshes retain known values.
+_RUNTIME_SETTINGS: dict[str, dict[str, str]] = {}
+
+
+async def refresh_runtime_settings() -> None:
+    """Load one complete bot snapshot off the Discord event loop."""
+    path = settings_database_path()
+
+    def read_snapshot() -> dict[str, str]:
+        with closing(
+            sqlite3.connect(f"{path.as_uri()}?mode=ro", uri=True, timeout=1)
+        ) as db:
+            return {
+                str(key): str(value)
+                for key, value in db.execute("SELECT key, value FROM bot_settings")
+                if key in DEFINITIONS_BY_KEY
+                and DEFINITIONS_BY_KEY[key].editable
+                and not is_forbidden_key(key)
+            }
+
+    snapshot = await asyncio.to_thread(read_snapshot)
+    _RUNTIME_SETTINGS[str(path)] = snapshot
+
+
+async def watch_runtime_settings() -> None:
+    failed = False
+    while True:
+        await asyncio.sleep(2)
+        try:
+            await refresh_runtime_settings()
+            failed = False
+        except sqlite3.Error:
+            if not failed:
+                logger.warning(
+                    "Runtime settings refresh failed; retaining last successful snapshot"
+                )
+            failed = True
+
+
+def clear_runtime_settings() -> None:
+    _RUNTIME_SETTINGS.pop(str(settings_database_path()), None)
 
 
 def _warn_setting_read_failure(
@@ -808,6 +852,11 @@ def get_setting(key: str, default: Optional[str] = None) -> Optional[str]:
     definition = DEFINITIONS_BY_KEY.get(key)
     if definition and definition.editable:
         cache_key = (str(settings_database_path()), key)
+        snapshot = _RUNTIME_SETTINGS.get(cache_key[0])
+        if snapshot is not None:
+            if key in snapshot:
+                return snapshot[key]
+            return os.getenv(key, definition.default or default)
         try:
             with closing(_connect(readonly=True)) as connection:
                 row = connection.execute(
@@ -989,6 +1038,9 @@ def set_setting(key: str, value: str, *, changed_by: str = "system") -> str:
         )
         connection.commit()
     _SETTING_CACHE[(str(settings_database_path()), key)] = normalized
+    snapshot = _RUNTIME_SETTINGS.get(str(settings_database_path()))
+    if snapshot is not None:
+        snapshot[key] = normalized
     return normalized
 
 
@@ -1036,6 +1088,9 @@ def set_settings(values: dict[str, str], *, changed_by: str = "system") -> dict[
     database_key = str(settings_database_path())
     for key, value in normalized_values.items():
         _SETTING_CACHE[(database_key, key)] = value
+    snapshot = _RUNTIME_SETTINGS.get(database_key)
+    if snapshot is not None:
+        snapshot.update(normalized_values)
     return changed
 
 

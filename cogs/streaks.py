@@ -884,10 +884,11 @@ class Streaks(commands.Cog):
                     ephemeral=True,
                 )
                 return
+            await interaction.response.defer(ephemeral=True, thinking=True)
             member_embed = await self._member_embed(guild.id, member)
             milestone = await self._unread_milestone(guild.id, member.id)
             if milestone is not None:
-                await interaction.response.send_message(
+                await interaction.followup.send(
                     embeds=[
                         await self._milestone_embed(guild.id, member, milestone),
                         member_embed,
@@ -896,7 +897,8 @@ class Streaks(commands.Cog):
                 )
                 await self._mark_milestones_seen(guild.id, member.id, milestone)
                 return
-            embed = member_embed
+            await interaction.followup.send(embed=member_embed, ephemeral=True)
+            return
         elif parts[1] == "leaderboard":
             await interaction.response.defer(ephemeral=True, thinking=True)
             file, view = await self._leaderboard_page(guild, "current")

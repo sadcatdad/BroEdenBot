@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from typing import Optional
 
 import discord
@@ -147,6 +148,7 @@ class AI(commands.Cog):
     async def status(self, interaction: discord.Interaction) -> None:
         if not await self._require_access(interaction):
             return
+        await interaction.response.defer(ephemeral=True, thinking=True)
         db = getattr(self.bot, "db", None)
         if db is not None:
             await initialize_ai_usage_schema(db)
@@ -176,7 +178,7 @@ class AI(commands.Cog):
             ),
             inline=False,
         )
-        await interaction.response.send_message(embed=embed, ephemeral=True)
+        await interaction.followup.send(embed=embed, ephemeral=True)
 
     @kb.command(name="import", description="Import or replace an AI KB source")
     @app_commands.describe(
@@ -234,7 +236,8 @@ class AI(commands.Cog):
                 return
             pieces.append(uploaded.strip())
         try:
-            result = upsert_kb_source(
+            result = await asyncio.to_thread(
+                upsert_kb_source,
                 source_name=source_name,
                 source_type=source_type.value,
                 visibility=visibility.value,
@@ -266,7 +269,8 @@ class AI(commands.Cog):
     async def kb_status(self, interaction: discord.Interaction) -> None:
         if not await self._require_access(interaction):
             return
-        status = get_kb_status()
+        await interaction.response.defer(ephemeral=True, thinking=True)
+        status = await asyncio.to_thread(get_kb_status)
         latest = status["latest_source"]
         by_type = "\n".join(
             f"`{row['source_type']}`: {row['chunk_count']}"
@@ -297,7 +301,7 @@ class AI(commands.Cog):
             ),
             inline=False,
         )
-        await interaction.response.send_message(embed=embed, ephemeral=True)
+        await interaction.followup.send(embed=embed, ephemeral=True)
 
     @kb.command(name="search", description="Search AI KB chunks")
     @app_commands.describe(
@@ -322,13 +326,15 @@ class AI(commands.Cog):
     ) -> None:
         if not await self._require_access(interaction):
             return
-        results = search_kb(
+        await interaction.response.defer(ephemeral=True, thinking=True)
+        results = await asyncio.to_thread(
+            search_kb,
             query=query,
             visibility=visibility.value if visibility else "all",
             limit=limit,
         )
         if not results:
-            await interaction.response.send_message(
+            await interaction.followup.send(
                 "No matching KB chunks found.",
                 ephemeral=True,
             )
@@ -341,7 +347,7 @@ class AI(commands.Cog):
                 f"`{item['source_type']}` `{item['source_visibility']}`\n"
                 f"{item['excerpt']}"
             )
-        await interaction.response.send_message(
+        await interaction.followup.send(
             embed=branded_embed(
                 "AI KB Search",
                 description="\n\n".join(lines)[:3900],
@@ -361,12 +367,13 @@ class AI(commands.Cog):
     ) -> None:
         if not await self._require_access(interaction):
             return
+        await interaction.response.defer(ephemeral=True, thinking=True)
         try:
-            deleted = delete_kb_source(source_name)
+            deleted = await asyncio.to_thread(delete_kb_source, source_name)
         except ValueError as exc:
-            await interaction.response.send_message(str(exc), ephemeral=True)
+            await interaction.followup.send(str(exc), ephemeral=True)
             return
-        await interaction.response.send_message(
+        await interaction.followup.send(
             f"Deleted `{source_name}` with **{deleted}** chunk(s).",
             ephemeral=True,
         )

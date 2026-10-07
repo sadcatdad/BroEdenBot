@@ -2015,7 +2015,7 @@ class ReminderCog(commands.Cog):
             return False
 
     async def handle_event_join(self, interaction: discord.Interaction, reminder_id: int) -> None:
-        await interaction.response.defer(ephemeral=True, thinking=True)
+        await self.defer_private(interaction, thinking=True)
         if not await self.ensure_remind_command_access(interaction, "subscriptions"):
             return
         event = await self.service.get_reminder(reminder_id)
@@ -2089,7 +2089,7 @@ class ReminderCog(commands.Cog):
         )
 
     async def unsubscribe_interaction(self, interaction: discord.Interaction, subscription_id: int) -> None:
-        await interaction.response.defer(ephemeral=True, thinking=True)
+        await self.defer_private(interaction, thinking=True)
         row = await self.subscription_detail(subscription_id, interaction.user.id)
         changed = await self.service.unsubscribe(subscription_id, interaction.user.id)
         if not changed:
@@ -2392,6 +2392,7 @@ class ReminderCog(commands.Cog):
         return view
 
     async def handle_subscription_join(self, interaction: discord.Interaction, post_id: int) -> None:
+        await self.defer_private(interaction, thinking=True)
         row = await self.service.fetch_one(
             "SELECT id FROM reminder_items WHERE legacy_source = 'reminder_subscription_posts' AND legacy_id = ?",
             (str(post_id),),
@@ -2399,6 +2400,7 @@ class ReminderCog(commands.Cog):
         await self.handle_event_join(interaction, int(row["id"]) if row else post_id)
 
     async def handle_subscription_cancel(self, interaction: discord.Interaction, subscriber_id: int) -> None:
+        await self.defer_private(interaction, thinking=True)
         row = await self.service.fetch_one(
             "SELECT id FROM reminder_subscriptions WHERE legacy_subscriber_id = ?",
             (str(subscriber_id),),
@@ -2427,11 +2429,12 @@ class ReminderCog(commands.Cog):
         elif parts[2] == "sub" and parts[3] == "cancel":
             await self.unsubscribe_interaction(interaction, record_id)
         elif parts[2] == "sub" and parts[3] == "timing":
+            await interaction.response.defer(ephemeral=True, thinking=True)
             row = await self.subscription_detail(record_id, interaction.user.id)
             if row is None:
-                await interaction.response.send_message("That active subscription was not found.", ephemeral=True)
+                await interaction.followup.send("That active subscription was not found.", ephemeral=True)
             else:
-                await interaction.response.send_message(
+                await interaction.followup.send(
                     "Choose one or more private DM timings.",
                     view=SubscriptionControlsView(self, interaction.user.id, record_id, row, include_select=True),
                     ephemeral=True,

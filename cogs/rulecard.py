@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import asyncio
 import logging
 import re
 from typing import Any, Optional, Union
@@ -70,6 +71,7 @@ class RulecardDraftView(discord.ui.View):
         self.embed = embed
         self.mention_content = mention_content
         self._posted = False
+        self._post_lock = asyncio.Lock()
 
     async def interaction_check(self, interaction: discord.Interaction) -> bool:
         if interaction.user.id == self.creator_id:
@@ -81,8 +83,13 @@ class RulecardDraftView(discord.ui.View):
         return False
 
     async def _post(self, interaction: discord.Interaction, *, with_mentions: bool) -> None:
+        await interaction.response.defer()
+        async with self._post_lock:
+            await self._post_once(interaction, with_mentions=with_mentions)
+
+    async def _post_once(self, interaction: discord.Interaction, *, with_mentions: bool) -> None:
         if self._posted:
-            await interaction.response.send_message("This draft was already posted.", ephemeral=True)
+            await interaction.followup.send("This draft was already posted.", ephemeral=True)
             return
         content = self.mention_content if with_mentions and self.mention_content else None
         try:
@@ -98,7 +105,7 @@ class RulecardDraftView(discord.ui.View):
             )
         except (discord.Forbidden, discord.HTTPException, AttributeError):
             logger.exception("Could not post AI rulecard draft")
-            await interaction.response.send_message(
+            await interaction.followup.send(
                 "I could not post that rule reminder. Check my channel permissions.",
                 ephemeral=True,
             )
@@ -106,7 +113,7 @@ class RulecardDraftView(discord.ui.View):
         self._posted = True
         for item in self.children:
             item.disabled = True
-        await interaction.response.edit_message(
+        await interaction.edit_original_response(
             content="Rule reminder posted.",
             view=self,
         )
@@ -194,7 +201,8 @@ class Rulecard(commands.Cog):
         selected_message: Optional[discord.Message] = None,
         source_message_link: str = "",
     ) -> None:
-        chunks = search_kb(
+        chunks = await asyncio.to_thread(
+            search_kb,
             query=topic,
             visibility="staff",
             limit=6,

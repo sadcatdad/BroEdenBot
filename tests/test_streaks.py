@@ -762,7 +762,8 @@ class StreakTests(unittest.IsolatedAsyncioTestCase):
             type=discord.InteractionType.component,
             data={"custom_id": "streakpanel|me|1"},
             user=member,
-            response=SimpleNamespace(send_message=AsyncMock()),
+            response=SimpleNamespace(send_message=AsyncMock(), defer=AsyncMock()),
+            followup=SimpleNamespace(send=AsyncMock()),
         )
         member_embed = SimpleNamespace(title="Member streak")
         milestone_embed = SimpleNamespace(title="Milestone")
@@ -773,7 +774,8 @@ class StreakTests(unittest.IsolatedAsyncioTestCase):
             patch.object(self.cog, "_mark_milestones_seen", new=AsyncMock()) as mark_seen,
         ):
             await self.cog.on_interaction(interaction)
-        interaction.response.send_message.assert_awaited_once_with(
+        interaction.response.defer.assert_awaited_once_with(ephemeral=True, thinking=True)
+        interaction.followup.send.assert_awaited_once_with(
             embeds=[milestone_embed, member_embed],
             ephemeral=True,
         )

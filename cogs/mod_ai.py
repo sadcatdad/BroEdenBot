@@ -1654,9 +1654,10 @@ the final decision. Do not quote sensitive notes unless strictly necessary.
         if await self._deny_if_unauthorised(interaction):
             return
 
-        results = search_knowledge(query)
+        await interaction.response.defer(ephemeral=True, thinking=True)
+        results = await asyncio.to_thread(search_knowledge, query)
         if not results:
-            await interaction.response.send_message(
+            await interaction.followup.send(
                 "No matching Bro Eden rule, guide, or staff-handbook sections were found.",
                 ephemeral=True,
             )
@@ -1676,7 +1677,7 @@ the final decision. Do not quote sensitive notes unless strictly necessary.
         embed.set_footer(
             text="Private local search. Confirm high-impact decisions with current guidance."
         )
-        await interaction.response.send_message(embed=embed, ephemeral=True)
+        await interaction.followup.send(embed=embed, ephemeral=True)
 
     @modai.command(
         name="rulehelp",
@@ -1694,7 +1695,7 @@ the final decision. Do not quote sensitive notes unless strictly necessary.
 
         await interaction.response.defer(ephemeral=True, thinking=True)
         prompt = (
-            self._build_text_prompt(situation)
+            await asyncio.to_thread(self._build_text_prompt, situation)
             + "\n\nThis request is for /modai rulehelp. Focus the response on "
             "relevant Bro Eden rule areas, suggested severity, a proportionate "
             "staff action, a usable staff response, and whether handling should "
@@ -1740,7 +1741,8 @@ the final decision. Do not quote sensitive notes unless strictly necessary.
             return
 
         await interaction.response.defer(ephemeral=True, thinking=True)
-        prompt = self._build_incident_prompt(
+        prompt = await asyncio.to_thread(
+            self._build_incident_prompt,
             situation,
             user,
             action_taken,
@@ -1787,7 +1789,8 @@ the final decision. Do not quote sensitive notes unless strictly necessary.
             return
 
         await interaction.response.defer(ephemeral=True, thinking=True)
-        prompt = self._build_ticket_draft_prompt(
+        prompt = await asyncio.to_thread(
+            self._build_ticket_draft_prompt,
             situation,
             reporter,
             reported_user,
@@ -1855,7 +1858,9 @@ the final decision. Do not quote sensitive notes unless strictly necessary.
         await interaction.response.defer(ephemeral=True, thinking=True)
         try:
             guidance = await self._generate_structured(
-                self._build_rule_card_prompt(topic, selected_tone),
+                await asyncio.to_thread(
+                    self._build_rule_card_prompt, topic, selected_tone
+                ),
                 RULE_CARD_SCHEMA,
                 "rule_card",
             )
@@ -1926,7 +1931,8 @@ the final decision. Do not quote sensitive notes unless strictly necessary.
             )
             return
 
-        prompt = self._build_pattern_check_prompt(
+        prompt = await asyncio.to_thread(
+            self._build_pattern_check_prompt,
             user,
             staff_notes,
             review_records,
@@ -1965,7 +1971,8 @@ the final decision. Do not quote sensitive notes unless strictly necessary.
 
         await interaction.response.defer(ephemeral=True, thinking=True)
         try:
-            review = await self._generate_review(self._build_text_prompt(text))
+            prompt = await asyncio.to_thread(self._build_text_prompt, text)
+            review = await self._generate_review(prompt)
         except Exception as exc:
             await self._send_gemini_failure(
                 interaction,
@@ -1990,7 +1997,7 @@ the final decision. Do not quote sensitive notes unless strictly necessary.
 
         await interaction.response.defer(ephemeral=True, thinking=True)
         nearby = await self._fetch_nearby_context(message)
-        prompt = self._build_message_prompt(message, nearby)
+        prompt = await asyncio.to_thread(self._build_message_prompt, message, nearby)
 
         try:
             review = await self._generate_review(prompt)
@@ -2046,7 +2053,9 @@ the final decision. Do not quote sensitive notes unless strictly necessary.
 
         await interaction.response.defer(ephemeral=True, thinking=True)
         nearby = await self._fetch_nearby_context(message)
-        prompt = self._build_draft_response_prompt(message, nearby)
+        prompt = await asyncio.to_thread(
+            self._build_draft_response_prompt, message, nearby
+        )
 
         try:
             guidance = await self._generate_structured(

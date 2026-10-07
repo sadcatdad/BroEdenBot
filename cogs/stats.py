@@ -1980,9 +1980,10 @@ class Stats(commands.Cog):
         self,
         interaction: discord.Interaction,
     ) -> None:
+        await interaction.response.defer(ephemeral=True, thinking=True)
         rows = await self._delete_menu_rows(interaction.guild_id)
         if not rows:
-            await interaction.response.send_message(
+            await interaction.followup.send(
                 "There are no tracked stats pages in this server.",
                 ephemeral=True,
             )
@@ -2013,7 +2014,7 @@ class Stats(commands.Cog):
                 )
             )
 
-        await interaction.response.send_message(
+        await interaction.followup.send(
             "Select the tracked stats page you want to delete.",
             view=StatsDeleteView(self, options),
             ephemeral=True,

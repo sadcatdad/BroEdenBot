@@ -466,16 +466,17 @@ MEMBER QUESTION:
                 allowed_mentions=discord.AllowedMentions.none(),
             )
             return
-        if not _is_server_help_question(question):
-            await interaction.response.send_message(
+        await interaction.response.defer(thinking=True, ephemeral=True)
+        if not await asyncio.to_thread(_is_server_help_question, question):
+            await interaction.followup.send(
                 OUTSIDE_SCOPE_MESSAGE,
                 ephemeral=True,
                 allowed_mentions=discord.AllowedMentions.none(),
             )
             return
         # TODO: A future opt-in "Post Publicly" button could publish a safe copy.
-        await interaction.response.defer(thinking=True, ephemeral=True)
-        chunks = search_kb(
+        chunks = await asyncio.to_thread(
+            search_kb,
             query=question,
             visibility="public",
             limit=6,
