@@ -23,7 +23,7 @@ from utils.settings import (
     settings_database_path,
     watch_runtime_settings,
 )
-from utils.sqlite import configure_connection
+from utils.sqlite import BufferedSQLiteConnection, configure_connection
 from utils.ui import error_embed
 from utils.visual_studio import initialize_visual_studio_schema
 
@@ -198,7 +198,9 @@ class BotClient(commands.Bot):
         await refresh_runtime_settings()
         logger.info("Runtime settings loaded; background refresh keeps Discord handlers off SQLite")
         await asyncio.to_thread(initialize_visual_studio_schema)
-        self.db = await aiosqlite.connect(settings_database_path())
+        self.db = BufferedSQLiteConnection(
+            await aiosqlite.connect(settings_database_path())
+        )
         self.db.row_factory = aiosqlite.Row
         journal_mode = await configure_connection(
             self.db,

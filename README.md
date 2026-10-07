@@ -2123,6 +2123,11 @@ Database-backed commands and profile/subscription buttons acknowledge Discord
 before loading their results. This avoids the three-second interaction deadline
 while SQLite or rendering work is still running. AI knowledge-base operations
 also run off the Discord event loop.
+The bot's shared SQLite handle buffers query results and closes each native
+cursor in one database-worker operation. This prevents an unfinished read from
+holding an old WAL snapshot while the dashboard or Event Drops writes, which
+otherwise makes subsequent bot writes fail with `SQLITE_BUSY_SNAPSHOT`.
+Existing multi-statement commit/rollback boundaries are preserved.
 
 Editable settings include `/ask` channels and cooldown, staff/owner permission
 IDs, voice/channel exclusions, bank access, VC XP role-pulse controls, and the
