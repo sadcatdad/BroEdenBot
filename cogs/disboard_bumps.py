@@ -54,6 +54,7 @@ BUMP_SUCCESS_MESSAGE_DEFAULT = (
     "A bump reminder will be posted in 2 hours."
 )
 BUMP_REMINDER_DELAY = timedelta(hours=2)
+BUMP_REMINDER_MAX_LATENESS = timedelta(minutes=15)
 BUMP_REMINDER_BATCH_SIZE = 25
 BUMP_REMINDER_MAX_ATTEMPTS = 3
 BUMP_BACKGROUND_PATHS = (
@@ -148,6 +149,8 @@ class DisboardBumps(commands.Cog):
             );
             CREATE INDEX IF NOT EXISTS idx_disboard_bump_member_time
                 ON disboard_bump_events (guild_id, member_id, bumped_at DESC);
+            CREATE INDEX IF NOT EXISTS idx_disboard_bump_channel_time
+                ON disboard_bump_events (guild_id, channel_id, bumped_at DESC);
             CREATE TABLE IF NOT EXISTS disboard_bump_reminders (
                 response_message_id TEXT PRIMARY KEY,
                 prompt_message_id TEXT,
@@ -477,6 +480,7 @@ class DisboardBumps(commands.Cog):
             """,
             (member.id, BUMP_LEADERBOARD_NAME, points),
         )
+        await self._supersede_old_reminders()
         await self.bot.db.commit()
         leaderboard_cog = self.bot.get_cog("Leaderboards")
         if leaderboard_cog is not None:
@@ -1012,19 +1016,57 @@ class DisboardBumps(commands.Cog):
             )
         await self.bot.db.commit()
 
-    async def _process_due_reminders(self) -> None:
-        now = datetime.now(timezone.utc)
-        stale_before = now - timedelta(minutes=10)
+    async def _supersede_old_reminders(self) -> None:
         await self.bot.db.execute(
             """
             UPDATE disboard_bump_reminders
-            SET status = 'scheduled', claimed_at = NULL,
-                last_error = 'Recovered after interrupted processing.'
-            WHERE status = 'processing' AND claimed_at < ?
+            SET status = 'superseded',
+                last_error = 'A newer successful bump reset this channel timer.'
+            WHERE status IN ('scheduled', 'pending_choice', 'processing')
+              AND EXISTS (
+                SELECT 1 FROM disboard_bump_events original
+                JOIN disboard_bump_events newer
+                  ON newer.guild_id = original.guild_id
+                 AND newer.channel_id = original.channel_id
+                 AND (newer.bumped_at > original.bumped_at
+                      OR (newer.bumped_at = original.bumped_at
+                          AND CAST(newer.response_message_id AS INTEGER) >
+                              CAST(original.response_message_id AS INTEGER)))
+                WHERE original.response_message_id =
+                      disboard_bump_reminders.response_message_id
+              )
+            """
+        )
+
+    async def _process_due_reminders(self) -> None:
+        now = datetime.now(timezone.utc)
+        stale_before = now - timedelta(minutes=10)
+        # A reminder is useful around its due time, not weeks later after an
+        # outage. Never drain an accumulated backlog into a Discord channel.
+        cursor = await self.bot.db.execute(
+            """
+            UPDATE disboard_bump_reminders
+            SET status = 'expired',
+                last_error = 'Missed the 15-minute delivery window; not replayed.'
+            WHERE status IN ('scheduled', 'processing') AND due_at < ?
+            """,
+            ((now - BUMP_REMINDER_MAX_LATENESS).isoformat(),),
+        )
+        expired = cursor.rowcount
+        await cursor.close()
+        await self._supersede_old_reminders()
+        await self.bot.db.execute(
+            """
+            UPDATE disboard_bump_reminders
+            SET status = 'uncertain',
+                last_error = 'Delivery was interrupted; not resent to avoid duplicate pings.'
+            WHERE status IN ('processing', 'sending') AND claimed_at < ?
             """,
             (stale_before.isoformat(),),
         )
         await self.bot.db.commit()
+        if expired:
+            logger.warning("Bump reminders expired without pinging: count=%s", expired)
         cursor = await self.bot.db.execute(
             """
             SELECT response_message_id, guild_id, member_id, channel_id,
@@ -1122,6 +1164,21 @@ class DisboardBumps(commands.Cog):
             if not payload:
                 content = self._reminder_content(member, role)
                 embeds = [self._reminder_embed()]
+            # Persist the send boundary. An interrupted or ambiguous send must
+            # not automatically become another role ping after a restart.
+            await self._supersede_old_reminders()
+            cursor = await self.bot.db.execute(
+                """
+                UPDATE disboard_bump_reminders SET status = 'sending'
+                WHERE response_message_id = ? AND status = 'processing'
+                """,
+                (str(response_id),),
+            )
+            sending = cursor.rowcount > 0
+            await cursor.close()
+            await self.bot.db.commit()
+            if not sending:
+                continue
             try:
                 reminder_message = await channel.send(
                     content or None,
@@ -1134,21 +1191,29 @@ class DisboardBumps(commands.Cog):
                     ),
                 )
             except discord.Forbidden as exc:
+                await self.bot.db.execute(
+                    "UPDATE disboard_bump_reminders SET status = 'processing' "
+                    "WHERE response_message_id = ? AND status = 'sending'",
+                    (str(response_id),),
+                )
                 await self._retry_or_fail_reminder(
                     str(response_id), attempt_count, type(exc).__name__, retryable=False,
                 )
                 continue
             except discord.HTTPException as exc:
-                await self._retry_or_fail_reminder(
-                    str(response_id), attempt_count, type(exc).__name__, retryable=True,
+                await self.bot.db.execute(
+                    "UPDATE disboard_bump_reminders SET status = 'uncertain', last_error = ? "
+                    "WHERE response_message_id = ? AND status = 'sending'",
+                    (f"Discord send failed: {type(exc).__name__}; not resent.", str(response_id)),
                 )
+                await self.bot.db.commit()
                 continue
             await self.bot.db.execute(
                 """
                 UPDATE disboard_bump_reminders
                 SET status = 'sent', sent_at = ?, reminder_message_id = ?,
                     claimed_at = NULL, last_error = NULL
-                WHERE response_message_id = ? AND status = 'processing'
+                WHERE response_message_id = ? AND status = 'sending'
                 """,
                 (
                     datetime.now(timezone.utc).isoformat(),
@@ -1157,6 +1222,10 @@ class DisboardBumps(commands.Cog):
                 ),
             )
             await self.bot.db.commit()
+            logger.info(
+                "Bump reminder sent guild_id=%s channel_id=%s response_id=%s message_id=%s",
+                guild_id, channel_id, response_id, reminder_message.id,
+            )
 
     async def _publish_if_due(self, guild: discord.Guild) -> None:
         channel_id = _configured_id("BUMP_LEADERBOARD_CHANNEL_ID")

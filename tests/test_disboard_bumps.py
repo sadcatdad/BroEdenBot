@@ -4,6 +4,7 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
 import aiosqlite
+import discord
 
 from cogs.disboard_bumps import (
     BUMP_FOOTER,
@@ -443,6 +444,7 @@ class DisboardBumpTests(unittest.IsolatedAsyncioTestCase):
             )
             await self.database.commit()
             await self.cog._process_due_reminders()
+            await self.cog._process_due_reminders()
 
         self.channel.send.assert_awaited_once()
         send_args = self.channel.send.await_args
@@ -453,6 +455,122 @@ class DisboardBumpTests(unittest.IsolatedAsyncioTestCase):
             "SELECT status, reminder_message_id FROM disboard_bump_reminders WHERE response_message_id = '100'"
         )
         self.assertEqual(await cursor.fetchone(), ("sent", "800"))
+        await cursor.close()
+
+    async def test_old_backlog_expires_without_any_pings(self):
+        now = datetime.now(timezone.utc)
+        await self.database.executemany(
+            "INSERT INTO disboard_bump_reminders "
+            "(response_message_id, guild_id, member_id, channel_id, due_at, status) "
+            "VALUES (?, '1', '42', '99', ?, 'scheduled')",
+            [(str(i), (now - timedelta(days=30)).isoformat()) for i in range(400)],
+        )
+        await self.database.commit()
+        await self.cog._process_due_reminders()
+        await self.cog._process_due_reminders()
+        self.channel.send.assert_not_awaited()
+        cursor = await self.database.execute(
+            "SELECT status, COUNT(*) FROM disboard_bump_reminders GROUP BY status"
+        )
+        self.assertEqual(await cursor.fetchall(), [("expired", 400)])
+        await cursor.close()
+
+    async def test_new_bump_resets_channel_timer_without_replaying_old_reminder(self):
+        now = datetime.now(timezone.utc)
+        old = self.message(message_id=100)
+        old.created_at = now - timedelta(hours=2, minutes=1)
+        new = self.message(message_id=101)
+        new.created_at = now
+        with (
+            patch("cogs.disboard_bumps.get_setting", side_effect=self.settings),
+            patch("cogs.disboard_bumps.get_int_setting", return_value=1000),
+        ):
+            await self.cog._process_bump(old)
+            await self.cog._process_bump(new)
+            await self.cog._process_due_reminders()
+        self.channel.send.assert_not_awaited()
+        cursor = await self.database.execute(
+            "SELECT response_message_id, status FROM disboard_bump_reminders "
+            "ORDER BY response_message_id"
+        )
+        self.assertEqual(await cursor.fetchall(), [("100", "superseded"), ("101", "scheduled")])
+        await cursor.close()
+
+    async def test_interrupted_send_is_not_replayed(self):
+        message = self.message()
+        with (
+            patch("cogs.disboard_bumps.get_setting", side_effect=self.settings),
+            patch("cogs.disboard_bumps.get_int_setting", return_value=1000),
+        ):
+            await self.cog._process_bump(message)
+            await self.database.execute(
+                "UPDATE disboard_bump_reminders SET due_at = ?",
+                ((datetime.now(timezone.utc) - timedelta(minutes=1)).isoformat(),),
+            )
+            await self.database.commit()
+            original_execute = self.database.execute
+
+            async def fail_receipt(sql, parameters=()):
+                if "SET status = 'sent'," in sql:
+                    raise RuntimeError("Interrupted after Discord accepted the message")
+                return await original_execute(sql, parameters)
+
+            with patch.object(self.database, "execute", side_effect=fail_receipt):
+                with self.assertRaises(RuntimeError):
+                    await self.cog._process_due_reminders()
+            await self.database.execute(
+                "UPDATE disboard_bump_reminders SET claimed_at = ?",
+                ((datetime.now(timezone.utc) - timedelta(minutes=11)).isoformat(),),
+            )
+            await self.database.commit()
+            await self.cog._process_due_reminders()
+        self.channel.send.assert_awaited_once()
+        cursor = await self.database.execute("SELECT status FROM disboard_bump_reminders")
+        self.assertEqual(await cursor.fetchone(), ("uncertain",))
+        await cursor.close()
+
+    async def test_only_latest_fresh_reminder_is_sent_when_events_arrive_out_of_order(self):
+        now = datetime.now(timezone.utc)
+        new = self.message(message_id=101)
+        new.created_at = now - timedelta(hours=2, minutes=1)
+        old = self.message(message_id=100)
+        old.created_at = now - timedelta(hours=2, minutes=5)
+        with (
+            patch("cogs.disboard_bumps.get_setting", side_effect=self.settings),
+            patch("cogs.disboard_bumps.get_int_setting", return_value=1000),
+        ):
+            await self.cog._process_bump(new)
+            await self.cog._process_bump(old)
+            await self.cog._process_due_reminders()
+            await self.cog._process_due_reminders()
+        self.channel.send.assert_awaited_once()
+        cursor = await self.database.execute(
+            "SELECT response_message_id, status FROM disboard_bump_reminders "
+            "ORDER BY response_message_id"
+        )
+        self.assertEqual(await cursor.fetchall(), [("100", "superseded"), ("101", "sent")])
+        await cursor.close()
+
+    async def test_ambiguous_discord_send_error_is_not_retried(self):
+        message = self.message()
+        self.channel.send.side_effect = discord.HTTPException(
+            SimpleNamespace(status=503, reason="Unavailable"), "Ambiguous send failure"
+        )
+        with (
+            patch("cogs.disboard_bumps.get_setting", side_effect=self.settings),
+            patch("cogs.disboard_bumps.get_int_setting", return_value=1000),
+        ):
+            await self.cog._process_bump(message)
+            await self.database.execute(
+                "UPDATE disboard_bump_reminders SET due_at = ?",
+                ((datetime.now(timezone.utc) - timedelta(minutes=1)).isoformat(),),
+            )
+            await self.database.commit()
+            await self.cog._process_due_reminders()
+            await self.cog._process_due_reminders()
+        self.channel.send.assert_awaited_once()
+        cursor = await self.database.execute("SELECT status FROM disboard_bump_reminders")
+        self.assertEqual(await cursor.fetchone(), ("uncertain",))
         await cursor.close()
 
     async def test_due_reminder_uses_selected_asset_content_embed_and_buttons(self):

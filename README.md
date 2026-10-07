@@ -315,6 +315,13 @@ as configured. The previous automatic **Subscribe to Bump Reminders** button
 is no longer added. The built-in reminder message/embed remains the fallback
 when no asset is selected or the selected record is unavailable.
 
+Each newer successful bump replaces older pending reminders in the same
+channel. Reminders more than 15 minutes overdue expire without posting, so
+an outage or database recovery cannot replay a backlog of role pings.
+The bot records the send boundary before contacting Discord; interrupted or
+ambiguous deliveries become `uncertain` and are not automatically resent.
+Reminder records are retained with their final status and reason for review.
+
 The weekly publisher posts the leaderboard to `BUMP_LEADERBOARD_CHANNEL_ID`.
 Detection requires Guild Messages and Message Content intents. Reward-role
 handoff requires **Manage Roles** with Bro Eden above the configured role.
