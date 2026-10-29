@@ -2512,6 +2512,35 @@ repeated restart attempts. Keep runtime databases on a filesystem that has been
 verified healthy; do not point either service at a mount reporting USB resets,
 I/O errors, an aborted journal, or a read-only remount.
 
+## Self-hosted Docker migration
+
+On the Mac, deploy the latest bot code from GitHub `main` with **`bebotdeploy`**.
+This shortcut connects to the server and runs `~/broedenbot/deploy-from-git.sh`.
+Enter the server's sudo password when prompted. A successful run ends with
+`BOT DEPLOY VERIFIED` and the deployed commit ID. This updates both the bot and
+The Garden; the public website has its own independent deployment command.
+
+`bebotdeploy --plan` checks source/configuration paths without building or
+restarting. `bebotdeploy --check` builds and checks the candidate image without
+stopping production. The normal command builds first, checks for a gap outside
+Event Drop claim/delivery windows, stops the single app instance, saves all four
+databases and uploaded assets, then starts and verifies the new app. If a claim
+window is open or a drop is due within five minutes, it exits so you can deploy
+after that window. A failed restart attempts the previous code with current
+data; it never restores older database files automatically.
+
+The server keeps public source in `~/broedenbot/source`, separately from private
+`state/`, `service.env`, and tunnel credentials. Deployment backups and private
+startup logs stay under `~/broedenbot/deployments`. Keep enough disk space for
+these snapshots and retain an off-server recovery copy. The old `./deploy.sh`
+is the Raspberry Pi/systemd workflow; use `bebotdeploy` for the Docker server.
+
+See [the self-hosted migration and recovery guide](docs/self-hosted-migration.md)
+for preserving all four databases, uploaded assets, active campaigns, and Garden
+login settings when moving from Railway. Prepare and validate the destination in
+health-only mode, then transfer a fresh coordinated snapshot with source writers
+stopped. Confirm the source is stopped before starting the destination bot.
+
 ## Deploy on Railway
 
 Railway runs the Discord bot and FastAPI dashboard together as one service so
