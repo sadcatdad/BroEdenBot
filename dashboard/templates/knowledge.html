@@ -1,4 +1,7 @@
 {% extends "base.html" %}
+{% block page_assets %}
+<script src="{{ static_asset_url(request, 'knowledge_filters.js') }}" defer></script>
+{% endblock %}
 {% block content %}
 <div class="page-heading">
   <div>
@@ -243,5 +246,5 @@
   {% endif %}
 </section>
 
-<script src="{{ url_for('static', path='knowledge_filters.js') }}" defer></script>
+
 {% endblock %}

@@ -2894,13 +2894,17 @@ resubmitting a record after a connection error.
 
 ### Dashboard asset updates
 
-Scout CSS and JavaScript URLs include a fingerprint of their file contents and
-load in the page head. Deploying changed assets automatically changes those URLs,
-so browser/Cloudflare caches cannot reuse an older stylesheet with newer Scout
-markup. This fixes the plain-link rows and unstyled tabs caused by an older
+All dashboard CSS, JavaScript, and bundled brand-image URLs include a fingerprint
+of their file contents. Styles and scripts load in the page head, including
+Event Drops, Events, Message Studio, Visual Studio, feature settings, Knowledge,
+BROfiles, and Scouts. Deploying changed assets automatically changes those URLs,
+so browser/Cloudflare caches cannot reuse older assets with newer markup. This fixes the plain-link rows and unstyled tabs caused by an older
 cached `scouts.css`. No manual cache purge or browser hard refresh is required
 after the updated template is deployed. Asset URLs stay on the current origin
-when The Garden sits behind a TLS reverse proxy.
+when The Garden sits behind a TLS reverse proxy. BRO Directory search uses an
+external script allowed by the security policy, and hidden filtered rows/controls
+stay hidden even when component CSS sets their display mode. See
+[dashboard asset and UI audit](docs/dashboard-ui-verification.md) for coverage.
 
 ### Validation and pilot
 

@@ -1,6 +1,10 @@
 {% extends "base.html" %}
+{% block page_assets %}
+<link rel="stylesheet" href="{{ static_asset_url(request, 'event_drops.css') }}">
+<script src="{{ static_asset_url(request, 'event_drops.js') }}" defer></script>
+{% endblock %}
 {% block content %}
-<link rel="stylesheet" href="{{ url_for('static',path='event_drops.css') }}">
+
 <div class="page-heading"><div><p class="eyebrow">{{ campaign.name }} / Drop Variants</p><h1>{{ 'Edit variant' if variant.id else 'New variant' }}</h1><p class="muted">Choose its reward and chance. Customize only what needs to differ.</p></div><a class="button secondary" href="{{ url_for('event_drop_variants',campaign_id=campaign.id) }}">Back to variants</a></div>
 {% if error %}<div class="notice error" role="alert">{{ error }} Re-select new uploads before saving.</div>{% endif %}
 {% if not campaign.variants_enabled %}<div class="notice warning"><strong>Campaign variants are OFF.</strong> You can save this setup, but it will not appear until you enable Drop Variants on the manager page.</div>{% endif %}
@@ -18,5 +22,5 @@
 <details class="card drop-settings"><summary>5. Message text <span class="muted">optional</span></summary><label class="drop-role"><input type="checkbox" name="override_message_text" {{ 'checked' if variant.message_text_override is not none else '' }}> Customize the message above the embed</label><label>Message text<textarea name="message_text_override" maxlength="1800" rows="3">{{ variant.message_text_override if variant.message_text_override is not none else '' }}</textarea></label><small>The campaign's role ping is added separately. Tokens: {campaign}, {variant}, {points}, {currency}. Checked and blank sends no custom text.</small></details>
 <details class="card drop-settings"><summary>6. Images <span class="muted">optional</span></summary><label>Image behavior<select name="image_mode">{% for mode,label in [('inherit','Use campaign images'),('single','One variant image'),('pool','Random variant image pool'),('none','No image')] %}<option value="{{ mode }}" {{ 'selected' if variant.image_mode==mode else '' }}>{{ label }}</option>{% endfor %}</select></label><div data-variant-images><div class="drop-assets">{% for asset in variant_assets %}<label><img src="{{ url_for('event_drops_asset',campaign_id=campaign.id,asset_id=asset.id) }}" alt="Asset {{ asset.id }}" loading="lazy"><span><input type="checkbox" name="asset_ids" value="{{ asset.id }}" data-image-url="{{ url_for('event_drops_asset',campaign_id=campaign.id,asset_id=asset.id) }}" {{ 'checked' if asset.id in variant.asset_ids else '' }}> {{ 'Campaign' if asset.campaign_pool else 'Variant' }} image #{{ asset.id }}</span></label>{% endfor %}</div><label>Upload images<input type="file" name="images" accept="image/jpeg,image/png,image/webp" multiple><small>Up to 10 images; 8 MiB each. Variant uploads stay outside the campaign pool.</small></label></div></details>
 <div class="drop-save-bar"><button class="button" type="submit">Save variant</button><a href="{{ url_for('event_drop_variants',campaign_id=campaign.id) }}">Cancel</a><small>Posted and queued drops keep their saved settings.</small></div></form>{% include '_event_drop_preview.html' %}</div>
-<script src="{{ url_for('static',path='event_drops.js') }}" defer></script>
+
 {% endblock %}

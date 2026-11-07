@@ -1,4 +1,7 @@
 {% extends "base.html" %}
+{% block page_assets %}
+<script src="{{ static_asset_url(request, 'brofile_editor.js') }}" defer></script>
+{% endblock %}
 {% block content %}
 <section class="brofile-page">
   <header class="page-heading brofile-page-heading">
@@ -131,7 +134,7 @@
       </div>
     </section>
   </div>
-  <script src="{{ url_for('static', path='brofile_editor.js') }}" defer></script>
+
   {% endif %}
   {% endif %}
 </section>

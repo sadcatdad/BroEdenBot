@@ -1,4 +1,7 @@
 {% extends "base.html" %}
+{% block page_assets %}
+<script src="{{ static_asset_url(request, 'events.js') }}" defer></script>
+{% endblock %}
 {% block content %}
 <section class="events-heading page-heading" data-events-revision="{{ events_revision }}" data-events-state-url="{{ url_for('events_state') }}">
   <div><p class="eyebrow">Community / Events</p><h1>Events</h1><p class="muted">Gatherings from Discord, with reminders on your schedule.</p></div>
@@ -47,5 +50,5 @@
 {% if view_mode == 'dashboard' and (can_create or can_manage_all) %}<section class="card"><p class="eyebrow">{{ 'All Events' if can_manage_all else 'My Events' }}</p><h2>Publishing activity</h2><div class="status-list">{% for action in actions %}<div><span>#{{ action.id }} · {{ action.action|title }} · {{ action.requested_by_name }}</span><strong class="status-chip {{ action.status }}">{{ action.status|title }}</strong>{% if action.failure_reason %}<small class="warning-text">{{ action.failure_reason }}</small>{% endif %}</div>{% else %}<p class="muted">No dashboard event actions yet.</p>{% endfor %}</div></section>{% endif %}
 
 {% if view_mode == 'dashboard' and can_manage_all %}<details class="card readiness-panel"><summary>Events readiness</summary><div class="status-list"><div><span>Events module</span><strong>{{ 'Ready' if readiness.events_module else 'Disabled' }}</strong></div><div><span>Reminders dependency</span><strong>{{ 'Ready' if readiness.reminders_module else 'Missing' }}</strong></div><div><span>Verified role mapping</span><strong>{{ 'Mapped' if readiness.verified_mapping else 'Needs mapping' }}</strong></div><div><span>Party Captain mapping</span><strong>{{ 'Mapped' if readiness.captain_mapping else 'Needs mapping' }}</strong></div><div><span>Artwork forum post configured / writable</span><strong>{{ 'Configured' if readiness.storage_channel_configured else 'Needs setup' }} / {{ 'Ready' if readiness.storage_channel_ready else 'Needs attention' }}</strong></div><div><span>Eligible Stage/Voice channels</span><strong>{{ readiness.eligible_channel_count or readiness.eligible_channels }}</strong></div><div><span>Last Discord sync</span><strong>{{ readiness.last_success_at_utc|friendly_datetime }}</strong></div><div><span>Pending / failed actions</span><strong>{{ readiness.pending_actions or 0 }} / {{ readiness.failed_actions or 0 }}</strong></div><div><span>Create Events / Manage Events</span><strong>{{ 'Ready' if readiness.can_create_events else 'Missing' }} / {{ 'Ready' if readiness.can_manage_events else 'Missing' }}</strong></div>{% if readiness.last_error %}<p class="warning-text">{{ readiness.last_error }}</p>{% endif %}</div></details>{% endif %}
-<script src="{{ url_for('static', path='events.js') }}?v=events2" defer></script>
+
 {% endblock %}

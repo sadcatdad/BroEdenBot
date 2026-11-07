@@ -1,4 +1,7 @@
 {% extends "base.html" %}
+{% block page_assets %}
+<script src="{{ static_asset_url(request, 'visual_studio.js') }}" defer></script>
+{% endblock %}
 {% block content %}
 <div class="page-heading"><div><p class="eyebrow">Validated and normalized</p><h1>Upload Visual Asset</h1></div></div>
 {% include "_visual_nav.html" %}
@@ -25,5 +28,5 @@
     <p data-supported-files>PNG, JPG, or WEBP up to {{ (guidance.maximum_bytes / 1000000)|round(0)|int }} MB. Transparency: {{ guidance.transparency }}.</p><p class="muted" data-guidance-description>{{ guidance.description or 'The image is normalized once during upload and reused without reprocessing the original on every bot command.' }}</p>
   </aside>
 </section>
-<script src="{{ url_for('static', path='visual_studio.js') }}?v=visual-studio1" defer></script>
+
 {% endblock %}

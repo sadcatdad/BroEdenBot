@@ -32,3 +32,23 @@ class DashboardAssetTests(unittest.TestCase):
 
     def test_template_assets_cannot_escape_static_directory(self):
         with self.assertRaises(ValueError):static_asset_url(self.request(),'../app.py')
+
+    def test_all_template_static_assets_use_content_versioning(self):
+        import re
+        templates=Path(__file__).resolve().parents[1]/'dashboard/templates'
+        for path in templates.glob('*.html'):
+            with self.subTest(template=path.name):
+                source=path.read_text()
+                self.assertNotRegex(source,r"url_for\(['\"]static['\"]")
+                self.assertNotRegex(source,r'''(?:src|href)=["']/static/''')
+                for asset in re.findall(r"static_asset_url\(request, '([^']+)'\)",source):
+                    self.assertTrue((templates.parent/'static'/asset).is_file(),asset)
+
+    def test_templates_do_not_use_executable_inline_scripts_blocked_by_csp(self):
+        import re
+        templates=Path(__file__).resolve().parents[1]/'dashboard/templates'
+        for path in templates.glob('*.html'):
+            for attrs,body in re.findall(r'<script\b([^>]*)>(.*?)</script>',path.read_text(),re.S):
+                with self.subTest(template=path.name):
+                    self.assertTrue('src=' in attrs or 'type="application/json"' in attrs,
+                        'Move executable scripts into versioned static files.')

@@ -6,12 +6,12 @@
   <meta name="theme-color" content="#0c1912">
   <title>{{ page_title or "Login" }} · The Garden</title>
   {% if canonical_url %}<link rel="canonical" href="{{ canonical_url }}">{% endif %}
-  <link rel="icon" type="image/png" href="{{ url_for('static', path='broeden-pride-icon.png') }}">
-  <link rel="stylesheet" href="{{ url_for('static', path='styles.css') }}?v=hardening1">
-  <link rel="stylesheet" href="{{ url_for('static', path='garden_redesign.css') }}?v=forest2">
-  <script src="{{ url_for('static', path='dashboard_nav.js') }}?v=keyboard-nav2" defer></script>
-  <script src="{{ url_for('static', path='dashboard_forms.js') }}" defer></script>
-  <script src="{{ url_for('static', path='discord_pickers.js') }}?v=picker-single-values2" defer></script>
+  <link rel="icon" type="image/png" href="{{ static_asset_url(request, 'broeden-pride-icon.png') }}">
+  <link rel="stylesheet" href="{{ static_asset_url(request, 'styles.css') }}">
+  <link rel="stylesheet" href="{{ static_asset_url(request, 'garden_redesign.css') }}">
+  <script src="{{ static_asset_url(request, 'dashboard_nav.js') }}" defer></script>
+  <script src="{{ static_asset_url(request, 'dashboard_forms.js') }}" defer></script>
+  <script src="{{ static_asset_url(request, 'discord_pickers.js') }}" defer></script>
   {% block page_assets %}{% endblock %}
 </head>
 <body class="{{ 'authenticated' if authenticated else 'login-page' }} {{ 'view-' ~ view_mode if authenticated else '' }}">
@@ -21,7 +21,7 @@
     <aside class="site-sidebar" id="dashboard-navigation" aria-label="The Garden navigation">
       <div class="sidebar-heading">
         <a class="brand" href="{{ (url_for('events_page') if can('events.view') else (url_for('my_brofile_page') if can('brofiles.edit') else url_for('brofile_directory'))) if view_mode == 'member' else dashboard_home_url }}" aria-label="The Garden home">
-          <img class="brand-logo" src="{{ url_for('static', path='broeden-pride-icon.png') }}" alt="">
+          <img class="brand-logo" src="{{ static_asset_url(request, 'broeden-pride-icon.png') }}" alt="">
           <span class="brand-copy"><strong>BRO EDEN</strong><small>The Garden</small></span>
         </a>
         <button class="icon-button nav-close" type="button" data-nav-close aria-label="Close navigation">
@@ -252,7 +252,7 @@
     <div class="app-workspace">
       <header class="mobile-header">
         <a class="mobile-brand" href="{{ (url_for('events_page') if can('events.view') else (url_for('my_brofile_page') if can('brofiles.edit') else url_for('brofile_directory'))) if view_mode == 'member' else dashboard_home_url }}" aria-label="The Garden home">
-          <img src="{{ url_for('static', path='broeden-pride-icon.png') }}" alt="">
+          <img src="{{ static_asset_url(request, 'broeden-pride-icon.png') }}" alt="">
           <strong>The Garden</strong>
         </a>
         <button class="icon-button menu-button" type="button" data-nav-toggle aria-controls="dashboard-navigation" aria-expanded="false" aria-label="Open navigation">

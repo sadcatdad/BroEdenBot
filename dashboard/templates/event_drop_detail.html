@@ -1,6 +1,9 @@
 {% extends "base.html" %}
+{% block page_assets %}
+<link rel="stylesheet" href="{{ static_asset_url(request, 'event_drops.css') }}">
+{% endblock %}
 {% block content %}
-<link rel="stylesheet" href="{{ url_for('static',path='event_drops.css') }}">
+
 <div class="page-heading"><div><p class="eyebrow"><a href="{{ url_for('event_drops_list') }}">Events / Event Drops</a></p><h1>{{ campaign.emoji }} {{ campaign.name }}</h1><span class="status-chip {{ campaign.status }}">{{ campaign.status|title }}</span></div><div class="action-buttons">{% if campaign.status in ['draft','paused'] %}<a class="button secondary" href="{{ url_for('event_drops_edit',campaign_id=campaign.id) }}">Edit campaign</a>{% endif %}<a class="button secondary" href="{{ url_for('event_drop_variants',campaign_id=campaign.id) }}">Drop Variants</a><a class="button secondary" href="{{ url_for('event_drops_detail',campaign_id=campaign.id) }}">Refresh status</a></div></div>
 {% if message %}<div class="notice success">{{ message }}</div>{% endif %}{% if error %}<div class="notice error" role="alert">{{ error }}</div>{% endif %}{% if campaign.warning %}<div class="notice warning">{{ campaign.warning }}</div>{% endif %}{% if not worker_ready %}<div class="notice warning">Worker heartbeat is stale. Check that the bot is online with the Events module enabled. Requests remain stored until it returns.</div>{% endif %}
 <div class="drop-mode-summary"><span class="drop-state {{ 'on' if campaign.variants_enabled else 'off' }}">{{ 'Variants ON' if campaign.variants_enabled else 'Variants OFF' }}</span><span>{{ variants|selectattr('enabled')|list|length }} enabled variants · {{ 'Role ping configured' if campaign.ping_role_id else 'No role ping' }}</span><a href="{{ url_for('event_drop_variants',campaign_id=campaign.id) }}">Check chances & delivery →</a></div>

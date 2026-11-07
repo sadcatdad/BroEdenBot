@@ -1667,3 +1667,6 @@ details summary { color: var(--muted); cursor: pointer; }
   .brofile-pagination { justify-content: space-between; }
   .brofile-management-metrics { grid-template-columns: 1fr; }
 }
+
+/* Author display rules must not reveal filtered or conditionally hidden content. */
+[hidden]:not([hidden="until-found"]) { display: none !important; }

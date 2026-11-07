@@ -1,4 +1,8 @@
 {% extends "base.html" %}
+{% block page_assets %}
+<script src="{{ static_asset_url(request, 'settings_message_editor.js') }}" defer></script>
+<script src="{{ static_asset_url(request, 'settings_form.js') }}" defer></script>
+{% endblock %}
 {% block content %}
 <div class="page-heading">
   <div>
@@ -32,6 +36,6 @@
   {% endif %}
 {% if settings_editable %}</form>{% else %}</div>{% endif %}
 {% if feature.key == 'advanced' %}</div></div>{% endif %}
-<script src="{{ url_for('static', path='settings_message_editor.js') }}?v=message-editor1" defer></script>
-<script src="{{ url_for('static', path='settings_form.js') }}?v=settings-form1" defer></script>
+
+
 {% endblock %}

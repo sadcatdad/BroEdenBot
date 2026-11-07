@@ -1,6 +1,10 @@
 {% extends "base.html" %}
+{% block page_assets %}
+<link rel="stylesheet" href="{{ static_asset_url(request, 'event_drops.css') }}">
+<script src="{{ static_asset_url(request, 'event_drops.js') }}" defer></script>
+{% endblock %}
 {% block content %}
-<link rel="stylesheet" href="{{ url_for('static',path='event_drops.css') }}">
+
 <div class="page-heading"><div><p class="eyebrow">Events / Event Drops</p><h1>{{ 'Edit campaign' if campaign.id else 'Create campaign' }}</h1><p class="muted">Theme it for this celebration. Reuse it for the next.</p></div><a class="button secondary" href="{{ url_for('event_drops_detail',campaign_id=campaign.id) if campaign.id else url_for('event_drops_list') }}">Back</a></div>
 {% if error %}<div class="notice error" role="alert">{{ error }}{% if campaign.id %} Re-select any new image uploads before saving.{% endif %}</div>{% endif %}
 {% if campaign.id %}<div class="drop-mode-summary"><span class="drop-state {{ 'on' if campaign.variants_enabled else 'off' }}">{{ 'Variants ON' if campaign.variants_enabled else 'Variants OFF' }}</span><span>{{ 'Enabled variants control rewards and appearance.' if campaign.variants_enabled else 'Standard campaign reward is used for every drop.' }}</span><a href="{{ url_for('event_drop_variants',campaign_id=campaign.id) }}">Manage variants →</a></div>{% endif %}
@@ -22,5 +26,5 @@
 <details class="card drop-settings"><summary>Who can claim · optional role rules</summary><p class="muted">All human server members by default. Bots cannot claim.</p><details><summary>Optional role rules</summary><div class="form-grid"><fieldset><legend>Eligible roles · empty means everyone</legend>{% for role in roles %}<label class="drop-role"><input type="checkbox" name="eligible_roles" value="{{ role.id }}" {{ 'checked' if role.id in campaign.eligible_roles else '' }}> {{ role.name }}</label>{% endfor %}</fieldset><fieldset><legend>Excluded roles · exclusion takes priority</legend>{% for role in roles %}<label class="drop-role"><input type="checkbox" name="excluded_roles" value="{{ role.id }}" {{ 'checked' if role.id in campaign.excluded_roles else '' }}> {{ role.name }}</label>{% endfor %}</fieldset></div></details></details>
 <div class="drop-save-bar"><button class="button" type="submit">Save campaign</button><small>Save the campaign before changing variant settings.</small></div></form>
 {% include '_event_drop_preview.html' %}</div>
-<script src="{{ url_for('static',path='event_drops.js') }}" defer></script>
+
 {% endblock %}
