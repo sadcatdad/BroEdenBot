@@ -3,12 +3,12 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <meta name="theme-color" content="#101116">
+  <meta name="theme-color" content="#0c1912">
   <title>{{ page_title or "Login" }} · The Garden</title>
   {% if canonical_url %}<link rel="canonical" href="{{ canonical_url }}">{% endif %}
   <link rel="icon" type="image/png" href="{{ url_for('static', path='broeden-pride-icon.png') }}">
   <link rel="stylesheet" href="{{ url_for('static', path='styles.css') }}?v=hardening1">
-  <link rel="stylesheet" href="{{ url_for('static', path='garden_redesign.css') }}?v=6">
+  <link rel="stylesheet" href="{{ url_for('static', path='garden_redesign.css') }}?v=forest2">
   <script src="{{ url_for('static', path='dashboard_nav.js') }}?v=keyboard-nav2" defer></script>
   <script src="{{ url_for('static', path='dashboard_forms.js') }}" defer></script>
   <script src="{{ url_for('static', path='discord_pickers.js') }}?v=picker-single-values2" defer></script>
@@ -258,6 +258,10 @@
           <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h16M4 12h16M4 17h16"/></svg>
         </button>
       </header>
+      <div class="garden-topbar">
+        <span><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 21V10m0 5C5 15 3 11 3 6c6 0 9 3 9 9Zm0-4c0-6 3-9 9-9 0 6-3 9-9 9Z"/></svg>The Garden <span class="garden-topbar-divider">/</span> {{ 'Member View' if view_mode == 'member' else 'Admin Dashboard' }}</span>
+        <a href="https://broeden.com">Bro Eden <span aria-hidden="true">↗</span></a>
+      </div>
       <main id="main-content" class="container" tabindex="-1">
         {% block content %}{% endblock %}
       </main>

@@ -1,32 +1,33 @@
 {% extends "base.html" %}
 {% block login_content %}
-<section class="login-card">
-  <a class="login-brand" href="{{ url_for('login_page') }}" aria-label="The Garden login">
-    <img src="{{ url_for('static', path='broeden-pride-icon.png') }}" alt="">
-    <span><strong>BRO EDEN</strong><small>The Garden</small></span>
-  </a>
-  <p class="eyebrow">Member platform</p>
-  <h1>The Garden</h1>
-  <p class="muted">Sign in with an approved Discord account or use the owner password fallback.</p>
-  {% if error %}<div class="alert error" role="alert">{{ error }}</div>{% endif %}
-  {% if not dashboard_enabled %}
-  <div class="alert warning">The Garden is currently disabled.</div>
-  {% endif %}
-  {% if discord_oauth_enabled %}
-  <a class="button discord-button" href="{{ url_for('discord_login') }}">Log in with Discord</a>
-  <div class="login-divider"><span>or use password fallback</span></div>
-  {% endif %}
-  <form method="post" action="{{ url_for('login') }}" class="stack">
-    <input type="hidden" name="csrf" value="{{ csrf_token }}">
-    <label>
-      Username
-      <input name="username" type="text" autocomplete="username" autocapitalize="none" spellcheck="false" required autofocus>
-    </label>
-    <label>
-      Password
-      <input name="password" type="password" autocomplete="current-password" maxlength="1024" required>
-    </label>
-    <button class="button" type="submit">Sign in with password</button>
-  </form>
-</section>
+<div class="garden-entry">
+  <header class="entry-header">
+    <a class="login-brand" href="https://broeden.com" aria-label="Bro Eden home">
+      <img src="{{ url_for('static', path='broeden-pride-icon.png') }}" alt="">
+      <span><strong>BRO EDEN</strong></span>
+    </a>
+    <a class="entry-back" href="https://broeden.com">Back to Bro Eden <span aria-hidden="true">↗</span></a>
+  </header>
+  <div class="entry-layout">
+    <svg class="entry-botanical" viewBox="0 0 540 280" fill="none" aria-hidden="true">
+        <path d="M-20 270c105-8 205-43 288-113S415 39 550 27M109 246c-5-53-34-78-78-83 5 45 28 71 78 83Zm59-27c-1-56-25-89-69-102-1 50 22 84 69 102Zm57-38c-2-53-22-85-61-100-3 44 18 78 61 100Zm55-34c14-49 5-81-24-108-19 42-11 77 24 108Zm48-41c50 16 84 8 111-22-45-18-81-12-111 22ZM173 216c44 25 80 24 114-2-40-28-78-29-114 2Zm-65 29c38 29 74 33 112 14-35-33-72-39-112-14Zm282-178c-3-36-19-57-45-64-4 31 11 54 45 64Z"/>
+    </svg>
+    <section class="login-card" aria-labelledby="garden-signin">
+      <div class="entry-card-mark" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M12 21V10m0 5C5 15 3 11 3 6c6 0 9 3 9 9Zm0-4c0-6 3-9 9-9 0 6-3 9-9 9Z"/></svg></div>
+      <h1 id="garden-signin">The Garden</h1>
+      {% if error %}<div class="alert error" role="alert">{{ error }}</div>{% endif %}
+      {% if not dashboard_enabled %}<div class="alert warning">The Garden is currently disabled.</div>{% endif %}
+      {% if discord_oauth_enabled %}
+      <a class="button discord-button" href="{{ url_for('discord_login') }}"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M8 5 5 6c-2 3-3 7-3 11l5 2 1-2m8-12 3 1c2 3 3 7 3 11l-5 2-1-2M7 16c3 2 7 2 10 0M8 5l1 2m7-2-1 2M8 12h.01M16 12h.01"/></svg>Log in with Discord <span aria-hidden="true">↗</span></a>
+      <div class="login-divider"><span>or use password fallback</span></div>
+      {% endif %}
+      <form method="post" action="{{ url_for('login') }}" class="stack">
+        <input type="hidden" name="csrf" value="{{ csrf_token }}">
+        <label>Username<input name="username" type="text" autocomplete="username" autocapitalize="none" spellcheck="false" required {% if not discord_oauth_enabled %}autofocus{% endif %}></label>
+        <label>Password<input name="password" type="password" autocomplete="current-password" maxlength="1024" required></label>
+        <button class="button {{ 'secondary' if discord_oauth_enabled else '' }}" type="submit">Sign in with password <span aria-hidden="true">→</span></button>
+      </form>
+    </section>
+  </div>
+</div>
 {% endblock %}

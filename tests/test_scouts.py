@@ -16,6 +16,12 @@ from utils.scouts import Actor, Scouts, DEFAULTS
 from dashboard.rbac import PERMISSION_KEYS
 
 
+def confirmed_action(**values):
+    return dict(dict(action_type='message_delete', event_at=time.time(), count=1,
+                     audit_id='100', moderator_id='50', scout_roles=['5'],
+                     confirmed_scout=True, moderator_is_bot=False, attribution='confirmed'), **values)
+
+
 class ScoutStorageTests(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
@@ -149,7 +155,7 @@ class ScoutStorageTests(unittest.TestCase):
         self.s.buffer('1',dict(m,content='After'))
         self.s.buffer('1',dict(m,message_id='2',channel_id='9'))
         self.assertEqual(len(self.s.rows('SELECT * FROM scout_buffer')),1)
-        r=self.s.system('1','gateway:deletion',dict(action_type='message_bulk_delete',event_at=time.time(),message_ids=['1','2']))
+        r=self.s.system('1','audit:200',confirmed_action(action_type='message_bulk_delete',audit_id='200',message_ids=['1','2']))
         self.assertEqual(r['data']['messages'][0]['content'],'After')
         self.assertEqual(r['data']['messages'][0]['edits'][0]['content'],'Before')
         self.assertIsNone(r['data']['messages'][1]['content'])
@@ -164,7 +170,7 @@ class ScoutStorageTests(unittest.TestCase):
         self.assertEqual(self.s.record(self.admin,r['id'])['data']['messages'][0]['content'],'After')
 
     def test_duplicate_events_and_incrementing_audit_entries(self):
-        data=dict(action_type='message_delete',event_at=time.time(),count=1,moderator_id='50',attribution='confirmed')
+        data=confirmed_action()
         r=self.s.system('1','audit:100',data)
         self.assertEqual(self.s.system('1','audit:100',data)['id'],r['id'])
         self.s.system('1','audit:100',dict(data,count=3))
@@ -176,10 +182,11 @@ class ScoutStorageTests(unittest.TestCase):
     def test_concurrent_moderators_never_guessed_for_deleted_message(self):
         now=time.time()
         for i in (1,2):
-            self.s.system('1','audit:'+str(i),dict(action_type='message_delete',event_at=now,moderator_id=str(i),count=1,channel_id='2'))
+            self.s.system('1','audit:'+str(i),confirmed_action(event_at=now,audit_id=str(i),moderator_id=str(i),channel_id='2'))
         r=self.s.system('1','gateway:1',dict(action_type='message_delete',event_at=now,channel_id='2',message_ids=['111'],attribution='unattributed'))
         self.s.reconcile_links('1')
-        d=self.s.record(self.admin,r['id'])['data']
+        self.assertIsNone(r)
+        d=json.loads(self.s.rows("SELECT data FROM scout_observations WHERE source_key='gateway:1'")[0]['data'])
         self.assertEqual(len(d['audit_candidates']),2)
         self.assertNotIn('moderator_id',d)
         self.assertTrue(d['attribution'].startswith('uncertain'))
@@ -271,18 +278,23 @@ class ScoutAuditTests(unittest.IsolatedAsyncioTestCase):
         e=self.entry(discord.AuditLogAction.message_delete)
         e.reason='Action requested by Scout 1234'
         await self.cog.ingest_audit(self.guild,e)
-        d=json.loads(self.s.rows('SELECT data FROM scout_records')[0]['data'])
+        self.assertEqual(self.s.rows('SELECT * FROM scout_records'),[])
+        self.assertEqual(self.s.rows('SELECT * FROM scout_jobs'),[])
+        d=json.loads(self.s.rows('SELECT data FROM scout_observations')[0]['data'])
         self.assertEqual(d['moderator_id'],'10')
         self.assertFalse(d['confirmed_scout'])
 
     async def test_delayed_audit_links_to_pending_evidence_without_guessing(self):
         r=self.s.system('1','gateway:delayed',dict(action_type='message_delete',event_at=time.time(),message_ids=['1'],channel_id='2',attribution='unattributed'))
         self.s.reconcile_links('1')
-        self.assertNotIn('audit_candidates',self.s.record(self.admin,r['id'])['data'])
+        self.assertIsNone(r)
+        self.assertNotIn('audit_candidates',json.loads(self.s.rows("SELECT data FROM scout_observations WHERE source_key='gateway:delayed'")[0]['data']))
         await self.cog.ingest_audit(self.guild,self.entry(discord.AuditLogAction.message_delete))
         self.s.reconcile_links('1')
-        d=self.s.record(self.admin,r['id'])['data']
+        d=json.loads(self.s.rows("SELECT data FROM scout_observations WHERE source_key='gateway:delayed'")[0]['data'])
         self.assertEqual(len(d['audit_candidates']),1)
+        self.assertEqual(len(self.s.rows('SELECT * FROM scout_records')),1)
+        self.assertEqual(len(self.s.rows('SELECT * FROM scout_jobs')),1)
         self.assertNotIn('moderator_id',d)
 
     async def test_timeout_expiry_differs_from_manual_removal(self):
@@ -291,11 +303,11 @@ class ScoutAuditTests(unittest.IsolatedAsyncioTestCase):
         before=SimpleNamespace(id=30,guild=self.guild,timed_out_until=past)
         after=SimpleNamespace(id=30,guild=self.guild,timed_out_until=None)
         await self.cog.on_member_update(before,after)
-        first=json.loads(self.s.rows('SELECT data FROM scout_records')[0]['data'])
+        first=json.loads(self.s.rows('SELECT data FROM scout_observations')[0]['data'])
         self.assertEqual(first['timeout_change'],'expiry')
         before.timed_out_until=datetime.now(timezone.utc)+timedelta(hours=1)
         await self.cog.on_member_update(before,after)
-        data=[json.loads(r['data']) for r in self.s.rows('SELECT data FROM scout_records')]
+        data=[json.loads(r['data']) for r in self.s.rows('SELECT data FROM scout_observations')]
         self.assertIn('removed',[d['timeout_change'] for d in data])
         self.assertTrue(all('moderator_id' not in d for d in data))
 

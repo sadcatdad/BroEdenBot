@@ -19,6 +19,7 @@ from utils.sqlite import AutoClosingSQLiteConnection, configure_sync_connection
 
 ACTIVITY_TYPES = ('rule reminder', 'de-escalation', 'message removal', 'timeout', 'concern', 'other')
 ACTION_TYPES = ('message_delete', 'message_bulk_delete', 'timeout', 'member_move', 'member_disconnect')
+CORRELATION_RETENTION_SECONDS = 300
 REPORT_CATEGORIES = ('Harassment', 'Hate or discrimination', 'Spam', 'Unsafe content', 'Rule concern', 'Other')
 DEFAULTS = dict(
     enabled=False, automatic_enabled=False, scout_roles=[], activity_channel='', moderation_channel='',
@@ -50,6 +51,10 @@ CREATE TABLE IF NOT EXISTS scout_buffer(
  guild_id TEXT NOT NULL, message_id TEXT NOT NULL, channel_id TEXT NOT NULL, data TEXT NOT NULL,
  observed_at REAL NOT NULL, PRIMARY KEY(guild_id,message_id));
 CREATE INDEX IF NOT EXISTS scout_buffer_expiry ON scout_buffer(observed_at);
+CREATE TABLE IF NOT EXISTS scout_observations(
+ guild_id TEXT NOT NULL, source_key TEXT NOT NULL, data TEXT NOT NULL, observed_at REAL NOT NULL,
+ PRIMARY KEY(guild_id,source_key));
+CREATE INDEX IF NOT EXISTS scout_observations_expiry ON scout_observations(observed_at);
 CREATE TABLE IF NOT EXISTS scout_jobs(
  id TEXT PRIMARY KEY, guild_id TEXT NOT NULL, record_id TEXT NOT NULL REFERENCES scout_records(id),
  version INTEGER NOT NULL, purpose TEXT NOT NULL DEFAULT 'card', status TEXT NOT NULL DEFAULT 'pending',
@@ -103,6 +108,7 @@ class Scouts:
                 c.execute('ALTER TABLE scout_jobs ADD COLUMN checked_at REAL NOT NULL DEFAULT 0')
             c.execute('INSERT OR IGNORE INTO scout_schema VALUES(1,?)', (time.time(),))
             c.execute('INSERT OR IGNORE INTO scout_schema VALUES(2,?)', (time.time(),))
+            c.execute('INSERT OR IGNORE INTO scout_schema VALUES(3,?)', (time.time(),))
 
     def rows(self, sql, args=()):
         with self.connect() as c:
@@ -175,6 +181,8 @@ class Scouts:
                   (record['guild_id'], record['id'], str(actor), action, encode(record), time.time()))
 
     def _job(self, c, record, purpose='card'):
+        if record['kind'] == 'system' and not self.confirmed_scout_action(record['data'], record['source_key']):
+            return
         config = self.settings(record['guild_id'])
         destination = (record['data']['recipient_id'] if record['kind'] == 'checkin' else
                        config['moderation_channel'] or config['activity_channel'] if record['kind'] == 'system' else config['activity_channel'])
@@ -233,6 +241,15 @@ class Scouts:
             raise PermissionError('No check-in access.')
         sql = 'SELECT * FROM scout_records WHERE guild_id=? AND kind=? AND created_at>=?'
         args = [actor.guild_id, kind, time.time() - max(1, min(int(days), 3650)) * 86400]
+        if kind == 'system':
+            # Also exclude pre-fix gateway/non-Scout history from the active feed
+            # and AI sources, without destroying existing evidence or receipts.
+            sql += """ AND json_extract(data,'$.confirmed_scout')=1
+                AND coalesce(json_extract(data,'$.moderator_is_bot'),0)=0
+                AND json_type(data,'$.scout_roles')='array'
+                AND json_array_length(data,'$.scout_roles')>0
+                AND source_key='audit:' || json_extract(data,'$.audit_id')
+                AND author_id=json_extract(data,'$.moderator_id')"""
         if kind == 'checkin' and not ({'scouts.checkins.request', 'scouts.checkins.view_all'} & actor.permissions):
             sql += " AND json_extract(data,'$.recipient_id')=?"
             args.append(actor.user_id)
@@ -466,6 +483,19 @@ class Scouts:
     def prune(self, guild):
         with self.connect() as c:
             c.execute('DELETE FROM scout_buffer WHERE guild_id=? AND observed_at<?', (str(guild), time.time() - self.settings(guild)['retention_days'] * 86400))
+            c.execute('DELETE FROM scout_observations WHERE guild_id=? AND observed_at<?', (str(guild), time.time() - CORRELATION_RETENTION_SECONDS))
+
+    @staticmethod
+    def confirmed_scout_action(data, key):
+        """A raw event, affected member, or message author never identifies a moderator."""
+        return bool(
+            data.get('confirmed_scout') is True
+            and not data.get('moderator_is_bot', False)
+            and str(data.get('moderator_id', '')).isdigit()
+            and isinstance(data.get('scout_roles'), list) and data['scout_roles']
+            and data.get('audit_id')
+            and key == 'audit:' + str(data['audit_id'])
+        )
 
     def system(self, guild, key, data):
         cfg = self.settings(guild)
@@ -473,6 +503,22 @@ class Scouts:
             return None
         with self.connect() as c:
             c.execute('BEGIN IMMEDIATE')
+            # Keep raw events only as short-lived, restart-safe correlation inputs.
+            # They must never create Scout records, revisions, or delivery jobs.
+            if 'message_ids' in data:
+                snapshots = []
+                cutoff = time.time() - cfg['retention_days'] * 86400
+                for mid in data['message_ids']:
+                    row = c.execute('SELECT data FROM scout_buffer WHERE guild_id=? AND message_id=? AND observed_at>=?', (str(guild), str(mid), cutoff)).fetchone()
+                    snapshots.append(json.loads(row['data']) if row else dict(message_id=str(mid), content=None))
+                data = dict(data, messages=snapshots)
+            c.execute('INSERT OR IGNORE INTO scout_observations VALUES(?,?,?,?)', (str(guild), key, encode(data), time.time()))
+            observation = c.execute('SELECT data FROM scout_observations WHERE guild_id=? AND source_key=?', (str(guild), key)).fetchone()
+            if data.get('count', 1) > json.loads(observation['data']).get('count', 1):
+                c.execute('UPDATE scout_observations SET data=? WHERE guild_id=? AND source_key=?', (encode(data), str(guild), key))
+            if (not self.confirmed_scout_action(data, key)
+                    or not set(data['scout_roles']) & set(cfg['scout_roles'])):
+                return None
             old = c.execute('SELECT id FROM scout_records WHERE guild_id=? AND source_key=?', (str(guild), key)).fetchone()
             if old:
                 r = self._record(c, guild, old['id'])
@@ -482,33 +528,29 @@ class Scouts:
                     r['data']['count'] = data['count']
                     return self._update(c, r, 'system', 'audit_count_increased')
                 return r
-            if 'message_ids' in data:
-                snapshots = []
-                cutoff = time.time() - cfg['retention_days'] * 86400
-                for mid in data['message_ids']:
-                    row = c.execute('SELECT data FROM scout_buffer WHERE guild_id=? AND message_id=? AND observed_at>=?', (str(guild), str(mid), cutoff)).fetchone()
-                    snapshots.append(json.loads(row['data']) if row else dict(message_id=str(mid), content=None))
-                data = dict(data, messages=snapshots)
             return self._create(c, guild, 'system', data.get('moderator_id', ''), data, source=key)
 
     def reconcile_links(self, guild):
-        """Candidate links are evidence, never a guessed actor. Aggregated Discord
-        deletes/moves omit exact message/member IDs even when only one entry exists.
+        """Reconcile temporary observations without promoting uncertain events.
+
+        Even a single deletion audit candidate cannot identify exact message IDs.
+        Keeping candidate links here avoids posting unrelated self-deletion content
+        as evidence of a Scout's action or generating duplicate gateway cards.
         """
         with self.connect() as c:
             c.execute('BEGIN IMMEDIATE')
-            events = c.execute("SELECT * FROM scout_records WHERE guild_id=? AND kind='system' AND source_key LIKE 'gateway:%' AND created_at>?", (str(guild), time.time() - 180)).fetchall()
-            audits = [self.unpack(r) for r in c.execute("SELECT * FROM scout_records WHERE guild_id=? AND kind='system' AND source_key LIKE 'audit:%' AND created_at>?", (str(guild), time.time() - 240))]
+            cutoff = time.time() - CORRELATION_RETENTION_SECONDS
+            events = c.execute("SELECT source_key,data FROM scout_observations WHERE guild_id=? AND source_key LIKE 'gateway:%' AND observed_at>?", (str(guild), cutoff)).fetchall()
+            audits = [dict(source_key=r['source_key'], data=json.loads(r['data'])) for r in c.execute("SELECT source_key,data FROM scout_observations WHERE guild_id=? AND source_key LIKE 'audit:%' AND observed_at>?", (str(guild), cutoff))]
             for row in events:
-                r = self.unpack(row)
-                d = r['data']
+                d = json.loads(row['data'])
                 if d.get('timeout_change') == 'expiry':
                     continue
-                candidates = [a['id'] for a in audits if (d['action_type'] != 'timeout' or (a['data'].get('target_id') == d.get('target_id') and a['data'].get('before') == d.get('before') and a['data'].get('after') == d.get('after'))) and a['data']['action_type'] == d['action_type'] and abs(a['data']['event_at'] - d['event_at']) <= 90 and (not a['data'].get('channel_id') or a['data'].get('channel_id') == d.get('channel_id'))]
+                candidates = [a['source_key'] for a in audits if (d['action_type'] != 'timeout' or (a['data'].get('target_id') == d.get('target_id') and a['data'].get('before') == d.get('before') and a['data'].get('after') == d.get('after'))) and a['data']['action_type'] == d['action_type'] and abs(a['data']['event_at'] - d['event_at']) <= 90 and (not a['data'].get('channel_id') or a['data'].get('channel_id') == d.get('channel_id'))]
                 if candidates and candidates != d.get('audit_candidates', []):
                     d['audit_candidates'] = candidates
                     d['attribution'] = ('timeout audit evidence linked; inspect the source record' if d['action_type']=='timeout' else 'uncertain: audit candidates do not identify exact messages')
-                    self._update(c, r, 'system', 'candidate_links_added')
+                    c.execute('UPDATE scout_observations SET data=? WHERE guild_id=? AND source_key=?', (encode(d), str(guild), row['source_key']))
 
     def retry_delivery(self, actor, job_id):
         actor.require('settings.manage')

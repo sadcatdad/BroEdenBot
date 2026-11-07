@@ -1903,8 +1903,13 @@ live together in Dashboard Access. Older `/stats`, `/settings/knowledge`,
 `/imports`, `/users`, `/settings/features`, and `/settings/permissions` URLs
 redirect to their current locations so existing bookmarks remain usable.
 
-The Garden uses a shared dark interface system in `dashboard/static/garden_redesign.css`
-for spacing, type, cards, controls, tables, and responsive navigation. Events keeps
+The Garden uses a forest-green interface system in `dashboard/static/garden_redesign.css`,
+with warm ivory text, pale lime actions, sage surfaces, and hand-drawn botanical
+SVG details that echo broeden.com. No generated artwork or external font service
+is used. The responsive sign-in screen contains essential login controls without
+marketing slogans and keeps Discord sign-in and the owner password fallback available; the shared theme covers member and admin navigation, cards,
+forms, tables, settings, and analytics. Existing uploaded event artwork and member
+profile themes retain their own appearance. Events keeps
 its primary create action in the page header, places Event Drops in section
 navigation, and uses a compact next-event summary and scannable event cards.
 Artwork-free events use a short branded marker, while uploaded artwork retains a
@@ -2718,27 +2723,42 @@ are application permission boundaries, not encryption of SQLite backups.
 
 ### Automatic evidence and capture limitations
 
-The bot captures individual/bulk deletion gateway events in configured scope,
-member timeout changes/expiry, and Discord audit evidence for deletions, timeouts,
-moderator voice moves/disconnections. Ordinary voice movement produces no Scout
-moderation record. Timeout expiry is labeled separately from a change/removal;
-only the audit entry confirms a moderator and timeout target.
+Automatic Scout records and channel cards require a Discord audit entry whose
+acting moderator is a verified human holding a configured **Scout eligibility
+role**. This applies to deletions, bulk deletions, timeouts, and moderator voice
+moves/disconnections. Administrator status, the affected member's roles, or the
+deleted message author's roles do not substitute for the acting Scout's role.
+Non-Scout moderators, bots (including bots with a Scout role), self-deletions,
+ordinary voice movement, automatic timeout expiry, and unverifiable actors do not
+produce Scout records/cards. There is no fallback to broad moderation logging.
 
 The persistent message/edit buffer runs independently of AI archives and never
-captures DMs. At deletion, available snapshots and edit versions are copied into
-permanent evidence; absent/expired snapshots say **Content unavailable**. Text may
-be shortened in Discord cards; the dashboard retains the full captured evidence.
+captures DMs. Raw deletions and timeout changes are held in a separate, restart-safe
+correlation buffer for at most five minutes of normal worker operation, without
+creating Scout records, revisions, channel posts, or AI sources. This buffer retains
+available deletion snapshots while audit evidence arrives and is pruned by the
+worker. The ordinary rolling message buffer still uses the configured retention.
+Deleted content is attached to permanent evidence only when the exact association
+is known. Discord deletion audit entries generally omit exact message IDs, so a
+confirmed Scout audit card can show **Content unavailable** even when nearby deleted
+text was buffered. A lone candidate, matching author/channel, or close timestamp
+does not prove that a Scout deleted that particular message. No nearby self-deleted
+content is copied into a Scout card on that basis. Any captured text retained in
+permanent evidence remains available in full in the dashboard.
 Attachment URLs/names are references and can expire; files are not archived.
 Changing buffer retention/pruning never expires finalized evidence.
 
 Audit entries identify only the actor supplied by Discord. Bot reasons naming a
 human never create human attribution. Role snapshots reflect roles observed when
 attribution was captured and include that observation timestamp. Concurrent/delayed
-or grouped deletion evidence stays **unattributed/uncertain**, with candidate audit
-record links rather than a guessed exact association. Grouped voice entries may
-lack exact affected member IDs. Such gateway evidence is excluded from confirmed
-Scout totals. Audit records remain separate from message snapshots so they can be
-reviewed without implying an exact mapping. See the
+or grouped deletion evidence stays **unattributed/uncertain** in temporary
+correlation storage rather than entering the Scout feed. Grouped voice entries may
+lack exact affected member IDs. Gateway events never contribute to Scout totals.
+Only confirmed Scout audit records appear in System Actions and AI review sources.
+Pre-fix unconfirmed/non-Scout records and receipts are preserved for historical
+review through existing direct links, but excluded from the active feed and AI;
+their pending channel deliveries are cancelled before sending. Already-posted
+Discord cards are not automatically deleted. See the
 [Discord audit-log merging rules](https://docs.discord.com/developers/resources/audit-log)
 and [raw deletion event limitations](https://discordpy.readthedocs.io/en/stable/api.html#discord.on_raw_message_delete).
 

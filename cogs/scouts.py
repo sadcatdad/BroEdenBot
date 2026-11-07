@@ -76,6 +76,8 @@ def card_embed(record, marker):
             lines.append('Additional messages and full evidence are in The Garden.')
         if d.get('count'):
             lines.append('**Grouped audit count:** ' + str(d['count']))
+        if d['action_type'] in ('message_delete','message_bulk_delete') and not d.get('messages'):
+            lines.append('**Deleted-message content:** Unavailable; this audit entry does not identify exact message IDs. Nearby deletions are not assumed to belong to this action.')
     else:
         lines += ['**Scout:** ' + record['author_id'], safe(d.get('summary',''),2000)]
         if d.get('action'):
@@ -518,16 +520,20 @@ class ScoutsCog(commands.Cog):
             before=old.timestamp() if old else None
             after=new.timestamp() if new else None
         cfg=await self.call(self.service.settings,guild.id)
+        if not cfg['enabled'] or not cfg['automatic_enabled'] or action not in cfg['action_types']:
+            return
         if entry.created_at.timestamp()<cfg.get('capture_since',time.time()):
             return
         moderator=entry.user
         roles=[]
         human=False
+        moderator_is_bot=bool(getattr(moderator,'bot',False))
         if moderator:
             try:
                 moderator=await guild.fetch_member(moderator.id)
                 roles=sorted(str(r.id) for r in moderator.roles if str(r.id) in cfg['scout_roles'])
                 human=not moderator.bot
+                moderator_is_bot=moderator.bot
             except discord.HTTPException:
                 pass
         extra=entry.extra
@@ -542,6 +548,7 @@ class ScoutsCog(commands.Cog):
         data=dict(action_type=action,event_at=entry.created_at.timestamp(),audit_id=str(entry.id),
                   moderator_id=str(entry.user.id) if entry.user else '',scout_roles=roles,role_snapshot_at=time.time(),
                   confirmed_scout=bool(human and roles),reason=entry.reason or '',
+                  moderator_is_bot=moderator_is_bot,
                   target_id=str(target) if target else '',channel_id=str(channel.id) if channel else '',
                   count=getattr(extra,'count',1),before=before,after=after,
                   attribution='audit actor confirmed; grouped entry may omit exact affected members/messages' if action!='timeout' else 'audit actor and timeout target confirmed')
@@ -613,6 +620,19 @@ class ScoutsCog(commands.Cog):
             with self.service.connect() as c:
                 return self.service._record(c,job['guild_id'],job['record_id'])
         r=await self.call(load)
+        if r['kind']=='system':
+            if not self.service.confirmed_scout_action(r['data'],r['source_key']):
+                if job['status']=='pending':
+                    await self.sql("UPDATE scout_jobs SET status='cancelled',error='Suppressed: automatic logging requires a confirmed human Scout audit actor.' WHERE id=? AND status='pending'",(job['id'],))
+                elif job['status']=='uncertain':
+                    # Reconcile previously attempted deliveries, but never resend.
+                    pass
+                else:
+                    return
+                if job['status']!='uncertain':
+                    return
+            elif not cfg['automatic_enabled'] and job['status']=='pending':
+                return
         marker='Scout delivery '+job['id']
         if r['kind']=='checkin':
             sent=await self.call(self.service.rows,"SELECT 1 FROM scout_jobs WHERE record_id=? AND status='sent'",(r['id'],))
