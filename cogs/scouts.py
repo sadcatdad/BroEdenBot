@@ -20,8 +20,9 @@ import discord
 from discord import app_commands
 from discord.ext import commands, tasks
 
-from utils.scouts import Scouts, ACTIVITY_TYPES, REPORT_CATEGORIES, encode
+from utils.scouts import Scouts, ACTIVITY_TYPES, REPORT_CATEGORIES, CARD_LAYOUT_VERSION, encode
 from utils.scout_access import discord_member_actor
+from utils.scout_forms import FORM_DEFAULTS
 from utils.settings import get_setting
 
 log = logging.getLogger(__name__)
@@ -34,7 +35,7 @@ def dashboard_url(rid=''):
 
 
 def snapshot(message):
-    return dict(message_id=str(message.id), channel_id=str(message.channel.id), author_id=str(message.author.id),
+    return dict(message_id=str(message.id), channel_id=str(message.channel.id), author_id=str(message.author.id), author_name=str(getattr(message.author,'display_name',message.author)),
                 content=message.content, created_at=message.created_at.timestamp(),
                 edited_at=message.edited_at.timestamp() if message.edited_at else None,
                 jump_url=message.jump_url,
@@ -64,80 +65,115 @@ def delivery_receipt_matches(embed, marker):
             == 'scout-delivery=' + quote(marker, safe=''))
 
 
+def record_label(record):
+    # Internal UUIDs remain storage keys; never display a shortened UUID as an ID.
+    return str(record.get('short_id') or '')
+
+
 def card_embed(record, marker):
-    d = record['data']
-    title = {'manual':'Scout activity','report':'Member report','system':'Automatic moderation evidence', 'escalation':'Escalated', 'checkin':'Requested Scout check-in'}[record['kind']]
-    if record['kind'] == 'manual' and d.get('type') and d['type'] != 'other':
-        title += ' · ' + safe(d['type'].capitalize(), 80)
+    d, kind = record['data'], record['kind']
+    title = {'manual': 'Scout activity', 'report': 'Member report', 'system': 'Scout action',
+             'escalation': 'Help requested', 'checkin': 'Scout check-in'}[kind]
     lines = []
-    if record['kind'] == 'report':
-        m = d['message']
-        lines += ['**Category:** ' + safe(d['category']), '**Reported member:** ' + member_reference(m.get('author_id'))
-                  + ' · **Channel:** ' + channel_reference(m['channel_id']),
-                  '**Message:** ' + safe(m.get('content') or 'Content unavailable', 2200),
-                  m.get('jump_url','')]
-    elif record['kind'] == 'checkin':
-        lines += ['**Recipient:** ' + member_reference(d['recipient_id']),
-                  'Respond using the button below. Answers stay in The Garden.']
-        lines.append('**Questions:**\n' + '\n'.join(f'{i+1}. {safe(q,200)}' for i,q in enumerate(d['questions'])))
-        if d.get('deadline'):
-            lines.append(f"**Deadline:** <t:{int(d['deadline'])}:F>")
-        if record['status'] != 'pending':
-            lines.append('This request is closed.')
-    elif record['kind'] == 'system':
-        lines += ['**Action:** ' + d['action_type'], '**Attribution:** ' + safe(d.get('attribution','unavailable'),300)]
-        if d.get('moderator_id'):
-            lines.append('**Scout:** ' + member_reference(d['moderator_id']))
-        if d.get('target_id'):
-            lines.append('**Target:** ' + d['target_id'])
+
+    def bullet(label, value, limit=650):
+        if value:
+            text = '\n'.join(line.strip() for line in str(value).splitlines() if line.strip())
+            lines.append('• **' + label + ':** ' + safe(text, limit))
+
+    if kind == 'system':
+        action = d.get('action_type', '')
+        count = max(1, int(d.get('count') or 1))
+        if action in ('message_delete', 'message_bulk_delete'):
+            title = 'Message deleted' if count == 1 else f'{count} messages deleted'
+        elif action == 'timeout':
+            title = 'Timeout removed' if not d.get('after') else 'Timeout updated' if d.get('before') else 'Timeout applied'
+        elif action == 'member_move':
+            title = 'Member moved in voice' if count == 1 else f'{count} members moved in voice'
+        elif action == 'member_disconnect':
+            title = 'Member disconnected from voice' if count == 1 else f'{count} members disconnected from voice'
+        actor = member_reference(d.get('moderator_id')) if d.get('moderator_id') else 'Not confirmed'
+        lines.append('• **' + ('Scout' if d.get('confirmed_scout') else 'Actor') + ':** ' + actor)
+        if d.get('target_id') and str(d['target_id']) != str(d.get('channel_id', '')):
+            lines.append('• **Member:** ' + member_reference(d['target_id']))
         if d.get('channel_id'):
-            lines.append('**Channel:** ' + channel_reference(d['channel_id']))
-        lines.append('**Reason:** ' + safe(d.get('reason') or 'None supplied',400))
-        for m in d.get('messages', [])[:5]:
-            lines.append('**Deleted message ' + m['message_id'] + ':** ' + safe(m.get('content') if m.get('content') is not None else 'Content unavailable',450))
-        if len(d.get('messages',[]))>5:
-            lines.append('Additional messages and full evidence are in The Garden.')
-        if d.get('count'):
-            lines.append('**Grouped audit count:** ' + str(d['count']))
-        if d['action_type'] in ('message_delete','message_bulk_delete') and not d.get('messages'):
-            lines.append('**Deleted-message content:** Unavailable; this audit entry does not identify exact message IDs. Nearby deletions are not assumed to belong to this action.')
+            lines.append('• **Channel:** ' + channel_reference(d['channel_id']))
+        bullet('Reason', d.get('reason'), 350)
+        if action == 'timeout' and d.get('after'):
+            lines.append(f"• **Until:** <t:{int(d['after'])}:f>")
+        messages = d.get('messages', [])
+        for index, message in enumerate(messages[:3], 1):
+            text = message.get('content')
+            bullet('Deleted text' if len(messages) == 1 else f'Message {index}',
+                   text if text else 'Not captured.', 650)
+        if action in ('message_delete', 'message_bulk_delete') and not messages:
+            bullet('Deleted text', 'Not captured.')
+        if messages and d.get('message_context_attribution'):
+            lines.append('• Captured text matched to this action; verify the context in The Garden.')
+        if len(messages) > 3:
+            lines.append('• More captured messages are in The Garden.')
+    elif kind == 'report':
+        message = d['message']
+        bullet('Category', d['category'], 120)
+        lines.append('• **Member:** ' + member_reference(message.get('author_id'))
+                     + ' · **Channel:** ' + channel_reference(message['channel_id']))
+        bullet('Message', message.get('content') or 'Not captured.', 1800)
+        if message.get('jump_url'):
+            lines.append('[Open reported message](' + message['jump_url'] + ')')
+    elif kind == 'checkin':
+        lines.append('• **For:** ' + member_reference(d['recipient_id']))
+        if d.get('deadline'):
+            lines.append(f"• **Due:** <t:{int(d['deadline'])}:f>")
+        for index, question in enumerate(d['questions'], 1):
+            bullet(str(index), question, 200)
+        lines.append('Answers stay in The Garden.' if record['status'] == 'pending' else 'This request is closed.')
     else:
-        metadata = '**Scout:** ' + member_reference(record['author_id'])
+        lines.append('• **Scout:** ' + member_reference(record['author_id']))
+        if kind == 'manual':
+            bullet('Type', (d.get('type') or 'other').capitalize(), 80)
         if d.get('channel'):
-            metadata += ' · **Channel:** ' + channel_reference(d['channel'])
-        lines.append(metadata)
-        details = []
-        if d.get('members'):
-            details.append('**Involved:** ' + safe(d['members'], 240))
-        if d.get('incident_at'):
-            details.append('**When:** ' + safe(d['incident_at'], 100))
-        if details:
-            lines.append(' · '.join(details))
-        lines.append(('**Help needed:** ' if record['kind'] == 'escalation' else '**What happened:** ')
-                     + safe(d.get('summary',''),1800))
-        if d.get('action'):
-            lines.append('**Action taken:** ' + safe(d['action'],700))
-        if d.get('evidence'):
-            lines.append('**Evidence:** ' + safe(d['evidence'],400))
-        if d.get('related'):
-            lines.append('**Related record:** ' + d['related'])
-        if record['status']=='void':
-            lines.append('**Void reason:** ' + safe(d.get('void_reason',''),400))
-    if d.get('outcome'):
-        lines.append('**Outcome:** ' + safe(d['outcome'],450))
-    target = dashboard_url(record['id']) or f"https://discord.com/channels/{record['guild_id']}"
-    embed = discord.Embed(title=title, description='\n'.join(line for line in lines if line)[:4096], color=SCOUT_EMBED_COLOR,
+            lines.append('• **Channel:** ' + channel_reference(d['channel']))
+        bullet('Involved', d.get('members'), 180)
+        bullet('When', d.get('incident_at'), 80)
+        bullet('Help needed' if kind == 'escalation' else 'What happened', d.get('summary'), 1700)
+        bullet('Action taken', d.get('action'), 650)
+        bullet('Evidence', d.get('evidence'), 350)
+        if record.get('related_short_id'):
+            lines.append('• **Related:** #' + record['related_short_id'])
+        if record['status'] == 'void':
+            bullet('Voided', d.get('void_reason'), 250)
+    bullet(d.get('form_labels',{}).get('outcome','Outcome'), d.get('outcome'), 400)
+    for answer in d.get('form_answers',[]) + d.get('outcome_answers',[]):
+        bullet(answer['label'],answer['answer'],300)
+    label = record_label(record)
+    target = dashboard_url(label) or f"https://discord.com/channels/{record['guild_id']}"
+    embed = discord.Embed(title=title, description='\n'.join(lines)[:4096], color=SCOUT_EMBED_COLOR,
                           url=target + '#scout-delivery=' + quote(marker, safe=''),
                           timestamp=datetime.fromtimestamp(record['created_at'], timezone.utc))
-    embed.set_footer(text=f"Record {record['id']} · {record['status'].title()}")
+    footer = [f'#{label}' if label else 'Scout Operations']
+    if record['status'] not in ('active',):
+        footer.append(record['status'].title())
+    elif label:
+        footer.append('Historical evidence' if kind == 'system' and not d.get('confirmed_scout') else 'Scout Operations')
+    embed.set_footer(text=' · '.join(footer))
     return embed
 
 
 class OpenForm(discord.ui.View):
-    def __init__(self, uid, factory, *, label='Open form'):
+    def __init__(self, uid, factory, *, label='Open form', new_entry_factory=None):
         super().__init__(timeout=300)
         self.uid, self.factory = uid, factory
         self.open.label = label
+        self.new_entry_factory=new_entry_factory
+        if new_entry_factory:
+            button=discord.ui.Button(label='Save as a new entry',style=discord.ButtonStyle.secondary)
+            async def start_new(interaction):
+                if interaction.user.id!=self.uid:
+                    await interaction.response.send_message('This draft belongs to another member.',ephemeral=True)
+                    return
+                await interaction.response.send_modal(new_entry_factory())
+            button.callback=start_new
+            self.add_item(button)
 
     @discord.ui.button(label='Open form', style=discord.ButtonStyle.primary)
     async def open(self, interaction, button):
@@ -151,17 +187,21 @@ class ScoutModal(discord.ui.Modal):
     def __init__(self, cog, guild, mode, *, rid='', values=None, related='', source='', questions=None):
         super().__init__(title={'manual':'Log Scout Activity','edit':'Edit Scout Activity','escalate':'Escalate to higher staff','handle':'Mark report handled','answer':'Respond to Check-in'}[mode], timeout=600)
         self.cog, self.guild, self.mode, self.rid = cog, str(guild), mode, rid
+        self.questions=questions
         self.values, self.related, self.source = values or {}, related, source
-        fields = [('summary','What happened',4000),('action','Action taken',4000),('outcome','Outcome (optional)',1000),('evidence','Evidence links (optional)',2000)] if mode in ('manual','edit') else [('reason','Help needed' if mode=='escalate' else 'Outcome',4000)]
-        if mode in ('manual','escalate'):
-            fields.append(('related', 'Related record or message link (optional)', 500))
-        if mode=='answer':
-            fields = [('answer'+str(i), q[:45], 4000) for i,q in enumerate(questions or [])]
+        profile = 'activity' if mode in ('manual','edit') else 'outcome' if mode=='handle' else 'escalation'
+        schema=self.values.get('_form_schema') or FORM_DEFAULTS[profile]
         self.inputs = {}
-        for key, label, limit in fields:
-            field = discord.ui.TextInput(label=label, style=discord.TextStyle.paragraph, required=key not in ('outcome','evidence','related'), max_length=limit,
-                                         default=(self.related if key=='related' else self.values.get(key)) or None, placeholder=(questions[int(key[6:])][:100] if key.startswith('answer') else None))
-            self.inputs[key] = field
+        if mode=='answer':
+            schema=[dict(key='answer'+str(i),label=q[:45],placeholder=q[:100],required=True,enabled=True) for i,q in enumerate(questions or [])]
+        for f in schema:
+            if not f['enabled']:
+                continue
+            key=f['key']
+            field = discord.ui.TextInput(label=f['label'],style=discord.TextStyle.paragraph,
+                required=f['required'],max_length=2000 if key=='evidence' else 4000,
+                default=self.values.get(key) or None,placeholder=f.get('placeholder') or None)
+            self.inputs[key]=field
             self.add_item(field)
 
     async def on_submit(self, interaction):
@@ -172,13 +212,13 @@ class ScoutModal(discord.ui.Modal):
         try:
             actor = await self.cog.actor(interaction.user.id, self.guild)
             if self.mode=='manual':
-                r = await self.cog.call(self.cog.service.manual, actor, values, values.get('related', self.related), self.source)
+                r = await self.cog.call(self.cog.service.manual, actor, values, self.related, self.source)
             elif self.mode=='edit':
                 r = await self.cog.call(self.cog.service.edit, actor, self.rid, values, self.values['version'])
             elif self.mode=='escalate':
-                r = await self.cog.call(self.cog.service.escalate, actor, values['reason'], values.get('related', self.related or self.rid), self.source)
+                r = await self.cog.call(self.cog.service.escalate, actor, values['reason'], self.related or self.rid, self.source, values)
             elif self.mode=='handle':
-                r = await self.cog.call(self.cog.service.handle, actor, self.rid, values['reason'])
+                r = await self.cog.call(self.cog.service.handle, actor, self.rid, values['reason'], values)
             else:
                 r = await self.cog.call(self.cog.service.answer, actor, self.rid, [f.value for f in self.inputs.values()])
             if self.mode=='answer':
@@ -193,21 +233,35 @@ class ScoutModal(discord.ui.Modal):
 
     async def save_error(self, interaction, message, values):
         kwargs = {}
-        if self.mode in ('manual','edit','escalate'):
+        if self.mode in ('manual','edit','escalate','handle','answer'):
+            try:
+                cfg=await self.cog.call(self.cog.service.settings,self.guild)
+                profile='activity' if self.mode in ('manual','edit') else 'outcome' if self.mode=='handle' else 'escalation'
+                values['_form_schema']=cfg['forms'][profile]
+            except Exception:
+                pass
             kwargs['view'] = OpenForm(interaction.user.id, lambda: ScoutModal(
                 self.cog, self.guild, self.mode, rid=self.rid, values=values,
-                related=values.get('related', self.related), source=self.source), label='Review draft')
+                related=self.related, source=self.source,questions=self.questions), label='Review draft',new_entry_factory=(lambda: ScoutModal(
+                    self.cog,self.guild,self.mode,values=values,related='',source=self.source)) if self.related and self.mode!='edit' else None)
             message += '\nYour draft is preserved. Choose Review draft to correct it and try again.'
         await interaction.followup.send(message, ephemeral=True, allowed_mentions=discord.AllowedMentions.none(), **kwargs)
 
 
 class ReportModal(discord.ui.Modal, title='Report to Staff'):
-    explanation = discord.ui.TextInput(label='Why are you reporting this message?', style=discord.TextStyle.paragraph, max_length=4000)
 
-    def __init__(self, cog, message, category, reporter, source):
+    def __init__(self, cog, message, category, reporter, source, fields=None, values=None, target_snapshot=None):
         super().__init__(timeout=600)
         self.cog, self.message, self.category, self.reporter, self.source = cog, message, category, reporter, source
-        self.target_snapshot = snapshot(message)
+        self.target_snapshot = target_snapshot or snapshot(message)
+        self.fields=fields or FORM_DEFAULTS['report']
+        self.inputs={}
+        for f in self.fields:
+            if f['enabled']:
+                item=discord.ui.TextInput(label=f['label'],placeholder=f.get('placeholder') or None,required=f['required'],style=discord.TextStyle.paragraph,max_length=4000,default=(values or {}).get(f['key']) or None)
+                self.inputs[f['key']]=item
+                self.add_item(item)
+        self.explanation=self.inputs['explanation']
 
     async def on_submit(self, interaction):
         await interaction.response.defer(ephemeral=True)
@@ -216,26 +270,38 @@ class ReportModal(discord.ui.Modal, title='Report to Staff'):
                 raise PermissionError('This report form belongs to another member.')
             await self.cog.report_member(interaction.user.id, self.message.channel)
             r = await self.cog.call(self.cog.service.report, self.message.guild.id, interaction.user.id,
-                                    self.target_snapshot, self.category, self.explanation.value, self.source)
-            await interaction.followup.send(f"Report #{r['id']} received. Staff authorized to view protected submissions can read your identity and explanation in The Garden.", ephemeral=True)
+                                    self.target_snapshot, self.category, self.explanation.value, self.source,{k:f.value for k,f in self.inputs.items()})
+            await interaction.followup.send(f"Report #{r['short_id']} received. Staff authorized to view protected submissions can read your identity and explanation in The Garden.", ephemeral=True)
         except (ValueError, PermissionError) as exc:
-            await interaction.followup.send(str(exc), ephemeral=True)
+            await self.retry_draft(interaction,str(exc))
         except Exception:
             # Never include the form, reporter or explanation in diagnostic logs.
             log.error('Member-report storage or delivery preparation failed')
-            await interaction.followup.send('Could not confirm receipt. Please try again; duplicates are prevented.', ephemeral=True)
+            await self.retry_draft(interaction,'Could not confirm receipt. Check for your receipt before retrying; duplicates are prevented.')
+
+    async def retry_draft(self,interaction,message):
+        try:
+            cfg=await self.cog.call(self.cog.service.settings,self.message.guild.id)
+            fields=cfg['forms']['report']
+        except Exception:
+            fields=self.fields
+        values={k:f.value for k,f in self.inputs.items()}
+        view=OpenForm(self.reporter,lambda:ReportModal(self.cog,self.message,self.category,self.reporter,self.source,
+            fields,values,self.target_snapshot),label='Review report draft')
+        await interaction.followup.send(message+' Your private draft is preserved.',ephemeral=True,view=view,allowed_mentions=discord.AllowedMentions.none())
 
 
 class ReportCategory(discord.ui.Select):
-    def __init__(self, cog, message, uid, source):
+    def __init__(self, cog, message, uid, source, fields=None):
         super().__init__(placeholder='Choose a report category', options=[discord.SelectOption(label=c) for c in REPORT_CATEGORIES])
         self.cog, self.message, self.uid, self.source = cog, message, uid, source
+        self.fields=fields
 
     async def callback(self, interaction):
         if interaction.user.id != self.uid:
             await interaction.response.send_message('This report belongs to another member.', ephemeral=True)
             return
-        await interaction.response.send_modal(ReportModal(self.cog, self.message, self.values[0], self.uid, self.source))
+        await interaction.response.send_modal(ReportModal(self.cog, self.message, self.values[0], self.uid, self.source,self.fields))
 
 
 class DeliveryStatus(discord.ui.View):
@@ -262,10 +328,10 @@ class DeliveryStatus(discord.ui.View):
             await interaction.followup.send('Could not check delivery right now. The saved record is retained; try Check delivery again shortly.', ephemeral=True)
 
 
-class ScoutControl(discord.ui.DynamicItem[discord.ui.Button], template=r'scouts:(?P<action>add|escalate|handle|answer):(?P<rid>[a-f0-9]{16}):(?P<guild>[0-9]+)'):
+class ScoutControl(discord.ui.DynamicItem[discord.ui.Button], template=r'scouts:(?P<action>add|escalate|handle|answer):(?P<rid>(?:[a-f0-9]{16}|[0-9A-Z]{1,4})):(?P<guild>[0-9]+)'):
     def __init__(self, action, rid, guild):
         self.action, self.rid, self.guild = action, rid, str(guild)
-        super().__init__(discord.ui.Button(label={'add':'Add Activity','escalate':'Escalate','handle':'Mark Handled','answer':'Respond to Check-in'}[action],
+        super().__init__(discord.ui.Button(label={'add':'Add follow-up','escalate':'Ask for help','handle':'Mark Handled','answer':'Respond to Check-in'}[action],
                                           custom_id=f'scouts:{action}:{rid}:{guild}', style=discord.ButtonStyle.primary if action=='answer' else discord.ButtonStyle.secondary))
 
     @classmethod
@@ -289,7 +355,9 @@ class ScoutControl(discord.ui.DynamicItem[discord.ui.Button], template=r'scouts:
                 raise PermissionError('This check-in is not open for you.')
             if mode=='handle' and (r['kind']!='report' or r['status']!='new'):
                 raise ValueError('This report is already handled or unavailable.')
-            factory = lambda: ScoutModal(cog, self.guild, mode, rid=self.rid, related=self.rid if mode in ('manual','escalate') else '', questions=r['data'].get('questions'))
+            cfg=await cog.call(cog.service.settings,self.guild)
+            profile='activity' if mode=='manual' else 'outcome' if mode=='handle' else 'escalation'
+            factory = lambda: ScoutModal(cog, self.guild, mode, rid=self.rid, values={'_form_schema':cfg['forms'][profile]}, related=self.rid if mode in ('manual','escalate') else '', questions=r['data'].get('questions'))
             await interaction.followup.send('Open the form to continue.', ephemeral=True, view=OpenForm(interaction.user.id, factory))
         except (ValueError, PermissionError) as exc:
             await interaction.followup.send(str(exc), ephemeral=True)
@@ -299,13 +367,13 @@ def record_view(record):
     view = discord.ui.View(timeout=None)
     if record['kind']=='checkin':
         if record['status']=='pending':
-            view.add_item(ScoutControl('answer',record['id'],record['guild_id']))
+            view.add_item(ScoutControl('answer',record['short_id'],record['guild_id']))
     else:
         for action in ('add','escalate'):
-            view.add_item(ScoutControl(action,record['id'],record['guild_id']))
+            view.add_item(ScoutControl(action,record['short_id'],record['guild_id']))
         if record['kind']=='report' and record['status']=='new':
-            view.add_item(ScoutControl('handle',record['id'],record['guild_id']))
-    if url := dashboard_url(record['id']):
+            view.add_item(ScoutControl('handle',record['short_id'],record['guild_id']))
+    if url := dashboard_url(record['short_id']):
         view.add_item(discord.ui.Button(label='View Dashboard', url=url))
     return view
 
@@ -331,7 +399,7 @@ class ActivityPages(discord.ui.View):
                 "SELECT coalesce(sum(coalesce(json_extract(data,'$.count'),1)),0) total FROM scout_records WHERE guild_id=? AND kind='system' AND source_key LIKE 'audit:%' AND author_id=? AND json_extract(data,'$.confirmed_scout')=1 AND created_at>=?",
                 (str(self.guild),str(self.scout),time.time()-self.days*86400))
             system_total = f" {confirmed[0]['total']} confirmed audit actions (grouped counts; exact affected members may be unknown)."
-        return f"Scout {self.scout} · {self.days} days · {totals[0]['total']} standalone manual records.{system_total} Linked context is listed separately; member reports are not Scout activity.\nPage {self.page}\n" + '\n'.join(f"#{r['id']} · {r['status']} · {safe(r['data']['summary'],20)}" for r in rows[:25])
+        return f"Scout {self.scout} · {self.days} days · {totals[0]['total']} standalone manual records.{system_total} Linked context is listed separately; member reports are not Scout activity.\nPage {self.page}\n" + '\n'.join(f"#{r['short_id']} · {r['status']} · {safe(r['data']['summary'],20)}" for r in rows[:25])
 
     async def turn(self, interaction, amount):
         if interaction.user.id != self.uid:
@@ -393,6 +461,7 @@ class ScoutsCog(commands.Cog):
 
     async def cog_load(self):
         await self.call(self.service.initialize)
+        await self.call(self.service.queue_card_refresh)
         self.bot.tree.add_command(self.report_menu)
         self.bot.tree.add_command(self.log_menu)
         self.bot.add_dynamic_items(ScoutControl)
@@ -423,7 +492,7 @@ class ScoutsCog(commands.Cog):
         jobs = await self.call(self.service.rows,
             'SELECT status,destination,message_id,error FROM scout_jobs WHERE guild_id=? AND record_id=? AND version=? ORDER BY created_at DESC LIMIT 1',
             (record['guild_id'], record['id'], record['version']))
-        message = f"Saved **#{record['id']}**. "
+        message = f"Saved **#{record['short_id']}**. "
         if not jobs:
             return message + 'No channel delivery was queued. Check this record in The Garden.'
         job = jobs[0]
@@ -440,9 +509,9 @@ class ScoutsCog(commands.Cog):
         try:
             message = await self.delivery_summary(record)
         except Exception:
-            message = f"Saved **#{record['id']}**. Check delivery below or view this record in The Garden; no need to resubmit."
+            message = f"Saved **#{record['short_id']}**. Check delivery below or view this record in The Garden; no need to resubmit."
         await interaction.followup.send(message, ephemeral=True, allowed_mentions=discord.AllowedMentions.none(),
-            view=DeliveryStatus(self, interaction.user.id, record['guild_id'], record['id']))
+            view=DeliveryStatus(self, interaction.user.id, record['guild_id'], record['short_id']))
 
     async def report_member(self, uid, channel):
         # Reporting requires membership and message visibility, never staff/login access.
@@ -469,7 +538,8 @@ class ScoutsCog(commands.Cog):
                 raise PermissionError('Choose a message in this server.')
             await self.report_member(interaction.user.id,message.channel)
             view = discord.ui.View(timeout=600)
-            view.add_item(ReportCategory(self,message,interaction.user.id,str(interaction.id)))
+            cfg=await self.call(self.service.settings,interaction.guild_id)
+            view.add_item(ReportCategory(self,message,interaction.user.id,str(interaction.id),cfg['forms']['report']))
             await interaction.followup.send('Choose the category for this specific message. Only that message is captured. Your identity and explanation are restricted to authorized dashboard readers.',ephemeral=True,view=view)
         except (ValueError,PermissionError) as exc:
             await interaction.followup.send(str(exc),ephemeral=True)
@@ -481,30 +551,33 @@ class ScoutsCog(commands.Cog):
             actor.require('activity.create')
             await self.call(self.service.enabled,actor.guild_id)
             await self.report_member(interaction.user.id,message.channel)
-            values=dict(type='other', summary=message.content[:4000] or 'Message context', evidence=message.jump_url,members=str(message.author.id),channel=str(message.channel.id))
+            cfg=await self.call(self.service.settings,actor.guild_id)
+            values=dict(_form_schema=cfg['forms']['activity'],type='other', summary=message.content[:4000] or 'Message context', evidence=message.jump_url,members=str(message.author.id),channel=str(message.channel.id))
             await interaction.followup.send('Log activity with the selected message as context.',ephemeral=True,view=OpenForm(interaction.user.id,lambda: ScoutModal(self,interaction.guild_id,'manual',values=values,source=str(interaction.id))))
         except (ValueError,PermissionError) as exc:
             await interaction.followup.send(str(exc),ephemeral=True)
 
     @scout.command(name='log',description='Write a structured Scout activity record')
     @app_commands.choices(activity_type=[app_commands.Choice(name=t,value=t) for t in ACTIVITY_TYPES])
+    @app_commands.rename(activity_type='type',members='member',incident_time='when',related_record='follow_up_to',evidence_link='message_link')
     @app_commands.describe(activity_type='What kind of activity was this?', members='Involved members (names or mentions)',
         channel='Channel where the activity occurred', incident_time='When it happened, including timezone when known',
-        related_record='Optional Scout ID, Scout card/Garden link, or message evidence link',
-        evidence_link='Optional evidence link to prefill in the form')
-    async def log_activity(self,interaction:discord.Interaction,activity_type:str='other',members:str='',channel:Optional[discord.TextChannel]=None,incident_time:str='',related_record:str='',evidence_link:str=''):
+        related_record='Choose a recent activity/report to follow up. Leave empty for a new log.',
+        evidence_link='Paste a Discord message link, or use the message’s Log Scout Activity action.')
+    async def log_activity(self,interaction:discord.Interaction,activity_type:str='other',members:Optional[discord.Member]=None,channel:Optional[discord.TextChannel]=None,incident_time:str='',related_record:str='',evidence_link:str=''):
         await interaction.response.defer(ephemeral=True)
         try:
             actor=await self.actor(interaction.user.id,interaction.guild_id)
             actor.require('activity.create')
             await self.call(self.service.enabled,actor.guild_id)
             reference = await self.call(self.service.resolve_reference, actor, related_record)
-            values=dict(type=activity_type,members=members,channel=str(channel.id) if channel else '',incident_at=incident_time,evidence=evidence_link)
+            values=dict(type=activity_type,members=member_reference(members.id) if hasattr(members,'id') else str(members or ''),channel=str(channel.id) if channel else '',incident_at=incident_time,evidence=evidence_link)
             self.service._add_evidence(values, reference['evidence'])
             cfg = await self.call(self.service.settings, actor.guild_id)
+            values['_form_schema']=cfg['forms']['activity']
             message = 'Open the form to finish your activity log. It will post to ' + channel_reference(cfg['activity_channel']) + '.'
             if reference['record_id']:
-                message += f" Linked Scout record: #{reference['record_id']}."
+                message += f" Linked Scout record: #{reference['short_id']}."
             elif reference['evidence']:
                 message += ' Your message link is prefilled as evidence.'
             await interaction.followup.send(message,ephemeral=True,allowed_mentions=discord.AllowedMentions.none(),view=OpenForm(interaction.user.id,lambda:ScoutModal(self,interaction.guild_id,'manual',values=values,related=related_record,source=str(interaction.id))))
@@ -520,11 +593,14 @@ class ScoutsCog(commands.Cog):
             reference = await self.call(self.service.resolve_reference, actor, record)
             if not reference['record_id']:
                 raise ValueError('Choose an existing Scout record to edit. An ordinary message link can be used as evidence in /scout log.')
-            record = reference['record_id']
+            record = reference['short_id']
             r=await self.call(self.service.record,actor,record)
             if r['kind']!='manual' or r['author_id']!=actor.user_id or r['status']=='void':
                 raise PermissionError('Only the author can edit an active manual record.')
-            values=dict(r['data'],version=r['version'])
+            cfg=await self.call(self.service.settings,actor.guild_id)
+            values=dict(r['data'],version=r['version'],_form_schema=cfg['forms']['activity'])
+            for answer in r['data'].get('form_answers',[]):
+                values[answer['key']]=answer['answer']
             await interaction.followup.send('Open your activity revision.',ephemeral=True,view=OpenForm(interaction.user.id,lambda:ScoutModal(self,interaction.guild_id,'edit',rid=record,values=values)))
         except (ValueError,PermissionError) as exc:
             await interaction.followup.send(str(exc),ephemeral=True)
@@ -539,7 +615,8 @@ class ScoutsCog(commands.Cog):
             await interaction.followup.send(str(exc),ephemeral=True)
 
     @scout.command(name='escalate',description='Ask higher staff for help on a concern or record')
-    @app_commands.describe(record='Optional Scout ID, Scout card/Garden link, or message evidence link')
+    @app_commands.rename(record='follow_up_to')
+    @app_commands.describe(record='Choose an activity/report to ask for help with. Leave empty for a new concern.')
     async def escalate(self,interaction:discord.Interaction,record:str=''):
         await interaction.response.defer(ephemeral=True)
         try:
@@ -547,9 +624,22 @@ class ScoutsCog(commands.Cog):
             actor.require('activity.create')
             await self.call(self.service.enabled,actor.guild_id)
             await self.call(self.service.resolve_reference, actor, record)
-            await interaction.followup.send('Explain the help needed.',ephemeral=True,view=OpenForm(interaction.user.id,lambda:ScoutModal(self,interaction.guild_id,'escalate',related=record,source=str(interaction.id))))
+            cfg=await self.call(self.service.settings,actor.guild_id)
+            await interaction.followup.send('Tell higher staff what help you need. A new concern needs no existing record.',ephemeral=True,view=OpenForm(interaction.user.id,lambda:ScoutModal(self,interaction.guild_id,'escalate',values={'_form_schema':cfg['forms']['escalation']},related=record,source=str(interaction.id))))
         except (ValueError,PermissionError) as exc:
             await interaction.followup.send(str(exc),ephemeral=True)
+
+    @log_activity.autocomplete('related_record')
+    @escalate.autocomplete('record')
+    @edit_activity.autocomplete('record')
+    async def select_record(self, interaction: discord.Interaction, current: str):
+        try:
+            actor=await asyncio.wait_for(self.actor(interaction.user.id,interaction.guild_id),1.3)
+            rows=await asyncio.wait_for(self.call(self.service.reference_choices,actor,current,
+                interaction.command.name=='edit'),0.7)
+            return [app_commands.Choice(name=r['name'][:100],value=r['value']) for r in rows]
+        except (PermissionError, ValueError, asyncio.TimeoutError):
+            return []
 
     @checkin.command(name='request',description='Preview and request check-ins for one, selected, or all Scouts')
     async def request_checkin(self,interaction:discord.Interaction,recipients:str,deadline:str='',questions:str=''):
@@ -599,22 +689,22 @@ class ScoutsCog(commands.Cog):
         except discord.HTTPException:
             pass
 
-    async def deleted(self,guild_id,channel_id,message_ids,bulk=False):
+    async def deleted(self,guild_id,channel_id,message_ids,bulk=False,cached_messages=None):
         guild=self.bot.get_guild(guild_id) if guild_id else None
         channel=guild.get_channel_or_thread(channel_id) if guild else None
         if not channel or not await self.call(self.service.capture_allowed,guild_id,channel_id,str(channel.category_id or ''),str(getattr(channel,'parent_id','') or '')):
             return
         ids=sorted(str(m) for m in message_ids)
         key='gateway:'+('bulk:' if bulk else 'delete:')+hashlib.sha256(','.join(ids).encode()).hexdigest()
-        await self.call(self.service.system,guild_id,key,dict(action_type='message_bulk_delete' if bulk else 'message_delete',event_at=time.time(),channel_id=str(channel_id),message_ids=ids,attribution='unattributed: deletion events do not identify an actor'))
+        await self.call(self.service.system,guild_id,key,dict(action_type='message_bulk_delete' if bulk else 'message_delete',event_at=time.time(),channel_id=str(channel_id),message_ids=ids,cached_messages=[snapshot(m) for m in (cached_messages or [])],attribution='unattributed: deletion events do not identify an actor'))
 
     @commands.Cog.listener()
     async def on_raw_message_delete(self,payload):
-        await self.deleted(payload.guild_id,payload.channel_id,[payload.message_id])
+        await self.deleted(payload.guild_id,payload.channel_id,[payload.message_id],cached_messages=[payload.cached_message] if payload.cached_message else [])
 
     @commands.Cog.listener()
     async def on_raw_bulk_message_delete(self,payload):
-        await self.deleted(payload.guild_id,payload.channel_id,payload.message_ids,True)
+        await self.deleted(payload.guild_id,payload.channel_id,payload.message_ids,True,cached_messages=payload.cached_messages)
 
     @commands.Cog.listener()
     async def on_member_update(self,before,after):
@@ -670,7 +760,8 @@ class ScoutsCog(commands.Cog):
             if not resolved or not await self.call(self.service.capture_allowed,guild.id,resolved.id,str(resolved.category_id or ''),str(getattr(resolved,'parent_id','') or '')):
                 return
         data=dict(action_type=action,event_at=entry.created_at.timestamp(),audit_id=str(entry.id),
-                  moderator_id=str(entry.user.id) if entry.user else '',scout_roles=roles,role_snapshot_at=time.time(),
+                  moderator_id=str(entry.user.id) if entry.user else '',moderator_name=str(getattr(moderator,'display_name','')),
+                  scout_roles=roles,role_snapshot_at=time.time(),
                   confirmed_scout=bool(human and roles),reason=entry.reason or '',
                   moderator_is_bot=moderator_is_bot,
                   target_id=str(target) if target else '',channel_id=str(channel.id) if channel else '',
@@ -722,7 +813,7 @@ class ScoutsCog(commands.Cog):
         roster=[dict(id=str(m.id),name=m.display_name) for m in guild.members if not m.bot and not m.pending and set(str(r.id) for r in m.roles)&set(cfg['scout_roles'])]
         old=await self.call(self.service.rows,'SELECT data FROM scout_runtime WHERE guild_id=?',(str(guild.id),))
         state=json.loads(old[0]['data']) if old else {}
-        state.update(readiness=readiness,scouts=roster)
+        state.update(readiness=readiness,scouts=roster,notification_layout=CARD_LAYOUT_VERSION,short_record_ids=True,forms_version=1)
         if checkpoint:
             state['audit_checkpoint']=checkpoint
         await self.sql('INSERT OR REPLACE INTO scout_runtime VALUES(?,?,?)',(str(guild.id),time.time(),encode(state)))
@@ -744,16 +835,25 @@ class ScoutsCog(commands.Cog):
             with self.service.connect() as c:
                 return self.service._record(c,job['guild_id'],job['record_id'])
         r=await self.call(load)
+        refreshing = job['purpose'].startswith('layout:')
+        if refreshing and job['status']=='pending' and job['version'] != r['version']:
+            await self.sql("UPDATE scout_jobs SET status='cancelled',error='Newer record already queued for delivery.' WHERE id=? AND status='pending'", (job['id'],))
+            return
         if r['kind']=='system':
             if not self.service.confirmed_scout_action(r['data'],r['source_key']):
-                if job['status']=='pending':
+                if refreshing:
+                    # Existing historical cards may be restyled, never republished
+                    # or promoted to confirmed Scout activity. The edit-only path
+                    # below requires a sent receipt and never recreates a card.
+                    pass
+                elif job['status']=='pending':
                     await self.sql("UPDATE scout_jobs SET status='cancelled',error='Suppressed: automatic logging requires a confirmed human Scout audit actor.' WHERE id=? AND status='pending'",(job['id'],))
                 elif job['status']=='uncertain':
                     # Reconcile previously attempted deliveries, but never resend.
                     pass
                 else:
                     return
-                if job['status']!='uncertain':
+                if not refreshing and job['status']!='uncertain':
                     return
             elif not cfg['automatic_enabled'] and job['status']=='pending':
                 return
@@ -801,6 +901,9 @@ class ScoutsCog(commands.Cog):
             # Reuse the original channel card. Each committed revision gets a receipt marker.
             receipts=await self.call(self.service.rows,"SELECT destination,message_id FROM scout_jobs WHERE record_id=? AND status='sent' AND message_id!='' ORDER BY created_at DESC LIMIT 1",(r['id'],))
             old=receipts[0] if receipts else None
+            if refreshing and (not old or old['destination'] != job['destination']):
+                await self.sql("UPDATE scout_jobs SET status='cancelled',error='Original card unavailable; no replacement posted.' WHERE id=?", (job['id'],))
+                return
             kwargs=dict(embed=card_embed(r,marker),view=record_view(r),allowed_mentions=discord.AllowedMentions.none())
             role_ids=[]
             if not old and r['kind']=='report' and r['data'].get('notify_roles'):
@@ -812,6 +915,9 @@ class ScoutsCog(commands.Cog):
                 try:
                     message=await channel.fetch_message(int(old['message_id']))
                 except discord.NotFound:
+                    if refreshing:
+                        await self.sql("UPDATE scout_jobs SET status='cancelled',error='Original card was removed; no replacement posted.' WHERE id=?", (job['id'],))
+                        return
                     message=await channel.send(**kwargs)
                 else:
                     await message.edit(**kwargs)
@@ -839,7 +945,7 @@ class ScoutsCog(commands.Cog):
                 await self.sql("UPDATE scout_jobs SET status='uncertain',error='Interrupted delivery; reconciling receipt marker.' WHERE status='sending'")
                 self._recovered=True
             await self.sql("UPDATE scout_jobs SET status='uncertain',error='Interrupted delivery; reconciling receipt marker.' WHERE status='sending' AND attempted_at<?",(time.time()-180,))
-            jobs=await self.call(self.service.rows,"SELECT j.* FROM scout_jobs j JOIN scout_settings s ON s.guild_id=j.guild_id JOIN scout_records r ON r.id=j.record_id AND r.guild_id=j.guild_id WHERE json_extract(s.data,'$.enabled')=1 AND (j.status='pending' OR (j.status='uncertain' AND j.checked_at<?)) ORDER BY CASE j.status WHEN 'pending' THEN 0 ELSE 1 END,CASE r.kind WHEN 'checkin' THEN 1 ELSE 0 END,j.checked_at,j.created_at LIMIT 50", (time.time()-60,))
+            jobs=await self.call(self.service.rows,"SELECT j.* FROM scout_jobs j JOIN scout_settings s ON s.guild_id=j.guild_id JOIN scout_records r ON r.id=j.record_id AND r.guild_id=j.guild_id WHERE json_extract(s.data,'$.enabled')=1 AND (j.status='pending' OR (j.status='uncertain' AND j.checked_at<?)) ORDER BY CASE WHEN j.purpose LIKE 'layout:%' THEN 1 ELSE 0 END,CASE j.status WHEN 'pending' THEN 0 ELSE 1 END,CASE r.kind WHEN 'checkin' THEN 1 ELSE 0 END,j.checked_at,j.created_at LIMIT 50", (time.time()-60,))
             for job in jobs:
                 try:
                     await self.deliver(job)

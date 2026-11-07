@@ -19,10 +19,12 @@ from urllib.parse import urlsplit
 
 from utils.settings import get_setting, settings_database_path
 from utils.sqlite import AutoClosingSQLiteConnection, configure_sync_connection
+from utils.scout_forms import FORM_DEFAULTS, validate_forms, answers_for
 
 ACTIVITY_TYPES = ('rule reminder', 'de-escalation', 'message removal', 'timeout', 'concern', 'other')
 ACTION_TYPES = ('message_delete', 'message_bulk_delete', 'timeout', 'member_move', 'member_disconnect')
 CORRELATION_RETENTION_SECONDS = 300
+CARD_LAYOUT_VERSION = 'compact-purple-v2'
 REPORT_CATEGORIES = ('Harassment', 'Hate or discrimination', 'Spam', 'Unsafe content', 'Rule concern', 'Other')
 DEFAULTS = dict(
     enabled=False, automatic_enabled=False, scout_roles=[], activity_channel='', moderation_channel='',
@@ -31,9 +33,11 @@ DEFAULTS = dict(
     questions=['What have you handled since your last check-in? “Nothing to report” is acceptable.',
                'Have you encountered difficulties or concerns?', 'What help or feedback would be useful?'],
     ai_drafts=False, ai_summaries=False, report_cooldown=60, notification_cooldown=300,
+    forms=copy.deepcopy(FORM_DEFAULTS),
 )
 SCHEMA = '''
 CREATE TABLE IF NOT EXISTS scout_schema(version INTEGER PRIMARY KEY, applied_at REAL NOT NULL);
+CREATE TABLE IF NOT EXISTS scout_record_counters(guild_id TEXT PRIMARY KEY, last_number INTEGER NOT NULL);
 CREATE TABLE IF NOT EXISTS scout_settings(guild_id TEXT PRIMARY KEY, data TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS scout_records(
  id TEXT PRIMARY KEY, guild_id TEXT NOT NULL, kind TEXT NOT NULL, author_id TEXT NOT NULL DEFAULT '',
@@ -81,6 +85,21 @@ def required(text, label, limit=4000):
     return value
 
 
+def short_record_id(number):
+    """Sequential public references: 1..9999, then A000..ZZZZ. Never truncate/reuse."""
+    if 1 <= number <= 9999:
+        return str(number)
+    prefix, suffix = divmod(number - 10000, 36 ** 3)
+    if not 0 <= prefix < 26:
+        raise ValueError('This server has exhausted its four-character Scout record references.')
+    alphabet = '0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ'
+    digits = ''
+    for _ in range(3):
+        suffix, digit = divmod(suffix, 36)
+        digits = alphabet[digit] + digits
+    return chr(ord('A') + prefix) + digits
+
+
 @dataclass(frozen=True)
 class Actor:
     guild_id: str
@@ -108,11 +127,28 @@ class Scouts:
         self.path.parent.mkdir(parents=True, exist_ok=True)
         with self.connect() as c:
             c.executescript(SCHEMA)
+            c.execute('BEGIN IMMEDIATE')
+            if 'short_id' not in {r['name'] for r in c.execute('PRAGMA table_info(scout_records)')}:
+                c.execute('ALTER TABLE scout_records ADD COLUMN short_id TEXT CHECK(short_id IS NULL OR length(short_id) BETWEEN 1 AND 4)')
+            c.execute('CREATE UNIQUE INDEX IF NOT EXISTS scout_record_short_id ON scout_records(guild_id,short_id)')
+            c.execute('CREATE INDEX IF NOT EXISTS scout_record_missing_short_id ON scout_records(guild_id,created_at,id) WHERE short_id IS NULL')
+            # Add labels without rewriting primary keys, links, revisions or receipts.
+            # Repeat for any rows created by an older bot during a rolling update.
+            for row in c.execute('SELECT id,guild_id FROM scout_records WHERE short_id IS NULL ORDER BY guild_id,created_at,id').fetchall():
+                c.execute('UPDATE scout_records SET short_id=? WHERE id=?', (self._next_short_id(c, row['guild_id']), row['id']))
             if 'checked_at' not in {r['name'] for r in c.execute('PRAGMA table_info(scout_jobs)')}:
                 c.execute('ALTER TABLE scout_jobs ADD COLUMN checked_at REAL NOT NULL DEFAULT 0')
             c.execute('INSERT OR IGNORE INTO scout_schema VALUES(1,?)', (time.time(),))
             c.execute('INSERT OR IGNORE INTO scout_schema VALUES(2,?)', (time.time(),))
             c.execute('INSERT OR IGNORE INTO scout_schema VALUES(3,?)', (time.time(),))
+            c.execute('INSERT OR IGNORE INTO scout_schema VALUES(4,?)', (time.time(),))
+
+    @staticmethod
+    def _next_short_id(c, guild):
+        c.execute('INSERT OR IGNORE INTO scout_record_counters VALUES(?,0)', (str(guild),))
+        c.execute('UPDATE scout_record_counters SET last_number=last_number+1 WHERE guild_id=?', (str(guild),))
+        number = c.execute('SELECT last_number FROM scout_record_counters WHERE guild_id=?', (str(guild),)).fetchone()[0]
+        return short_record_id(number)
 
     def rows(self, sql, args=()):
         with self.connect() as c:
@@ -127,6 +163,9 @@ class Scouts:
         result = self.settings(actor.guild_id)
         for key, default in DEFAULTS.items():
             value = values.get(key, default)
+            if key == 'forms':
+                result[key] = validate_forms(values.get(key, result[key]))
+                continue
             if isinstance(default, bool):
                 result[key] = value is True or value in ('on', 'true', '1')
             elif isinstance(default, int):
@@ -175,10 +214,23 @@ class Scouts:
         return result
 
     def _record(self, c, guild, record_id):
-        r = c.execute('SELECT * FROM scout_records WHERE guild_id=? AND id=?', (str(guild), str(record_id))).fetchone()
+        reference = str(record_id).strip().lstrip('#')
+        column = 'short_id' if re.fullmatch(r'[A-Za-z0-9]{1,4}', reference) else 'id'
+        value = reference.upper() if column == 'short_id' else reference.lower()
+        r = c.execute(f'SELECT * FROM scout_records WHERE guild_id=? AND {column}=?', (str(guild), value)).fetchone()
         if r is None:
             raise ValueError('Record not found in this server.')
-        return self.unpack(r)
+        record = self.unpack(r)
+        if not record['short_id']:
+            if not c.in_transaction:
+                c.execute('BEGIN IMMEDIATE')
+            saved = c.execute('SELECT short_id FROM scout_records WHERE id=?', (record['id'],)).fetchone()[0]
+            record['short_id'] = saved or self._next_short_id(c, guild)
+            c.execute('UPDATE scout_records SET short_id=? WHERE id=? AND short_id IS NULL', (record['short_id'], record['id']))
+        related = record['data'].get('related')
+        parent = c.execute('SELECT short_id FROM scout_records WHERE guild_id=? AND id=?', (str(guild), related)).fetchone() if related else None
+        record['related_short_id'] = parent['short_id'] if parent else ''
+        return record
 
     def _reference(self, c, actor, value):
         """Resolve IDs/card links locally; ordinary message links become evidence.
@@ -190,16 +242,16 @@ class Scouts:
         if value.startswith('<') and value.endswith('>'):
             value = value[1:-1].strip()
         if not value:
-            return dict(record_id='', evidence='')
+            return dict(record_id='', short_id='', evidence='')
         if len(value) > 500:
             raise ValueError('The related record or message link must be at most 500 characters.')
         raw_id = value.lstrip('#')
-        if re.fullmatch(r'[a-fA-F0-9]{16}', raw_id):
-            record = self._record(c, actor.guild_id, raw_id.lower())
+        if re.fullmatch(r'(?:[a-fA-F0-9]{16}|[A-Za-z0-9]{1,4})', raw_id):
+            record = self._record(c, actor.guild_id, raw_id)
             self.read_allowed(actor, record)
             if record['kind'] == 'checkin':
                 raise ValueError('Private check-ins cannot be linked into shared activity.')
-            return dict(record_id=record['id'], evidence='')
+            return dict(record_id=record['id'], short_id=record['short_id'], evidence='')
         try:
             url = urlsplit(value)
         except ValueError:
@@ -220,12 +272,12 @@ class Scouts:
                 AND j.status='sent' ORDER BY j.created_at DESC LIMIT 1''',
                 (actor.guild_id, actor.guild_id, channel, message)).fetchone()
             if row:
-                record = self.unpack(row)
+                record = self._record(c, actor.guild_id, row['id'])
                 self.read_allowed(actor, record)
                 if record['kind'] == 'checkin':
                     raise ValueError('Private check-ins cannot be linked into shared activity.')
-                return dict(record_id=record['id'], evidence=evidence)
-            return dict(record_id='', evidence=evidence)
+                return dict(record_id=record['id'], short_id=record['short_id'], evidence=evidence)
+            return dict(record_id='', short_id='', evidence=evidence)
         public_url = str(get_setting('DASHBOARD_PUBLIC_URL', '') or os.getenv('DASHBOARD_PUBLIC_URL', '')).rstrip('/')
         public = urlsplit(public_url)
         path = url.path
@@ -236,7 +288,7 @@ class Scouts:
             if not path.startswith(prefix + '/'):
                 raise ValueError('Use a link to a Scout record in this Garden.')
             path = path[len(prefix):]
-        match = re.fullmatch(r'/scouts/records/([a-fA-F0-9]{16})/?', path)
+        match = re.fullmatch(r'/scouts/records/([a-fA-F0-9]{16}|[A-Za-z0-9]{1,4})/?', path)
         if match:
             return self._reference(c, actor, match[1])
         raise ValueError('Use a Scout record ID, a Garden record link, or a Discord message link. Other evidence links belong in Evidence links.')
@@ -259,7 +311,11 @@ class Scouts:
 
     def _job(self, c, record, purpose='card'):
         if record['kind'] == 'system' and not self.confirmed_scout_action(record['data'], record['source_key']):
-            return
+            if not purpose.startswith('layout:') or not c.execute(
+                "SELECT 1 FROM scout_jobs WHERE record_id=? AND status='sent' AND message_id!=''",
+                (record['id'],),
+            ).fetchone():
+                return
         config = self.settings(record['guild_id'])
         destination = (record['data']['recipient_id'] if record['kind'] == 'checkin' else
                        config['moderation_channel'] or config['activity_channel'] if record['kind'] == 'system' else config['activity_channel'])
@@ -267,10 +323,13 @@ class Scouts:
                   (uuid.uuid4().hex, record['guild_id'], record['id'], record['version'], purpose, destination, time.time()))
 
     def _create(self, c, guild, kind, author, data, status='active', source=None, notify=True):
+        if not c.in_transaction:
+            c.execute('BEGIN IMMEDIATE')
         now = time.time()
         rid = uuid.uuid4().hex[:16]
-        c.execute('INSERT INTO scout_records(id,guild_id,kind,author_id,status,data,created_at,updated_at,source_key) VALUES(?,?,?,?,?,?,?,?,?)',
-                  (rid, str(guild), kind, str(author), status, encode(data), now, now, source))
+        short_id = self._next_short_id(c, guild)
+        c.execute('INSERT INTO scout_records(id,guild_id,kind,author_id,status,data,created_at,updated_at,source_key,short_id) VALUES(?,?,?,?,?,?,?,?,?,?)',
+                  (rid, str(guild), kind, str(author), status, encode(data), now, now, source, short_id))
         r = self._record(c, guild, rid)
         self._revision(c, r, author, 'created')
         if notify:
@@ -316,7 +375,7 @@ class Scouts:
             actor.require(cap)
         elif not actor.eligible or not any('scouts.checkins.' + x in actor.permissions for x in ('request', 'respond', 'view_all')):
             raise PermissionError('No check-in access.')
-        sql = 'SELECT * FROM scout_records WHERE guild_id=? AND kind=? AND created_at>=?'
+        sql = "SELECT scout_records.*,(SELECT p.short_id FROM scout_records p WHERE p.guild_id=scout_records.guild_id AND p.id=json_extract(scout_records.data,'$.related')) related_short_id FROM scout_records WHERE guild_id=? AND kind=? AND created_at>=?"
         args = [actor.guild_id, kind, time.time() - max(1, min(int(days), 3650)) * 86400]
         if kind == 'system':
             # Also exclude pre-fix gateway/non-Scout history from the active feed
@@ -331,8 +390,8 @@ class Scouts:
             sql += " AND json_extract(data,'$.recipient_id')=?"
             args.append(actor.user_id)
         if query:
-            sql += ' AND (id LIKE ? OR data LIKE ?)'
-            args.extend(['%' + query[:100] + '%'] * 2)
+            sql += ' AND (short_id=? OR id LIKE ? OR data LIKE ?)'
+            args.extend([query.lstrip('#').upper(), '%' + query[:100] + '%', '%' + query[:100] + '%'])
         if status:
             sql += ' AND status=?'
             args.append(status)
@@ -346,7 +405,7 @@ class Scouts:
     def manual(self, actor, values, related='', source=None):
         actor.require('activity.create')
         self.enabled(actor.guild_id)
-        data = self.manual_values(values)
+        data = self.manual_values(values, self.settings(actor.guild_id)['forms']['activity'])
         source = f'manual:{actor.user_id}:{source}' if source else None
         with self.connect() as c:
             c.execute('BEGIN IMMEDIATE')
@@ -362,19 +421,22 @@ class Scouts:
             return self._create(c, actor.guild_id, 'manual', actor.user_id, data, source=source)
 
     @staticmethod
-    def manual_values(values):
+    def manual_values(values, fields=None):
         kind = values.get('type', 'other')
         if kind not in ACTIVITY_TYPES:
             raise ValueError('Select an activity type.')
         data = dict(type=kind, summary=required(values.get('summary'), 'What happened'), action=required(values.get('action'), 'Action taken'))
         for key in ('members', 'channel', 'evidence', 'outcome', 'incident_at'):
-            data[key] = str(values.get(key) or '').strip()[:2000]
+            data[key] = str(values.get(key) or '').strip()[:4000 if key=='outcome' else 2000]
+        fields = fields or FORM_DEFAULTS['activity']
+        data['form_answers'] = answers_for(fields, values)
+        data['form_labels'] = {f['key']:f['label'] for f in fields if f['enabled']}
         return data
 
     def edit(self, actor, rid, values, version):
         actor.require('activity.create')
         self.enabled(actor.guild_id)
-        data = self.manual_values(values)
+        data = self.manual_values(values, self.settings(actor.guild_id)['forms']['activity'])
         with self.connect() as c:
             c.execute('BEGIN IMMEDIATE')
             r = self._record(c, actor.guild_id, rid)
@@ -404,13 +466,16 @@ class Scouts:
         r = self.record(actor, rid)
         return self.rows('SELECT actor_id,action,data,created_at FROM scout_revisions WHERE guild_id=? AND record_id=? ORDER BY id', (actor.guild_id, r['id']))
 
-    def report(self, guild, reporter, snapshot, category, explanation, source):
+    def report(self, guild, reporter, snapshot, category, explanation, source, values=None):
         # Membership/message visibility are checked live by the Discord adapter twice.
         self.enabled(guild)
         if category not in REPORT_CATEGORIES:
             raise ValueError('Select a report category.')
         explanation = required(explanation, 'Explanation')
         config = self.settings(guild)
+        private_answers=answers_for(config['forms']['report'],dict(values or {},explanation=explanation))
+        if private_answers:
+            explanation += '\n\n' + '\n\n'.join(a['label']+'\n'+a['answer'] for a in private_answers)
         with self.connect() as c:
             c.execute('BEGIN IMMEDIATE')
             duplicate = c.execute('SELECT r.id FROM scout_records r JOIN scout_report_private p ON p.report_id=r.id WHERE r.guild_id=? AND p.reporter_id=? AND (r.source_key=? OR (json_extract(r.data,\'$.message.message_id\')=? AND r.created_at>?))',
@@ -434,10 +499,10 @@ class Scouts:
             r = self._record(c, actor.guild_id, rid)
             if r['kind'] != 'report':
                 raise ValueError('Not a member report.')
-            row = c.execute('SELECT reporter_id,explanation FROM scout_report_private WHERE report_id=? AND guild_id=?', (rid, actor.guild_id)).fetchone()
+            row = c.execute('SELECT reporter_id,explanation FROM scout_report_private WHERE report_id=? AND guild_id=?', (r['id'], actor.guild_id)).fetchone()
             return dict(row) if row else None
 
-    def handle(self, actor, rid, outcome):
+    def handle(self, actor, rid, outcome, values=None):
         actor.require('reports.handle')
         self.enabled(actor.guild_id)
         outcome = required(outcome, 'Outcome')
@@ -450,9 +515,12 @@ class Scouts:
                 raise ValueError('This report is already handled.')
             r['status'] = 'handled'
             r['data'].update(outcome=outcome, handler_id=actor.user_id, handled_at=time.time())
+            fields=self.settings(actor.guild_id)['forms']['outcome']
+            r['data']['outcome_answers']=answers_for(fields,dict(values or {},reason=outcome))
+            r['data'].setdefault('form_labels',{})['outcome']=fields[0]['label']
             return self._update(c, r, actor.user_id, 'handled')
 
-    def escalate(self, actor, explanation, related='', source=None):
+    def escalate(self, actor, explanation, related='', source=None, values=None):
         actor.require('activity.create')
         self.enabled(actor.guild_id)
         explanation = required(explanation, 'Help needed')
@@ -465,8 +533,27 @@ class Scouts:
                     return self._record(c, actor.guild_id, row['id'])
             reference = self._reference(c, actor, related)
             data = dict(summary=explanation, related=reference['record_id'])
+            fields=self.settings(actor.guild_id)['forms']['escalation']
+            data['form_answers'] = answers_for(fields, dict(values or {}, reason=explanation))
+            data['form_labels']={'summary':fields[0]['label']}
             self._add_evidence(data, reference['evidence'])
             return self._create(c, actor.guild_id, 'escalation', actor.user_id, data, 'escalated', source)
+
+    def reference_choices(self, actor, query='', owned=False):
+        actor.require('activity.create')
+        rows=[]
+        for kind in (['manual'] if owned else ['manual','report','system','escalation']):
+            try:
+                candidates=self.listing(actor,kind,query=query[:100],days=3650,scout=actor.user_id if owned else '')
+            except PermissionError:
+                continue
+            for r in candidates:
+                if owned and r['status']=='void':
+                    continue
+                label=r['data'].get('summary') or r['data'].get('category') or r['data'].get('action_type','').replace('_',' ') or r['kind']
+                kind_label={'manual':'Activity','report':'Member report','system':'Discord action','escalation':'Help request'}[r['kind']]
+                rows.append((r['created_at'],dict(name=f"#{r['short_id']} · {kind_label} · {str(label).replace(chr(10),' ')[:65]}",value=r['short_id'])))
+        return [r[1] for r in sorted(rows,key=lambda r:r[0],reverse=True)[:25]]
 
     def request_checkins(self, actor, recipients, questions=None, deadline=None, source=None):
         actor.require('checkins.request')
@@ -503,7 +590,7 @@ class Scouts:
             if len(answers) != len(r['data']['questions']):
                 raise ValueError('Answer each question.')
             answers = [required(a, 'Answer') for a in answers]
-            c.execute('INSERT INTO scout_checkin_answers VALUES(?,?,?,?,?)', (rid, actor.guild_id, actor.user_id, encode(answers), time.time()))
+            c.execute('INSERT INTO scout_checkin_answers VALUES(?,?,?,?,?)', (r['id'], actor.guild_id, actor.user_id, encode(answers), time.time()))
             r['status'] = 'answered'
             return self._update(c, r, actor.user_id, 'answered')
 
@@ -515,7 +602,7 @@ class Scouts:
             actor.require('checkins.respond')
         else:
             actor.require('checkins.view_all')
-        rows = self.rows('SELECT answers,submitted_at FROM scout_checkin_answers WHERE guild_id=? AND checkin_id=?', (actor.guild_id, rid))
+        rows = self.rows('SELECT answers,submitted_at FROM scout_checkin_answers WHERE guild_id=? AND checkin_id=?', (actor.guild_id, r['id']))
         return dict(answers=json.loads(rows[0]['answers']), submitted_at=rows[0]['submitted_at']) if rows else None
 
     def checkin_action(self, actor, rid, action):
@@ -589,12 +676,21 @@ class Scouts:
                 cutoff = time.time() - cfg['retention_days'] * 86400
                 for mid in data['message_ids']:
                     row = c.execute('SELECT data FROM scout_buffer WHERE guild_id=? AND message_id=? AND observed_at>=?', (str(guild), str(mid), cutoff)).fetchone()
-                    snapshots.append(json.loads(row['data']) if row else dict(message_id=str(mid), content=None))
+                    fallback=next((m for m in data.get('cached_messages',[]) if str(m['message_id'])==str(mid)),None)
+                    snapshots.append(json.loads(row['data']) if row else fallback or dict(message_id=str(mid), content=None))
                 data = dict(data, messages=snapshots)
             c.execute('INSERT OR IGNORE INTO scout_observations VALUES(?,?,?,?)', (str(guild), key, encode(data), time.time()))
             observation = c.execute('SELECT data FROM scout_observations WHERE guild_id=? AND source_key=?', (str(guild), key)).fetchone()
-            if data.get('count', 1) > json.loads(observation['data']).get('count', 1):
-                c.execute('UPDATE scout_observations SET data=? WHERE guild_id=? AND source_key=?', (encode(data), str(guild), key))
+            previous=json.loads(observation['data'])
+            if key.startswith('audit:') and '_delta_count' not in previous:
+                saved=c.execute('SELECT data FROM scout_records WHERE guild_id=? AND source_key=?',(str(guild),key)).fetchone()
+                prior_count=json.loads(saved['data']).get('count',1) if saved else 0
+                previous.update(_delta_count=max(0,data.get('count',1)-prior_count),
+                    _match_at=time.time() if saved else data['event_at'],_match_window=30 if saved else 10)
+                c.execute('UPDATE scout_observations SET data=? WHERE guild_id=? AND source_key=?',(encode(previous),str(guild),key))
+            if data.get('count', 1) > previous.get('count', 1):
+                data.update(_delta_count=data.get('count',1)-previous.get('count',1),_match_at=time.time(),_match_window=30)
+                c.execute('UPDATE scout_observations SET data=?,observed_at=? WHERE guild_id=? AND source_key=?', (encode(data),time.time(),str(guild),key))
             if (not self.confirmed_scout_action(data, key)
                     or not set(data['scout_roles']) & set(cfg['scout_roles'])):
                 return None
@@ -610,11 +706,11 @@ class Scouts:
             return self._create(c, guild, 'system', data.get('moderator_id', ''), data, source=key)
 
     def reconcile_links(self, guild):
-        """Reconcile temporary observations without promoting uncertain events.
+        """Attach uniquely correlated context, keeping audit actor and inference separate.
 
-        Even a single deletion audit candidate cannot identify exact message IDs.
-        Keeping candidate links here avoids posting unrelated self-deletion content
-        as evidence of a Scout's action or generating duplicate gateway cards.
+        Discord supplies no exact message association. Require a complete count,
+        matching scope/time (and author for individual deletes), no competing
+        actor, and no previously consumed event. Raw events never create cards.
         """
         with self.connect() as c:
             c.execute('BEGIN IMMEDIATE')
@@ -630,11 +726,86 @@ class Scouts:
                     d['audit_candidates'] = candidates
                     d['attribution'] = ('timeout audit evidence linked; inspect the source record' if d['action_type']=='timeout' else 'uncertain: audit candidates do not identify exact messages')
                     c.execute('UPDATE scout_observations SET data=? WHERE guild_id=? AND source_key=?', (encode(d), str(guild), row['source_key']))
+            deletion_events=[]
+            for row in events:
+                d=json.loads(row['data'])
+                if d.get('action_type') not in ('message_delete','message_bulk_delete') or d.get('context_record_id'):
+                    continue
+                observed=c.execute('SELECT observed_at FROM scout_observations WHERE guild_id=? AND source_key=?',(str(guild),row['source_key'])).fetchone()[0]
+                if time.time()-observed<2:
+                    continue
+                matches=[]
+                for audit in audits:
+                    a=audit['data']
+                    if a.get('action_type')!=d['action_type'] or str(a.get('channel_id'))!=str(d.get('channel_id')):
+                        continue
+                    if abs(a.get('_match_at',a['event_at'])-d['event_at'])>a.get('_match_window',10):
+                        continue
+                    if d['action_type']=='message_delete' and (not a.get('target_id') or any(str(m.get('author_id',''))!=str(a['target_id']) for m in d.get('messages',[]))):
+                        continue
+                    matches.append(audit['source_key'])
+                if len(matches)==1:
+                    deletion_events.append((row['source_key'],d,matches[0]))
+            for audit in audits:
+                key,a=audit['source_key'],audit['data']
+                if not self.confirmed_scout_action(a,key):
+                    continue
+                saved=c.execute('SELECT id FROM scout_records WHERE guild_id=? AND source_key=?',(str(guild),key)).fetchone()
+                if not saved:
+                    continue
+                record=self._record(c,guild,saved['id'])
+                batch=str(a.get('count',1))
+                if batch in record['data'].get('message_context_batches',[]):
+                    continue
+                candidates=[(k,d) for k,d,parent in deletion_events if parent==key and k not in record['data'].get('message_context_events',[])]
+                snapshots=[m for _,d in candidates for m in d.get('messages',[])]
+                if not snapshots or len(snapshots)!=a.get('_delta_count',a.get('count',1)):
+                    continue
+                existing={m['message_id'] for m in record['data'].get('messages',[])}
+                new=[m for m in snapshots if m['message_id'] not in existing]
+                if not new:
+                    continue
+                record['data'].setdefault('messages',[]).extend(new)
+                record['data'].setdefault('message_context_events',[]).extend(k for k,_ in candidates)
+                record['data'].setdefault('message_context_batches',[]).append(batch)
+                record['data']['message_context_attribution']='correlated: author/channel/time/count match; exact message IDs are not supplied by Discord audit logs'
+                self._update(c,record,'system','deleted_context_correlated')
+                for event_key,event in candidates:
+                    event['context_record_id']=record['id']
+                    c.execute('UPDATE scout_observations SET data=? WHERE guild_id=? AND source_key=?',(encode(event),str(guild),event_key))
 
     def retry_delivery(self, actor, job_id):
         actor.require('settings.manage')
         with self.connect() as c:
             c.execute("UPDATE scout_jobs SET status='pending',error='' WHERE guild_id=? AND id=? AND status='failed'", (actor.guild_id, job_id))
+
+    def queue_card_refresh(self, limit=100):
+        """Quietly restyle recent existing channel cards, preserving workflow/history.
+
+        Run from the updated bot, not the dashboard's schema migration: an older
+        bot must not consume this migration and mark pink cards as refreshed.
+        """
+        queued = 0
+        purpose = 'layout:' + CARD_LAYOUT_VERSION
+        with self.connect() as c:
+            c.execute('BEGIN IMMEDIATE')
+            guilds = c.execute("SELECT guild_id FROM scout_settings WHERE json_extract(data,'$.enabled')=1").fetchall()
+            for guild in guilds:
+                records = c.execute('''SELECT r.* FROM scout_records r
+                    WHERE r.guild_id=? AND r.kind!='checkin'
+                    AND EXISTS(SELECT 1 FROM scout_jobs j WHERE j.record_id=r.id AND j.status='sent' AND j.message_id!='')
+                    AND NOT EXISTS(SELECT 1 FROM scout_jobs j WHERE j.record_id=r.id AND j.status IN ('pending','sending','uncertain','failed'))
+                    ORDER BY r.updated_at DESC,r.id LIMIT ?''', (guild['guild_id'], limit)).fetchall()
+                for row in records:
+                    record = self._record(c, guild['guild_id'], row['id'])
+                    receipt = c.execute("SELECT destination FROM scout_jobs WHERE record_id=? AND status='sent' AND message_id!='' ORDER BY created_at DESC LIMIT 1", (record['id'],)).fetchone()
+                    before = c.total_changes
+                    self._job(c, record, purpose)
+                    if c.total_changes > before:
+                        c.execute('UPDATE scout_jobs SET destination=? WHERE record_id=? AND version=? AND purpose=?',
+                                  (receipt['destination'], record['id'], record['version'], purpose))
+                        queued += 1
+        return queued
 
     def ai_sources(self, actor, scout='', days=30):
         actor.require('ai.use')
@@ -644,7 +815,12 @@ class Scouts:
         if 'scouts.moderation.view' in actor.permissions:
             kinds.append('system')
         for kind in kinds:
-            sources.extend(self.listing(actor, kind, scout=scout, days=days)[:25])
+            for record in self.listing(actor, kind, scout=scout, days=days)[:25]:
+                data = dict(record['data'])
+                if data.get('related'):
+                    data['related'] = record.get('related_short_id', '')
+                sources.append(dict(id=record['short_id'], kind=record['kind'], status=record['status'],
+                                    author_id=record['author_id'], data=data, created_at=record['created_at']))
         if 'scouts.checkins.view_all' in actor.permissions or (scout == actor.user_id and 'scouts.checkins.respond' in actor.permissions):
             for r in self.listing(actor, 'checkin', days=days):
                 if scout and r['data']['recipient_id'] != scout:
@@ -654,6 +830,6 @@ class Scouts:
                 except PermissionError:
                     continue
                 if answer:
-                    sources.append(dict(id=r['id'], kind='checkin', questions=r['data']['questions'], answers=answer['answers']))
+                    sources.append(dict(id=r['short_id'], kind='checkin', questions=r['data']['questions'], answers=answer['answers']))
         # Reports and their private table never enter AI. Bounded, explicit selection.
         return sources

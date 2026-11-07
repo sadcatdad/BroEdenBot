@@ -10,14 +10,16 @@ from fastapi import HTTPException, Request
 from fastapi.responses import RedirectResponse
 from dashboard.auth import csrf_is_valid, current_user
 from dashboard.rbac import record_audit
-from utils.scouts import Scouts, DEFAULTS, ACTIVITY_TYPES, ACTION_TYPES
+from utils.scouts import Scouts, DEFAULTS, ACTIVITY_TYPES, ACTION_TYPES, CARD_LAYOUT_VERSION
 from utils.scout_access import dashboard_actor, fetch_member, member_actor
 from utils.scout_ai import preview
+from utils.scout_forms import FORM_DEFAULTS
+from fastapi.responses import JSONResponse
 from utils.settings import get_setting
 from utils.discord_metadata import initialize_discord_metadata_schema
 
 SECTIONS = {'overview': None, 'activity': 'activity.view', 'system': 'moderation.view',
-            'reports': 'activity.view', 'checkins': None, 'settings': 'settings.manage'}
+            'reports': 'activity.view', 'checkins': None, 'settings': 'settings.manage', 'forms':'settings.manage'}
 
 
 def guild_id():
@@ -55,14 +57,15 @@ def install_scout_routes(app, templates, context):
         return templates.TemplateResponse(request=request, name='scouts.html', context=context(
             request, page_title='Scouts', scout_actor=actor,
             scout_can=lambda k: 'scouts.' + k in actor.permissions,
-            sections=SECTIONS, activity_types=ACTIVITY_TYPES, action_types=ACTION_TYPES, now=time.time(), **values))
+            sections=SECTIONS, activity_types=ACTIVITY_TYPES, action_types=ACTION_TYPES,
+            card_layout_version=CARD_LAYOUT_VERSION, form_defaults=FORM_DEFAULTS, now=time.time(), **values))
 
     def audit(request, action, rid=''):
         user = current_user(request)
         record_audit(actor_user_id=user['id'], actor_label=user['username'], action='scouts.' + action, target_type='scout_record', target_id=rid)
 
-    def redirect(request, path='/scouts'):
-        request.session['scout_message'] = 'Saved.'
+    def redirect(request, path='/scouts', message='Saved.'):
+        request.session['scout_message'] = message
         return RedirectResponse(path, status_code=303)
 
     @app.get('/scouts', name='scouts_overview')
@@ -87,12 +90,14 @@ def install_scout_routes(app, templates, context):
         status = request.query_params.get('status', '')
         scout = request.query_params.get('scout', '')
         values.update(page=page, days=days, query=q, status=status, selected_scout=scout)
+        if section=='activity':
+            values['escalations']=await asyncio.to_thread(s.listing,actor,'escalation',days=days,query=q)
         if section in ('activity','reports','system','checkins'):
             kind = dict(activity='manual', reports='report', system='system', checkins='checkin')[section]
             values['records'] = await asyncio.to_thread(s.listing, actor, kind, page=page, days=days, query=q, status=status, scout=scout)
         if section == 'overview':
             groups = []
-            for label, kind, cap in [('Recent activity','manual','activity.view'), ('New reports','report','activity.view'), ('Escalations','escalation','activity.view'), ('System actions','system','moderation.view')]:
+            for label, kind, cap in [('Recent activity','manual','activity.view'), ('New reports','report','activity.view'), ('Escalations','escalation','activity.view'), ('Discord actions','system','moderation.view')]:
                 if 'scouts.' + cap in actor.permissions:
                     rows = await asyncio.to_thread(s.listing, actor, kind, status='new' if kind == 'report' else '', days=30)
                     groups.append((label, rows[:5]))
@@ -102,7 +107,12 @@ def install_scout_routes(app, templates, context):
         if section in ('settings', 'overview'):
             runtime = await asyncio.to_thread(s.rows, 'SELECT * FROM scout_runtime WHERE guild_id=?', (actor.guild_id,))
             values['runtime'] = json.loads(runtime[0]['data']) if runtime and runtime[0]['heartbeat'] > time.time()-90 else None
+        if section == 'checkins' and 'scouts.checkins.request' in actor.permissions:
+            runtime = await asyncio.to_thread(s.rows, 'SELECT data FROM scout_runtime WHERE guild_id=? AND heartbeat>?', (actor.guild_id,time.time()-90))
+            values['roster'] = json.loads(runtime[0]['data']).get('scouts',[]) if runtime else []
         if section == 'settings':
+            stats=await asyncio.to_thread(s.rows,'SELECT COUNT(*) count,MAX(observed_at) latest FROM scout_buffer WHERE guild_id=? AND observed_at>?',(actor.guild_id,time.time()-cfg['retention_days']*86400))
+            values['capture_stats']=stats[0]
             await asyncio.to_thread(initialize_discord_metadata_schema)
             values['roles'] = await asyncio.to_thread(s.rows, 'SELECT id,name FROM dashboard_discord_roles WHERE guild_id=? AND is_bot_role=0 ORDER BY position DESC', (actor.guild_id,))
             values['channels'] = await asyncio.to_thread(s.rows, "SELECT id,name,parent_name FROM dashboard_discord_channels WHERE guild_id=? AND type IN ('text','news') AND is_thread=0 ORDER BY position,name", (actor.guild_id,))
@@ -115,8 +125,61 @@ def install_scout_routes(app, templates, context):
                 known = {str(r['id']) for r in values[name]}
                 values[name].extend(dict(id=v, name=f'Unavailable ({v})') for v in saved-known)
         if section in ('overview','settings') and 'scouts.settings.manage' in actor.permissions:
-            values['failures'] = await asyncio.to_thread(s.rows, "SELECT id,record_id,status,error FROM scout_jobs WHERE guild_id=? AND status IN ('failed','uncertain') ORDER BY created_at DESC LIMIT 30", (actor.guild_id,))
+            values['failures'] = await asyncio.to_thread(s.rows, "SELECT j.id,j.record_id,r.short_id record_short_id,j.status,j.error FROM scout_jobs j JOIN scout_records r ON r.id=j.record_id AND r.guild_id=j.guild_id WHERE j.guild_id=? AND j.status IN ('failed','uncertain') ORDER BY j.created_at DESC LIMIT 30", (actor.guild_id,))
         return render(request, actor, **values)
+
+    @app.get('/scouts/api/records', name='scouts_record_choices')
+    async def record_choices(request: Request):
+        s,actor=await setup(request,'activity.create')
+        return JSONResponse(await asyncio.to_thread(s.reference_choices,actor,request.query_params.get('q','')))
+
+    @app.get('/scouts/new/{kind}', name='scouts_compose')
+    async def compose(request: Request, kind: str):
+        if kind not in ('activity','escalation'):
+            raise HTTPException(404)
+        s,actor=await setup(request,'activity.create')
+        cfg=await asyncio.to_thread(s.settings,actor.guild_id)
+        draft=getattr(request.state,'scout_draft',{})
+        related=str(draft.get('related') or request.query_params.get('related',''))
+        choices=await asyncio.to_thread(s.reference_choices,actor,'')
+        if related:
+            try:
+                ref=await asyncio.to_thread(s.resolve_reference,actor,related)
+            except ValueError:
+                if not draft:
+                    raise HTTPException(400,'Choose a valid entry from the follow-up selector.') from None
+                ref=dict(record_id='',short_id=related)
+                choices.insert(0,dict(value=related,name='Review this selection: '+related[:50]))
+            if ref['record_id'] and ref['short_id'] not in {c['value'] for c in choices}:
+                choices.insert(0,dict(value=ref['short_id'],name='Follow up to #'+ref['short_id']))
+            related=ref['short_id']
+        await asyncio.to_thread(initialize_discord_metadata_schema)
+        channels=await asyncio.to_thread(s.rows,"SELECT id,name FROM dashboard_discord_channels WHERE guild_id=? AND type IN ('text','news') ORDER BY position,name",(actor.guild_id,))
+        return render(request,actor,section='compose',compose_kind=kind,config=cfg,detail=None,activity_draft=draft,
+            related=related,choices=choices,channels=channels,message=None,error=getattr(request.state,'scout_error',None))
+
+    @app.post('/scouts/forms', name='scouts_save_forms')
+    async def save_forms(request: Request):
+        s,actor=await setup(request,'settings.manage')
+        f=await form(request)
+        cfg=await asyncio.to_thread(s.settings,actor.guild_id)
+        definitions={}
+        for profile, fields in FORM_DEFAULTS.items():
+            definitions[profile]=[]
+            for base in fields:
+                prefix=profile+'.'+base['key']+'.'
+                definitions[profile].append(dict(base,label=f.get(prefix+'label',''),placeholder=f.get(prefix+'placeholder',''),
+                    required=prefix+'required' in f,enabled=prefix+'enabled' in f))
+        try:
+            await asyncio.to_thread(s.save_settings,actor,dict(cfg,forms=definitions,questions=[q.strip() for q in str(f.get('questions','')).splitlines() if q.strip()]))
+        except ValueError as exc:
+            request.state.scout_error=str(exc)
+            request.state.scout_config=dict(cfg,forms=definitions)
+            response=await listing(request,'forms')
+            response.status_code=400
+            return response
+        audit(request,'forms.saved')
+        return redirect(request,'/scouts/section/forms')
 
     @app.post('/scouts/settings', name='scouts_save_settings')
     async def save_settings(request: Request):
@@ -155,17 +218,34 @@ def install_scout_routes(app, templates, context):
         s, actor = await setup(request)
         try:
             r = await asyncio.to_thread(s.record, actor, rid)
+            if rid != r['short_id']:
+                return RedirectResponse('/scouts/records/' + r['short_id'], status_code=303)
             protected = await asyncio.to_thread(s.reporter, actor, rid) if r['kind'] == 'report' and 'scouts.reports.identity.view' in actor.permissions else None
             answers = None
             if r['kind'] == 'checkin' and ('scouts.checkins.view_all' in actor.permissions or (r['data']['recipient_id'] == actor.user_id and 'scouts.checkins.respond' in actor.permissions)):
                 answers = await asyncio.to_thread(s.answers, actor, rid)
             revisions = await asyncio.to_thread(s.revisions, actor, rid) if 'scouts.activity.review' in actor.permissions else []
-            linked = await asyncio.to_thread(s.rows, "SELECT id,kind,status,created_at FROM scout_records WHERE guild_id=? AND json_extract(data,'$.related')=? ORDER BY created_at", (actor.guild_id, rid))
+            for revision in revisions:
+                snapshot = json.loads(revision['data'])
+                content = dict(snapshot.get('data', {}))
+                if content.get('related'):
+                    content['related'] = '#' + r.get('related_short_id', '')
+                revision['display_data'] = dict(status=snapshot.get('status'), content=content)
+            candidates = r['data'].get('audit_candidates', [])
+            r['audit_candidate_refs'] = []
+            for candidate in candidates:
+                found = await asyncio.to_thread(s.rows, 'SELECT short_id FROM scout_records WHERE guild_id=? AND id=?', (actor.guild_id, candidate))
+                if found:
+                    r['audit_candidate_refs'].append(found[0]['short_id'])
+            linked = await asyncio.to_thread(s.rows, "SELECT id,short_id,kind,status,created_at FROM scout_records WHERE guild_id=? AND json_extract(data,'$.related')=? ORDER BY created_at", (actor.guild_id, r['id']))
         except PermissionError as exc:
             raise HTTPException(403, str(exc)) from None
         except ValueError as exc:
             raise HTTPException(404, str(exc)) from None
-        return render(request, actor, section='detail', config=await asyncio.to_thread(s.settings, actor.guild_id), detail=r, protected=protected, answers=answers, revisions=revisions, linked=linked, message=request.session.pop('scout_message',None), error=getattr(request.state,'scout_error',None), edit_draft=getattr(request.state,'scout_draft',{}))
+        await asyncio.to_thread(initialize_discord_metadata_schema)
+        cid=r['data'].get('channel') or r['data'].get('channel_id') or r['data'].get('message',{}).get('channel_id')
+        channels=await asyncio.to_thread(s.rows,'SELECT name FROM dashboard_discord_channels WHERE guild_id=? AND id=?',(actor.guild_id,cid))
+        return render(request, actor, section='detail', config=await asyncio.to_thread(s.settings, actor.guild_id), detail=r, protected=protected, answers=answers, revisions=revisions, linked=linked, channel_label='#'+channels[0]['name'] if channels else '', message=request.session.pop('scout_message',None), error=getattr(request.state,'scout_error',None), edit_draft=getattr(request.state,'scout_draft',{}))
 
     @app.post('/scouts/activity', name='scouts_create_activity')
     async def create_activity(request: Request):
@@ -178,11 +258,11 @@ def install_scout_routes(app, templates, context):
         except ValueError as exc:
             request.state.scout_error = str(exc)
             request.state.scout_draft = dict(f)
-            response = await listing(request, 'activity')
+            response = await compose(request, 'activity')
             response.status_code = 400
             return response
-        audit(request, 'activity.created', r['id'])
-        return redirect(request, '/scouts/records/' + r['id'])
+        audit(request, 'activity.created', r['short_id'])
+        return redirect(request, '/scouts/records/' + r['short_id'],f"Activity #{r['short_id']} saved. Delivery to the staff activity channel is queued.")
 
     @app.post('/scouts/records/{rid}/action', name='scouts_record_action')
     async def record_action(request: Request, rid: str):
@@ -195,9 +275,9 @@ def install_scout_routes(app, templates, context):
             elif action == 'void':
                 r = await asyncio.to_thread(s.void, actor, rid, f.get('reason'))
             elif action == 'handle':
-                r = await asyncio.to_thread(s.handle, actor, rid, f.get('outcome'))
+                r = await asyncio.to_thread(s.handle, actor, rid, f.get('reason') or f.get('outcome'),dict(f))
             elif action == 'escalate':
-                r = await asyncio.to_thread(s.escalate, actor, f.get('reason'), rid, 'dashboard:' + str(f.get('submission','')))
+                r = await asyncio.to_thread(s.escalate, actor, f.get('reason'), rid, 'dashboard:' + str(f.get('submission','')),dict(f))
             elif action in ('cancel','nudge'):
                 r = await asyncio.to_thread(s.checkin_action, actor, rid, action)
             elif action == 'answer':
@@ -212,25 +292,25 @@ def install_scout_routes(app, templates, context):
             response = await detail(request, rid)
             response.status_code = 400
             return response
-        audit(request, action, r['id'])
-        return redirect(request, '/scouts/records/' + r['id'])
+        audit(request, action, r['short_id'])
+        return redirect(request, '/scouts/records/' + r['short_id'])
 
     @app.post('/scouts/escalate', name='scouts_escalate')
     async def escalate(request: Request):
         s, actor = await setup(request, 'activity.create')
         f = await form(request)
         try:
-            r = await asyncio.to_thread(s.escalate, actor, f.get('reason'), str(f.get('related','')), 'dashboard:' + str(f.get('submission','')))
+            r = await asyncio.to_thread(s.escalate, actor, f.get('reason'), str(f.get('related','')), 'dashboard:' + str(f.get('submission','')),dict(f))
         except PermissionError as exc:
             raise HTTPException(403, str(exc)) from None
         except ValueError as exc:
             request.state.scout_error = str(exc)
             request.state.scout_draft = dict(f)
-            response = await listing(request, 'activity')
+            response = await compose(request, 'escalation')
             response.status_code = 400
             return response
-        audit(request, 'escalate', r['id'])
-        return redirect(request, '/scouts/records/' + r['id'])
+        audit(request, 'escalate', r['short_id'])
+        return redirect(request, '/scouts/records/' + r['short_id'],f"Help request #{r['short_id']} saved. Notification to higher staff is queued.")
 
     @app.post('/scouts/checkins/preview', name='scouts_checkin_preview')
     async def checkin_preview(request: Request):
@@ -242,7 +322,7 @@ def install_scout_routes(app, templates, context):
         if not runtime:
             raise HTTPException(400, 'The bot must be online to preview current Scouts.')
         roster = json.loads(runtime[0]['data']).get('scouts', [])
-        requested = str(f.get('recipients','')).replace(',', ' ').split()
+        requested = f.getlist('recipient_ids') or str(f.get('recipients','')).replace(',', ' ').split()
         selected = roster if requested == ['all'] else [r for r in roster if r['id'] in requested]
         if not selected or (requested != ['all'] and set(requested) != {r['id'] for r in selected}):
             raise HTTPException(400, 'Select current Scout IDs, or enter all.')

@@ -175,3 +175,110 @@ class ScoutDashboardTests(unittest.TestCase):
         self.assertIn('bad-reference',response.text)
         self.assertEqual(self.s.rows('SELECT * FROM scout_records'),[])
         self.assertEqual(self.s.rows('SELECT * FROM scout_jobs'),[])
+
+    def test_short_record_ids_display_and_legacy_links_redirect_without_losing_history(self):
+        actor = Actor('1','10',frozenset(PERMISSION_KEYS))
+        parent = self.s.manual(actor,dict(type='other',summary='Parent note',action='Reminder'))
+        child = self.s.manual(actor,dict(type='other',summary='Follow-up note',action='Reminder'),related=parent['short_id'])
+        self.login()
+        listing = self.client.get('/scouts/section/activity')
+        self.assertIn('/scouts/records/1',listing.text)
+        self.assertIn('/scouts/records/2',listing.text)
+        self.assertNotIn(parent['id'],listing.text)
+        self.assertNotIn(child['id'],listing.text)
+        page = self.client.get('/scouts/records/'+child['id'])
+        self.assertEqual(page.status_code,200,page.text)
+        self.assertEqual(page.url.path,'/scouts/records/2')
+        self.assertIn('href="/scouts/records/1"',page.text)
+        self.assertNotIn(parent['id'],page.text)
+        self.assertNotIn(child['id'],page.text)
+
+    def test_short_report_and_checkin_routes_preserve_private_permissions(self):
+        report = self.s.report('1','80',dict(message_id='100',channel_id='2',content='Context',jump_url='https://discord.com/channels/1/2/100'),'Other','HIDDEN REPORTER TEXT','report-short')
+        checkin = self.s.request_checkins(self.admin,['10'])[0]
+        self.login()
+        report_page = self.client.get('/scouts/records/'+report['short_id'])
+        self.assertEqual(report_page.status_code,200)
+        self.assertNotIn('HIDDEN REPORTER TEXT',report_page.text)
+        self.assertNotIn(report['id'],report_page.text)
+        response = self.client.post('/scouts/records/'+checkin['short_id']+'/action',data=dict(csrf=self.csrf(),action_type='answer',answers=['PRIVATE ANSWER']*3))
+        self.assertEqual(response.status_code,200,response.text)
+        self.assertIn('PRIVATE ANSWER',response.text)
+        self.assertNotIn(checkin['id'],response.text)
+
+    def test_settings_identify_an_outdated_running_notification_renderer(self):
+        from utils.scouts import CARD_LAYOUT_VERSION
+        self.login('owner','owner-password')
+        with self.s.connect() as c:
+            c.execute('INSERT OR REPLACE INTO scout_runtime VALUES(?,?,?)',('1',time.time(),json.dumps(dict(readiness={}))))
+        page = self.client.get('/scouts/section/settings')
+        self.assertIn('running bot needs an update',page.text)
+        with self.s.connect() as c:
+            c.execute('UPDATE scout_runtime SET data=? WHERE guild_id=?',(json.dumps(dict(readiness={},notification_layout=CARD_LAYOUT_VERSION,short_record_ids=True)),'1'))
+        current = self.client.get('/scouts/section/settings')
+        self.assertNotIn('running bot needs an update',current.text)
+        self.assertIn('Notifications: compact purple cards',current.text)
+
+    def form_payload(self,forms):
+        data=dict(csrf=self.csrf(),questions='How are things going?\nWhat support would help?')
+        for profile,fields in forms.items():
+            for f in fields:
+                prefix=profile+'.'+f['key']+'.'
+                data[prefix+'label']=f['label'];data[prefix+'placeholder']=f['placeholder']
+                for flag in ('enabled','required'):
+                    if f[flag] and not f['locked']:data[prefix+flag]='on'
+        return data
+
+    def test_form_builder_saves_shared_questions_and_preserves_answers_when_editing(self):
+        self.login('owner','owner-password')
+        self.assertEqual(self.client.get('/scouts/section/forms').status_code,200)
+        forms=self.s.settings('1')['forms']
+        forms['activity'][4].update(enabled=True,required=True,label='What support would help?')
+        response=self.client.post('/scouts/forms',data=self.form_payload(forms))
+        self.assertEqual(response.status_code,200,response.text)
+        cfg=self.s.settings('1')
+        self.assertTrue(cfg['forms']['activity'][0]['required'])
+        self.assertEqual(len(cfg['questions']),2)
+        self.client.post('/logout',data=dict(csrf=self.csrf()))
+        self.login()
+        page=self.client.get('/scouts/new/activity')
+        self.assertIn('What support would help?',page.text)
+        record=self.s.manual(Actor('1','10',frozenset(PERMISSION_KEYS)),dict(type='other',summary='Example',action='Reminder',custom_1='Please review this'))
+        page=self.client.get('/scouts/records/'+record['short_id'])
+        self.assertIn('name="custom_1"',page.text)
+        self.assertIn('>Please review this</textarea>',page.text)
+        self.assertEqual(self.client.post('/scouts/forms',data=self.form_payload(forms)).status_code,403)
+
+    def test_invalid_form_configuration_keeps_attempted_labels(self):
+        self.login('owner','owner-password')
+        forms=self.s.settings('1')['forms'];forms['activity'][4].update(enabled=True,label='')
+        response=self.client.post('/scouts/forms',data=self.form_payload(forms))
+        self.assertEqual(response.status_code,400,response.text)
+        self.assertIn('Enabled questions need a label',response.text)
+        self.assertFalse(self.s.settings('1')['forms']['activity'][4]['enabled'])
+
+    def test_picker_api_and_compose_are_permission_scoped(self):
+        self.login()
+        r=self.s.manual(Actor('1','10',frozenset(PERMISSION_KEYS)),dict(type='other',summary='Searchable entry',action='Reminder'))
+        private=self.s.request_checkins(self.admin,['10'])[0]
+        choices=self.client.get('/scouts/api/records?q=Searchable')
+        self.assertEqual(choices.status_code,200)
+        self.assertEqual(choices.json()[0]['value'],r['short_id'])
+        self.assertNotIn(r['id'],choices.text)
+        self.assertEqual(self.client.get('/scouts/new/activity?related='+private['short_id']).status_code,400)
+        self.assertIn('Searchable entry',self.client.get('/scouts/new/escalation?related='+r['short_id']).text)
+        self.member_mock.return_value=dict(roles=[],pending=False,user=dict(id='10',bot=False))
+        self.assertEqual(self.client.get('/scouts/api/records').status_code,403)
+
+    def test_named_checkin_picker_previews_names_and_questions_without_sending(self):
+        self.login('owner','owner-password')
+        with self.s.connect() as c:
+            c.execute('INSERT OR REPLACE INTO scout_runtime VALUES(?,?,?)',('1',time.time(),json.dumps(dict(scouts=[dict(id='10',name='Jojo'),dict(id='11',name='Fern')]))))
+        page=self.client.get('/scouts/section/checkins')
+        self.assertIn('name="recipient_ids"',page.text)
+        response=self.client.post('/scouts/checkins/preview',data=dict(csrf=self.csrf(),recipient_ids=['10'],questions='What support would help?'))
+        self.assertEqual(response.status_code,200,response.text)
+        self.assertIn('Jojo',response.text)
+        self.assertIn('What support would help?',response.text)
+        self.assertIn('Send these check-ins',response.text)
+        self.assertEqual(self.s.rows("SELECT * FROM scout_jobs"),[])

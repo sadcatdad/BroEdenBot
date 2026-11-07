@@ -134,7 +134,7 @@ class ScoutLogWorkflowTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn('prefilled as evidence',args.args[0])
         modal = args.kwargs['view'].factory()
         self.assertEqual(modal.inputs['evidence'].default,MESSAGE)
-        self.assertEqual(modal.inputs['related'].default,MESSAGE)
+        self.assertEqual(modal.related,MESSAGE)
         modal.inputs['summary']._value = 'What happened'
         modal.inputs['action']._value = 'Gave a reminder'
         await modal.on_submit(self.interaction(iid=101))
@@ -149,7 +149,7 @@ class ScoutLogWorkflowTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(retry.inputs['summary'].default,'What happened')
         self.assertEqual(retry.inputs['action'].default,'Gave a reminder')
         self.assertEqual(retry.values['members'],'jojo')
-        retry.inputs['related']._value = MESSAGE
+        retry = response.kwargs['view'].new_entry_factory()
         await retry.on_submit(self.interaction(iid=102))
         self.assertEqual(len(self.records()),1)
         self.assertEqual(len(self.jobs()),1)
@@ -196,7 +196,7 @@ class ScoutLogWorkflowTests(unittest.IsolatedAsyncioTestCase):
         await self.cog.deliver(self.jobs()[0])
         interaction = self.interaction()
         await self.cog.edit_activity.callback(self.cog,interaction,record='https://discord.com/channels/1/9/500')
-        self.assertEqual(interaction.followup.send.call_args.kwargs['view'].factory().rid,parent['id'])
+        self.assertEqual(interaction.followup.send.call_args.kwargs['view'].factory().rid,parent['short_id'])
         escalation = self.s.escalate(self.actor,'Need a Ranger',MESSAGE)
         self.assertEqual(escalation['data']['evidence'],MESSAGE)
         await self.cog.deliver(self.jobs()[-1])
@@ -236,3 +236,19 @@ class ScoutLogWorkflowTests(unittest.IsolatedAsyncioTestCase):
             self.cog.cog_unload()
             delivery_cancel.assert_called_once()
             audit_cancel.assert_called_once()
+
+    async def test_commands_offer_recent_record_autocomplete_and_configured_questions(self):
+        record=self.s.manual(self.actor,self.values())
+        interaction=self.interaction();interaction.command=SimpleNamespace(name='edit')
+        choices=await self.cog.select_record(interaction,'What happened')
+        self.assertEqual(choices[0].value,record['short_id'])
+        self.assertIn('What happened',choices[0].name)
+        parameters={p.display_name:p for p in ScoutsCog.log_activity.parameters}
+        self.assertTrue(parameters['follow_up_to'].autocomplete)
+        self.assertIn('message_link',parameters)
+        cfg=self.s.settings('1');cfg['forms']['activity'][4].update(label='Do you need help?',enabled=True,required=True)
+        self.s.save_settings(self.actor,cfg)
+        await ScoutsCog.log_activity.callback(self.cog,interaction)
+        modal=interaction.followup.send.call_args.kwargs['view'].factory()
+        self.assertEqual(modal.inputs['custom_1'].label,'Do you need help?')
+        self.assertTrue(modal.inputs['custom_1'].required)

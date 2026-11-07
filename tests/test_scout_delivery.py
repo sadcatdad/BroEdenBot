@@ -152,3 +152,53 @@ class ScoutDeliveryTests(unittest.IsolatedAsyncioTestCase):
         await self.cog.deliver(later)
         self.assertEqual(self.job()['status'],'pending')
         self.guild.fetch_member.assert_not_called()
+
+    async def test_existing_cards_refresh_quietly_without_changing_activity_history(self):
+        await self.cog.deliver(self.job())
+        revisions = self.s.rows('SELECT * FROM scout_revisions')
+        self.assertEqual(self.s.queue_card_refresh(),1)
+        refresh = self.s.rows("SELECT * FROM scout_jobs WHERE purpose LIKE 'layout:%'")[0]
+        await self.cog.deliver(refresh)
+        self.channel.send.assert_awaited_once()
+        edit = self.channel.fetch_message.return_value.edit
+        edit.assert_awaited_once()
+        embed = edit.call_args.kwargs['embed']
+        self.assertEqual(embed.colour.value,0x9B59B6)
+        self.assertIn('#1',embed.footer.text)
+        self.assertNotIn(self.record['id'],embed.footer.text)
+        self.assertNotIn('Scout delivery',embed.footer.text)
+        self.assertEqual(self.s.rows('SELECT * FROM scout_revisions'),revisions)
+        self.assertEqual(len(self.s.rows('SELECT * FROM scout_records')),1)
+        self.assertEqual(self.s.queue_card_refresh(),0)
+
+    async def test_visual_refresh_does_not_repost_a_removed_card(self):
+        await self.cog.deliver(self.job())
+        self.s.queue_card_refresh()
+        self.channel.fetch_message.side_effect = discord.NotFound(SimpleNamespace(status=404,reason='Not Found'),'Removed')
+        await self.cog.deliver(self.job())
+        self.channel.send.assert_awaited_once()
+        self.assertEqual(self.job()['status'],'cancelled')
+
+    async def test_visual_refresh_is_cancelled_when_a_newer_edit_will_render_the_card(self):
+        await self.cog.deliver(self.job())
+        self.s.queue_card_refresh()
+        refresh = self.job()
+        self.s.edit(self.admin,'1',dict(type='other',summary='New content',action='Reminder'),1)
+        await self.cog.deliver(refresh)
+        self.channel.fetch_message.assert_not_awaited()
+        self.assertEqual(self.s.rows('SELECT status FROM scout_jobs WHERE id=?',(refresh['id'],))[0]['status'],'cancelled')
+
+    async def test_legacy_unconfirmed_card_can_only_be_restyled_in_place(self):
+        with self.s.connect() as c:
+            old = self.s._create(c,'1','system','',dict(action_type='message_delete',confirmed_scout=False),
+                source='gateway:old',notify=False)
+            c.execute("INSERT INTO scout_jobs(id,guild_id,record_id,version,destination,message_id,status,created_at) VALUES('old-receipt','1',?,1,'9','100','sent',?)",(old['id'],time.time()))
+        self.assertEqual(self.s.queue_card_refresh(),1)
+        refresh = self.s.rows("SELECT * FROM scout_jobs WHERE purpose LIKE 'layout:%'")[0]
+        await self.cog.deliver(refresh)
+        self.channel.send.assert_not_awaited()
+        edit = self.channel.fetch_message.return_value.edit
+        edit.assert_awaited_once()
+        self.assertIn('Historical evidence',edit.call_args.kwargs['embed'].footer.text)
+        self.assertNotIn('**Scout:**',edit.call_args.kwargs['embed'].description)
+        self.assertEqual(self.s.listing(self.admin,'system'),[])
