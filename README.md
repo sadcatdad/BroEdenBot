@@ -2596,7 +2596,7 @@ from Discord; continue using `bedimportdry` and `bedimport` in the terminal.
 ## Scout Operations
 
 The Garden has a **Scouts** workspace: Overview, Activity, Discord Actions,
-Reports, Check-ins, Settings, and Forms. Compact searchable lists, dedicated
+Help Requests, Reports, Check-ins, Settings, and Forms. Compact searchable lists, dedicated
 activity/help forms, and responsive record pages keep common tasks visible. The workflow is **Scout → Ranger → Admin**;
 Discord continues to manage moderation powers. There are no staffing scores,
 quotas, assignments, automatic staffing decisions, or automatic report-outcome DMs.
@@ -2658,8 +2658,9 @@ unrelated Garden/Admin pages.
 | Capability under Scout Operations | What it permits |
 | --- | --- |
 | `scouts.activity.view` | Shared manual activity, redacted reports, escalations |
-| `scouts.activity.create` | Create activity, edit owned manual entries, escalate (current Scout eligibility required) |
+| `scouts.activity.create` | Create activity, edit owned manual entries, escalate, and update own workflow statuses (current Scout eligibility required) |
 | `scouts.activity.review` | Inspect retained revisions of records the viewer can read |
+| `scouts.activity.status.manage` | Change other staff activity/help-request statuses; shared read access is also required |
 | `scouts.activity.void` | Void mistaken manual entries with a reason; retain history |
 | `scouts.moderation.view` | Read automatic actions and captured evidence |
 | `scouts.reports.handle` | Add a required outcome and mark a member report Handled |
@@ -2728,8 +2729,8 @@ database before this migration runs.
   standalone manual totals exclude voided entries and linked follow-ups. Confirmed
   audit totals appear only with moderation-view permission and represent audit
   counts, not staffing scores. Member submissions never become Scout activity.
-- `/scout edit <record>`: edit an owned active manual entry with revision history.
-  The record picker autocompletes only the author’s active manual entries and
+- `/scout edit <record>`: edit an owned manual entry that has not been voided with revision history.
+  The record picker autocompletes only the author’s non-void manual entries and
   also accepts a copied Scout card or Garden record link.
   Dashboard editing uses a version check to prevent silently overwriting concurrent
   edits. Authorized staff may void a mistaken manual record with a reason.
@@ -2747,10 +2748,11 @@ database before this migration runs.
   reporter about one message within five minutes return the existing report.
 - `/scout escalate [follow_up_to]`: select a recent entry or leave blank to
   start a new concern, then explain the help needed. Equivalent dashboard/card
-  controls create a linked **Escalated** record and notify higher-staff roles in
+  controls create a linked **Open** help request and notify higher-staff roles in
   the shared activity channel. The optional reference accepts the same IDs and
   links as `/scout log`; ordinary message links become evidence for a new concern.
-  There is no assignment or resolution queue.
+  Review these in **Scouts → Help requests**. Status changes do not assign staff
+  or automatically close a linked report or activity.
 - `/scout checkin request <recipients> [deadline] [questions]`: specify one/multiple
   Scout IDs separated by spaces/commas, or `all`. Optional deadlines use an ISO
   timestamp with timezone; custom questions are separated by `|`. Preview the
@@ -2774,6 +2776,37 @@ also stored separately; public record/revision/delivery payloads contain only
 status and questions. Dashboard Scout responses use `private, no-store` headers.
 Database administrators and backup operators retain direct database access; these
 are application permission boundaries, not encryption of SQLite backups.
+
+### Activity and help-request statuses
+
+The old **Active** value only meant a record had not been voided; it never meant
+someone was working on it. Activity now starts **Logged**: saved, with no follow-up
+flagged. Open an entry in the dashboard and use **Change status**:
+
+- Activity: **Logged**, **Needs follow-up**, **In progress**, **Resolved**.
+- Help requests: **Open**, **In progress**, **Resolved**, **Cancelled**. Closed
+  requests can be reopened by choosing Open. The overview shows help requests
+  that still need attention; the dedicated Help requests section includes closed
+  history, status filtering, search, date range, and pagination.
+- Automatic Discord actions: **Recorded**. These are evidence records rather than
+  open tasks, so they do not have editable workflow statuses. Action titles use
+  readable labels such as **Message deleted**.
+
+Scouts can change statuses on their own activity/help requests. Managing someone
+else's status requires the separate **Manage activity statuses** capability plus
+shared activity read access. Owners/Administrators receive that capability through
+an additive, idempotent RBAC migration; custom roles require an explicit Access
+grant. Revision-review permission alone does not grant status editing.
+
+An optional update note, actor, timestamp, and previous/new status are retained.
+Every actual change creates a revision and queues an update to the existing Discord
+card without another role ping. Duplicate saves do not create duplicate revisions.
+Concurrent changes require reloading before saving, and failed validation preserves
+the note. Voiding a mistaken activity remains a separate permission/action with
+retained history; voided entries cannot be reopened through the status selector.
+Status changes do not edit captured evidence, change linked records, alter report
+outcomes, or affect check-in responses. Existing Active/Escalated records display
+and filter as Logged/Open without rewriting their original evidence or revisions.
 
 ### Automatic evidence and capture limitations
 

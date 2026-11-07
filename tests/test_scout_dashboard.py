@@ -298,3 +298,64 @@ class ScoutDashboardTests(unittest.TestCase):
             self.assertIn(mime,response.headers['content-type'])
             self.assertEqual(response.content,path.read_bytes())
             self.assertNotIn(f'/static/{filename}"',page.text)
+
+    def test_own_activity_status_update_is_saved_audited_and_reflected_in_filters(self):
+        actor=Actor('1','10',frozenset(PERMISSION_KEYS))
+        r=self.s.manual(actor,dict(type='other',summary='Workflow example',action='Reminder'))
+        self.login()
+        page=self.client.get('/scouts/records/'+r['short_id'])
+        self.assertIn('Update status',page.text)
+        path='/scouts/records/'+r['short_id']+'/action'
+        self.assertEqual(self.client.post(path,data=dict(action_type='status',status='resolved',version=1)).status_code,400)
+        response=self.client.post(path,data=dict(csrf=self.csrf(),action_type='status',status='resolved',version=1,note='All sorted'))
+        self.assertEqual(response.status_code,200,response.text)
+        self.assertIn('Status: Resolved',response.text)
+        self.assertIn('All sorted',response.text)
+        self.assertEqual(self.s.record(actor,r['id'])['status'],'resolved')
+        self.assertIn('Workflow example',self.client.get('/scouts/section/activity?status=resolved').text)
+        self.assertNotIn('Workflow example',self.client.get('/scouts/section/activity?status=logged').text)
+        response=self.client.post(path,data=dict(csrf=self.csrf(),action_type='status',status='in_progress',version=1,note='Keep this draft'))
+        self.assertEqual(response.status_code,400,response.text)
+        self.assertIn('Keep this draft</textarea>',response.text)
+        self.assertIn('Reload',response.text)
+
+    def test_escalations_have_their_own_page_and_status_controls_are_permission_scoped(self):
+        r=self.s.escalate(self.admin,'Other author help request')
+        self.login()
+        page=self.client.get('/scouts/section/escalations')
+        self.assertEqual(page.status_code,200,page.text)
+        self.assertIn('Other author help request',page.text)
+        page=self.client.get('/scouts/records/'+r['short_id'])
+        self.assertNotIn('Update status',page.text)
+        path='/scouts/records/'+r['short_id']+'/action'
+        payload=dict(csrf=self.csrf(),action_type='status',status='resolved',version=1)
+        self.assertEqual(self.client.post(path,data=payload).status_code,403)
+        set_user_permission_override(self.uid,'scouts.activity.status.manage','allow',changed_by='test')
+        page=self.client.get('/scouts/records/'+r['short_id'])
+        self.assertIn('Update status',page.text)
+        self.assertEqual(self.client.post(path,data=payload).status_code,200)
+        self.assertNotIn('Other author help request',self.client.get('/scouts').text)
+        self.assertIn('Other author help request',self.client.get('/scouts/section/escalations?status=resolved').text)
+
+    def test_system_evidence_is_recorded_and_has_no_workflow_status_form(self):
+        from tests.test_scouts import confirmed_action
+        cfg=self.s.settings('1');self.s.save_settings(self.admin,dict(cfg,automatic_enabled=True))
+        r=self.s.system('1','audit:100',confirmed_action())
+        self.login()
+        page=self.client.get('/scouts/records/'+r['short_id'])
+        self.assertIn('Status: Recorded',page.text)
+        self.assertIn('Message deleted',page.text)
+        self.assertNotIn('Update status',page.text)
+        self.assertNotIn('>Active<',page.text)
+        self.assertNotIn('>Active<',self.client.get('/scouts/section/system').text)
+
+    def test_existing_admin_role_gets_status_permission_once_without_granting_scouts(self):
+        with self.s.connect() as c:
+            c.execute("DELETE FROM dashboard_role_permissions WHERE permission_key='scouts.activity.status.manage'")
+            c.execute("DELETE FROM dashboard_rbac_migrations WHERE migration_key='2026_11_scout_workflow_status'")
+        from dashboard import rbac
+        rbac._INITIALIZED_PATHS.discard(str(self.path.resolve()))  # Simulate the first process start after upgrading.
+        initialize_rbac_schema();initialize_rbac_schema()
+        roles={r['role_key']:r for r in list_roles()}
+        for key in ('owner','administrator'):self.assertIn('scouts.activity.status.manage',roles[key]['permissions'])
+        self.assertNotIn('scouts.activity.status.manage',roles['scout']['permissions'])

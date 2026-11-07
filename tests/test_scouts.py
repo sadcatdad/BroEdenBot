@@ -114,7 +114,7 @@ class ScoutStorageTests(unittest.TestCase):
         handled=self.s.handle(self.scout,r['id'],'Reviewed with no further action')
         self.assertEqual(handled['status'],'handled')
         self.assertEqual(follow['data']['related'],r['id'])
-        self.assertEqual(e['status'],'escalated')
+        self.assertEqual(e['status'],'open')
         with self.assertRaises(ValueError):
             self.s.handle(self.scout,r['id'],'Duplicate')
 

@@ -20,7 +20,7 @@ import discord
 from discord import app_commands
 from discord.ext import commands, tasks
 
-from utils.scouts import Scouts, ACTIVITY_TYPES, REPORT_CATEGORIES, CARD_LAYOUT_VERSION, encode
+from utils.scouts import Scouts, ACTIVITY_TYPES, REPORT_CATEGORIES, CARD_LAYOUT_VERSION, encode, status_label, status_key, record_title
 from utils.scout_access import discord_member_actor
 from utils.scout_forms import FORM_DEFAULTS
 from utils.settings import get_setting
@@ -83,15 +83,7 @@ def card_embed(record, marker):
 
     if kind == 'system':
         action = d.get('action_type', '')
-        count = max(1, int(d.get('count') or 1))
-        if action in ('message_delete', 'message_bulk_delete'):
-            title = 'Message deleted' if count == 1 else f'{count} messages deleted'
-        elif action == 'timeout':
-            title = 'Timeout removed' if not d.get('after') else 'Timeout updated' if d.get('before') else 'Timeout applied'
-        elif action == 'member_move':
-            title = 'Member moved in voice' if count == 1 else f'{count} members moved in voice'
-        elif action == 'member_disconnect':
-            title = 'Member disconnected from voice' if count == 1 else f'{count} members disconnected from voice'
+        title = record_title(record)
         actor = member_reference(d.get('moderator_id')) if d.get('moderator_id') else 'Not confirmed'
         lines.append('• **' + ('Scout' if d.get('confirmed_scout') else 'Actor') + ':** ' + actor)
         if d.get('target_id') and str(d['target_id']) != str(d.get('channel_id', '')):
@@ -151,8 +143,8 @@ def card_embed(record, marker):
                           url=target + '#scout-delivery=' + quote(marker, safe=''),
                           timestamp=datetime.fromtimestamp(record['created_at'], timezone.utc))
     footer = [f'#{label}' if label else 'Scout Operations']
-    if record['status'] not in ('active',):
-        footer.append(record['status'].title())
+    if kind in ('manual','escalation') or record['status'] not in ('active',):
+        footer.append(status_label(record))
     elif label:
         footer.append('Historical evidence' if kind == 'system' and not d.get('confirmed_scout') else 'Scout Operations')
     embed.set_footer(text=' · '.join(footer))
@@ -399,7 +391,7 @@ class ActivityPages(discord.ui.View):
                 "SELECT coalesce(sum(coalesce(json_extract(data,'$.count'),1)),0) total FROM scout_records WHERE guild_id=? AND kind='system' AND source_key LIKE 'audit:%' AND author_id=? AND json_extract(data,'$.confirmed_scout')=1 AND created_at>=?",
                 (str(self.guild),str(self.scout),time.time()-self.days*86400))
             system_total = f" {confirmed[0]['total']} confirmed audit actions (grouped counts; exact affected members may be unknown)."
-        return f"Scout {self.scout} · {self.days} days · {totals[0]['total']} standalone manual records.{system_total} Linked context is listed separately; member reports are not Scout activity.\nPage {self.page}\n" + '\n'.join(f"#{r['short_id']} · {r['status']} · {safe(r['data']['summary'],20)}" for r in rows[:25])
+        return f"Scout {self.scout} · {self.days} days · {totals[0]['total']} standalone manual records.{system_total} Linked context is listed separately; member reports are not Scout activity.\nPage {self.page}\n" + '\n'.join(f"#{r['short_id']} · {status_label(r)} · {safe(r['data']['summary'],20)}" for r in rows[:25])
 
     async def turn(self, interaction, amount):
         if interaction.user.id != self.uid:
@@ -596,7 +588,7 @@ class ScoutsCog(commands.Cog):
             record = reference['short_id']
             r=await self.call(self.service.record,actor,record)
             if r['kind']!='manual' or r['author_id']!=actor.user_id or r['status']=='void':
-                raise PermissionError('Only the author can edit an active manual record.')
+                raise PermissionError('Only the author can edit a manual entry that has not been voided.')
             cfg=await self.call(self.service.settings,actor.guild_id)
             values=dict(r['data'],version=r['version'],_form_schema=cfg['forms']['activity'])
             for answer in r['data'].get('form_answers',[]):
@@ -908,7 +900,7 @@ class ScoutsCog(commands.Cog):
             role_ids=[]
             if not old and r['kind']=='report' and r['data'].get('notify_roles'):
                 role_ids=cfg['report_roles']
-            if not old and r['kind']=='escalation':
+            if not old and r['kind']=='escalation' and status_key(r) in ('open','in_progress'):
                 role_ids=cfg['escalation_roles']
             content=' '.join('<@&'+rid+'>' for rid in role_ids) or None
             if old and old['destination']==job['destination'] and r['kind']!='checkin':

@@ -702,3 +702,15 @@ a:focus-visible,summary:focus-visible,button:focus-visible {
     flex-wrap:wrap;
   }
 }
+
+.scout-status.needs_follow_up, .scout-status.open { color:#e0b46b; background:#e0b46b11; }
+.scout-status.in_progress { color:#bda3e0; background:#a685d017; }
+.scout-status.resolved { color:#9ac8a8; background:#9ac8a811; }
+.scout-status.cancelled, .scout-status.void { opacity:.65; }
+.scout-status-update { margin-top:18px; padding-top:12px; border-top:1px solid var(--scout-border); }
+.scout-status-update p { font-size:.78rem; }
+.scout-workflow .scout-form { margin-top:18px; }
+.scout-workflow label { font-size:.82rem; }
+
+.scout-status-link { font-size:.82rem; margin-left:auto; }
+.scout-workflow:target { outline:2px solid var(--scout-accent); outline-offset:3px; }

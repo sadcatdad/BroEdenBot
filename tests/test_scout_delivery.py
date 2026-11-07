@@ -202,3 +202,23 @@ class ScoutDeliveryTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn('Historical evidence',edit.call_args.kwargs['embed'].footer.text)
         self.assertNotIn('**Scout:**',edit.call_args.kwargs['embed'].description)
         self.assertEqual(self.s.listing(self.admin,'system'),[])
+
+    async def test_status_change_edits_existing_card_with_clear_footer_and_no_ping(self):
+        await self.cog.deliver(self.job())
+        r=self.s.change_status(self.admin,self.record['id'],'resolved',1,'All sorted')
+        await self.cog.deliver(self.job())
+        self.channel.send.assert_awaited_once()
+        edit=self.channel.fetch_message.return_value.edit
+        edit.assert_awaited_once()
+        self.assertIn('Resolved',edit.call_args.kwargs['embed'].footer.text)
+        self.assertFalse(edit.call_args.kwargs['allowed_mentions'].everyone)
+        self.assertFalse(edit.call_args.kwargs['allowed_mentions'].roles)
+        self.assertNotIn('All sorted',edit.call_args.kwargs['embed'].description)
+
+    async def test_escalation_closed_before_initial_delivery_does_not_ping_higher_staff(self):
+        cfg=self.s.settings('1');self.s.save_settings(self.admin,dict(cfg,escalation_roles=['6']))
+        r=self.s.escalate(self.admin,'Need help')
+        self.s.change_status(self.admin,r['id'],'resolved',1,'No longer needed')
+        await self.cog.deliver(self.job())
+        self.assertIsNone(self.channel.send.call_args.args[0])
+        self.assertIn('Resolved',self.channel.send.call_args.kwargs['embed'].footer.text)

@@ -26,8 +26,9 @@ PERMISSIONS = (
         PermissionDefinition("scouts." + key, "Scout Operations", name, description)
         for key, name, description in (
             ("activity.view", "View Scout activity", "Read shared activity, redacted reports and escalations."),
-            ("activity.create", "Write Scout activity", "Create, edit owned manual records and escalate."),
+            ("activity.create", "Write Scout activity", "Create activity, edit owned manual records, escalate and update own workflow statuses."),
             ("activity.review", "Review activity history", "Read manual record revisions."),
+            ("activity.status.manage", "Manage activity statuses", "Update workflow status on other staff activity and help requests; read access is still required."),
             ("activity.void", "Void manual activity", "Void mistaken records with a retained reason and history."),
             ("moderation.view", "View system evidence", "Read automatic moderation evidence and deleted content."),
             ("reports.handle", "Handle member reports", "Record outcomes and mark reports handled."),
@@ -356,6 +357,12 @@ def initialize_rbac_schema() -> None:
                 )
             connection.execute("INSERT INTO dashboard_rbac_migrations VALUES(?,?)", (scout_migration, now))
         drop_commands_migration = "2026_10_drop_command_permissions"
+        status_migration = "2026_11_scout_workflow_status"
+        if connection.execute("SELECT 1 FROM dashboard_rbac_migrations WHERE migration_key=?", (status_migration,)).fetchone() is None:
+            for role_key in ("owner", "administrator"):
+                role_id = connection.execute("SELECT id FROM dashboard_roles WHERE role_key=?", (role_key,)).fetchone()[0]
+                connection.execute("INSERT OR IGNORE INTO dashboard_role_permissions(role_id,permission_key) VALUES(?,?)", (role_id,"scouts.activity.status.manage"))
+            connection.execute("INSERT INTO dashboard_rbac_migrations VALUES(?,?)", (status_migration,now))
         if (
             connection.execute(
                 "SELECT 1 FROM dashboard_rbac_migrations WHERE migration_key=?",

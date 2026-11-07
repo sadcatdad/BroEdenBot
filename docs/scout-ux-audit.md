@@ -7,7 +7,7 @@ no test notifications are sent to Discord.
 
 | Friction found | Implemented behavior |
 | --- | --- |
-| An empty record argument gave Scouts nothing to choose | `/scout log follow_up_to`, `/scout escalate follow_up_to`, and `/scout edit record` autocomplete recent readable entries with a short number, type, and summary. Editing offers owned active manual entries only. |
+| An empty record argument gave Scouts nothing to choose | `/scout log follow_up_to`, `/scout escalate follow_up_to`, and `/scout edit record` autocomplete recent readable entries with a short number, type, and summary. Editing offers owned non-void manual entries only. |
 | Escalation appeared to require an existing record | Omit `follow_up_to` to describe a new concern. Dashboard **Ask for help** does the same. Record pages preselect the entry when starting a follow-up. |
 | `evidence_link` did not explain the input | Renamed to `message_link`, with **Copy Message Link** instructions. A message context action prefills member/channel/link. Forms accept supporting links/details as optional evidence. |
 | Deleted text was captured but never attached | Use the rolling buffer or cached pre-deletion snapshot; reconcile a complete, uniquely matching deletion batch with the confirmed Scout audit record. Display the result explicitly as correlated context. |
@@ -96,3 +96,23 @@ Scout CSS and JavaScript now load in the document head using content-fingerprint
 URLs. An asset change generates a new cache key without a manual version bump.
 Tests check matching content/MIME types, content-change invalidation, proxy-safe
 paths, and a browser flow with the obsolete unversioned stylesheet available.
+
+## Workflow status follow-up
+
+Activity now uses Logged, Needs follow-up, In progress, and Resolved. Help requests
+use Open, In progress, Resolved, and Cancelled, with their own filtered/paginated
+section. Legacy Active/Escalated rows are interpreted as Logged/Open without bulk
+rewrites. Automatic actions show Recorded and readable action titles.
+
+Authors may update their own entries; the separate Manage activity statuses
+capability permits other staff to manage them, with normal read checks. Status
+changes retain an optional note, actor, timestamp, and revision and queue an edit
+to the existing channel card. They do not close linked reports or edit evidence.
+The dashboard explains each status, rejects stale changes, and preserves invalid
+form drafts. The standing dashboard validation requirement is also recorded in
+AGENTS.md and Codex memory.
+
+The status browser pass exercised own updates, manager updates, filtering, resolved
+request history, reopening/cancelling, the mobile status form, and read-only
+automatic evidence. The broader pass covered 84 desktop/mobile views with no
+asset, CSP/JavaScript, or horizontal-overflow failures.

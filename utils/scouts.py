@@ -24,7 +24,49 @@ from utils.scout_forms import FORM_DEFAULTS, validate_forms, answers_for
 ACTIVITY_TYPES = ('rule reminder', 'de-escalation', 'message removal', 'timeout', 'concern', 'other')
 ACTION_TYPES = ('message_delete', 'message_bulk_delete', 'timeout', 'member_move', 'member_disconnect')
 CORRELATION_RETENTION_SECONDS = 300
-CARD_LAYOUT_VERSION = 'compact-purple-v2'
+CARD_LAYOUT_VERSION = 'compact-purple-v3-statuses'
+WORKFLOW_STATUSES = {
+    'manual': {'logged':'Logged', 'needs_follow_up':'Needs follow-up', 'in_progress':'In progress', 'resolved':'Resolved'},
+    'escalation': {'open':'Open', 'in_progress':'In progress', 'resolved':'Resolved', 'cancelled':'Cancelled'},
+}
+STATUS_HELP = {
+    'logged':'Saved activity; no follow-up has been flagged.',
+    'needs_follow_up':'More attention or a response is needed.',
+    'in_progress':'Someone is actively working on this.',
+    'resolved':'No further action is needed. Reopen it if the situation changes.',
+    'open':'Higher staff have been asked for help; review is still needed.',
+    'cancelled':'This request for help is no longer needed.',
+    'recorded':'An automatic evidence record, not an open task.',
+    'void':'Marked as a mistaken entry; its history is retained.',
+}
+
+
+def status_key(record):
+    kind, value = record['kind'], record['status']
+    if kind == 'system':
+        return 'recorded'
+    return {('manual','active'):'logged', ('escalation','escalated'):'open'}.get((kind,value),value)
+
+
+def status_label(record):
+    key = status_key(record)
+    return WORKFLOW_STATUSES.get(record['kind'],{}).get(key, {'void':'Voided','recorded':'Recorded'}.get(key,key.replace('_',' ').title()))
+
+
+def record_title(record):
+    data = record['data']
+    if record['kind'] != 'system':
+        return data.get('summary') or data.get('category') or 'Requested check-in'
+    action = data.get('action_type','')
+    count = max(1,int(data.get('count') or 1))
+    if action in ('message_delete','message_bulk_delete'):
+        return 'Message deleted' if count == 1 else f'{count} messages deleted'
+    if action == 'timeout':
+        return 'Timeout removed' if not data.get('after') else 'Timeout updated' if data.get('before') else 'Timeout applied'
+    if action in ('member_move','member_disconnect'):
+        verb = 'moved in voice' if action=='member_move' else 'disconnected from voice'
+        return 'Member '+verb if count==1 else f'{count} members '+verb
+    return action.replace('_',' ').capitalize()
 REPORT_CATEGORIES = ('Harassment', 'Hate or discrimination', 'Spam', 'Unsafe content', 'Rule concern', 'Other')
 DEFAULTS = dict(
     enabled=False, automatic_enabled=False, scout_roles=[], activity_channel='', moderation_channel='',
@@ -393,8 +435,11 @@ class Scouts:
             sql += ' AND (short_id=? OR id LIKE ? OR data LIKE ?)'
             args.extend([query.lstrip('#').upper(), '%' + query[:100] + '%', '%' + query[:100] + '%'])
         if status:
-            sql += ' AND status=?'
-            args.append(status)
+            aliases = (['logged','active'] if kind=='manual' and status=='logged' else
+                       ['open','escalated'] if kind=='escalation' and status=='open' else
+                       ['open','escalated','in_progress'] if kind=='escalation' and status=='unresolved' else [status])
+            sql += ' AND status IN (' + ','.join('?' for _ in aliases) + ')'
+            args.extend(aliases)
         if scout:
             sql += " AND json_extract(data,'$.recipient_id')=?" if kind == 'checkin' else ' AND author_id=?'
             args.append(str(scout))
@@ -418,7 +463,7 @@ class Scouts:
                 if reference['record_id']:
                     data['related'] = reference['record_id']
                 self._add_evidence(data, reference['evidence'])
-            return self._create(c, actor.guild_id, 'manual', actor.user_id, data, source=source)
+            return self._create(c, actor.guild_id, 'manual', actor.user_id, data, status='logged', source=source)
 
     @staticmethod
     def manual_values(values, fields=None):
@@ -441,11 +486,13 @@ class Scouts:
             c.execute('BEGIN IMMEDIATE')
             r = self._record(c, actor.guild_id, rid)
             if r['kind'] != 'manual' or r['author_id'] != actor.user_id or r['status'] == 'void':
-                raise PermissionError('Only the author can edit an active manual record.')
+                raise PermissionError('Only the author can edit a manual entry that has not been voided.')
             if r['version'] != int(version):
                 raise ValueError('This record changed. Reload before editing.')
             if r['data'].get('related'):
                 data['related'] = r['data']['related']
+            if r['data'].get('status_update'):
+                data['status_update'] = r['data']['status_update']
             r['data'] = data
             return self._update(c, r, actor.user_id, 'edited')
 
@@ -460,6 +507,36 @@ class Scouts:
             r['status'] = 'void'
             r['data']['void_reason'] = reason
             return self._update(c, r, actor.user_id, 'voided')
+
+    @staticmethod
+    def can_change_status(actor, record):
+        return bool(actor.eligible and record['kind'] in WORKFLOW_STATUSES and record['status']!='void' and (
+            'scouts.activity.status.manage' in actor.permissions or
+            (record['author_id']==actor.user_id and 'scouts.activity.create' in actor.permissions)))
+
+    def change_status(self, actor, rid, status, version, note=''):
+        self.enabled(actor.guild_id)
+        note = str(note or '').strip()
+        if len(note)>1000:
+            raise ValueError('Status notes must be at most 1,000 characters.')
+        with self.connect() as c:
+            c.execute('BEGIN IMMEDIATE')
+            record = self._record(c,actor.guild_id,rid)
+            self.read_allowed(actor,record)
+            if record['kind'] not in WORKFLOW_STATUSES:
+                raise ValueError('Only activity and help requests have editable workflow statuses.')
+            if not self.can_change_status(actor,record):
+                raise PermissionError('Update your own entries, or ask staff with Manage activity statuses permission.')
+            if status not in WORKFLOW_STATUSES[record['kind']]:
+                raise ValueError('Choose a valid status for this entry.')
+            previous = status_key(record)
+            if status == previous and (not note or note==record['data'].get('status_update',{}).get('note')):
+                return record
+            if record['version'] != int(version):
+                raise ValueError('This entry changed. Reload it before changing its status.')
+            record['status'] = status
+            record['data']['status_update'] = dict(previous=previous,status=status,actor_id=actor.user_id,at=time.time(),note=note)
+            return self._update(c,record,actor.user_id,'status_changed' if status!=previous else 'status_note_added')
 
     def revisions(self, actor, rid):
         actor.require('activity.review')
@@ -537,7 +614,7 @@ class Scouts:
             data['form_answers'] = answers_for(fields, dict(values or {}, reason=explanation))
             data['form_labels']={'summary':fields[0]['label']}
             self._add_evidence(data, reference['evidence'])
-            return self._create(c, actor.guild_id, 'escalation', actor.user_id, data, 'escalated', source)
+            return self._create(c, actor.guild_id, 'escalation', actor.user_id, data, 'open', source)
 
     def reference_choices(self, actor, query='', owned=False):
         actor.require('activity.create')
@@ -819,7 +896,7 @@ class Scouts:
                 data = dict(record['data'])
                 if data.get('related'):
                     data['related'] = record.get('related_short_id', '')
-                sources.append(dict(id=record['short_id'], kind=record['kind'], status=record['status'],
+                sources.append(dict(id=record['short_id'], kind=record['kind'], status=status_label(record),
                                     author_id=record['author_id'], data=data, created_at=record['created_at']))
         if 'scouts.checkins.view_all' in actor.permissions or (scout == actor.user_id and 'scouts.checkins.respond' in actor.permissions):
             for r in self.listing(actor, 'checkin', days=days):
