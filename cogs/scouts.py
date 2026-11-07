@@ -14,6 +14,7 @@ import os
 import time
 from typing import Optional
 from datetime import datetime, timezone
+from urllib.parse import quote, urlsplit
 
 import discord
 from discord import app_commands
@@ -24,6 +25,7 @@ from utils.scout_access import discord_member_actor
 from utils.settings import get_setting
 
 log = logging.getLogger(__name__)
+SCOUT_EMBED_COLOR = 0x9B59B6
 
 
 def dashboard_url(rid=''):
@@ -44,18 +46,39 @@ def safe(text, limit=3900):
     return discord.utils.escape_mentions(discord.utils.escape_markdown(str(text)))[:limit]
 
 
+def member_reference(value):
+    value = str(value or '')
+    return f'<@{value}>' if value.isdigit() else safe(value or 'Unknown', 80)
+
+
+def channel_reference(value):
+    value = str(value or '')
+    return f'<#{value}>' if value.isdigit() else safe(value or 'Unknown', 80)
+
+
+def delivery_receipt_matches(embed, marker):
+    # New cards keep the durable receipt in the title link's fragment. Retain
+    # footer matching so sends interrupted before this layout update still recover.
+    return (getattr(getattr(embed, 'footer', None), 'text', None) == marker
+            or urlsplit(getattr(embed, 'url', None) or '').fragment
+            == 'scout-delivery=' + quote(marker, safe=''))
+
+
 def card_embed(record, marker):
     d = record['data']
     title = {'manual':'Scout activity','report':'Member report','system':'Automatic moderation evidence', 'escalation':'Escalated', 'checkin':'Requested Scout check-in'}[record['kind']]
-    lines = [f"**Status:** {record['status'].title()}", f"**Record:** {record['id']}"]
+    if record['kind'] == 'manual' and d.get('type') and d['type'] != 'other':
+        title += ' · ' + safe(d['type'].capitalize(), 80)
+    lines = []
     if record['kind'] == 'report':
         m = d['message']
-        lines += ['**Category:** ' + safe(d['category']), '**Reported member:** ' + m.get('author_id','Unknown'),
-                  '**Channel:** ' + m['channel_id'], safe(m.get('content') or 'Content unavailable', 2200),
+        lines += ['**Category:** ' + safe(d['category']), '**Reported member:** ' + member_reference(m.get('author_id'))
+                  + ' · **Channel:** ' + channel_reference(m['channel_id']),
+                  '**Message:** ' + safe(m.get('content') or 'Content unavailable', 2200),
                   m.get('jump_url','')]
     elif record['kind'] == 'checkin':
-        lines += ['You have been asked for a check-in. Respond using the button below. Answers are available only in The Garden.',
-                  '**Recipient:** ' + d['recipient_id']]
+        lines += ['**Recipient:** ' + member_reference(d['recipient_id']),
+                  'Respond using the button below. Answers stay in The Garden.']
         lines.append('**Questions:**\n' + '\n'.join(f'{i+1}. {safe(q,200)}' for i,q in enumerate(d['questions'])))
         if d.get('deadline'):
             lines.append(f"**Deadline:** <t:{int(d['deadline'])}:F>")
@@ -64,11 +87,11 @@ def card_embed(record, marker):
     elif record['kind'] == 'system':
         lines += ['**Action:** ' + d['action_type'], '**Attribution:** ' + safe(d.get('attribution','unavailable'),300)]
         if d.get('moderator_id'):
-            lines.append('**Audit actor:** ' + d['moderator_id'])
+            lines.append('**Scout:** ' + member_reference(d['moderator_id']))
         if d.get('target_id'):
             lines.append('**Target:** ' + d['target_id'])
         if d.get('channel_id'):
-            lines.append('**Channel:** ' + d['channel_id'])
+            lines.append('**Channel:** ' + channel_reference(d['channel_id']))
         lines.append('**Reason:** ' + safe(d.get('reason') or 'None supplied',400))
         for m in d.get('messages', [])[:5]:
             lines.append('**Deleted message ' + m['message_id'] + ':** ' + safe(m.get('content') if m.get('content') is not None else 'Content unavailable',450))
@@ -79,25 +102,42 @@ def card_embed(record, marker):
         if d['action_type'] in ('message_delete','message_bulk_delete') and not d.get('messages'):
             lines.append('**Deleted-message content:** Unavailable; this audit entry does not identify exact message IDs. Nearby deletions are not assumed to belong to this action.')
     else:
-        lines += ['**Scout:** ' + record['author_id'], safe(d.get('summary',''),2000)]
+        metadata = '**Scout:** ' + member_reference(record['author_id'])
+        if d.get('channel'):
+            metadata += ' · **Channel:** ' + channel_reference(d['channel'])
+        lines.append(metadata)
+        details = []
+        if d.get('members'):
+            details.append('**Involved:** ' + safe(d['members'], 240))
+        if d.get('incident_at'):
+            details.append('**When:** ' + safe(d['incident_at'], 100))
+        if details:
+            lines.append(' · '.join(details))
+        lines.append(('**Help needed:** ' if record['kind'] == 'escalation' else '**What happened:** ')
+                     + safe(d.get('summary',''),1800))
         if d.get('action'):
-            lines.append('**Action taken:** ' + safe(d['action'],800))
+            lines.append('**Action taken:** ' + safe(d['action'],700))
+        if d.get('evidence'):
+            lines.append('**Evidence:** ' + safe(d['evidence'],400))
         if d.get('related'):
             lines.append('**Related record:** ' + d['related'])
         if record['status']=='void':
             lines.append('**Void reason:** ' + safe(d.get('void_reason',''),400))
     if d.get('outcome'):
         lines.append('**Outcome:** ' + safe(d['outcome'],450))
-    embed = discord.Embed(title=title, description='\n\n'.join(lines)[:4096], color=0xf0319b,
+    target = dashboard_url(record['id']) or f"https://discord.com/channels/{record['guild_id']}"
+    embed = discord.Embed(title=title, description='\n'.join(line for line in lines if line)[:4096], color=SCOUT_EMBED_COLOR,
+                          url=target + '#scout-delivery=' + quote(marker, safe=''),
                           timestamp=datetime.fromtimestamp(record['created_at'], timezone.utc))
-    embed.set_footer(text=marker)
+    embed.set_footer(text=f"Record {record['id']} · {record['status'].title()}")
     return embed
 
 
 class OpenForm(discord.ui.View):
-    def __init__(self, uid, factory):
+    def __init__(self, uid, factory, *, label='Open form'):
         super().__init__(timeout=300)
         self.uid, self.factory = uid, factory
+        self.open.label = label
 
     @discord.ui.button(label='Open form', style=discord.ButtonStyle.primary)
     async def open(self, interaction, button):
@@ -112,38 +152,53 @@ class ScoutModal(discord.ui.Modal):
         super().__init__(title={'manual':'Log Scout Activity','edit':'Edit Scout Activity','escalate':'Escalate to higher staff','handle':'Mark report handled','answer':'Respond to Check-in'}[mode], timeout=600)
         self.cog, self.guild, self.mode, self.rid = cog, str(guild), mode, rid
         self.values, self.related, self.source = values or {}, related, source
-        fields = [('summary','What happened',4000),('action','Action taken',4000),('outcome','Outcome (optional)',1000),('evidence','Evidence links (optional)',1000)] if mode in ('manual','edit') else [('reason','Help needed' if mode=='escalate' else 'Outcome',4000)]
+        fields = [('summary','What happened',4000),('action','Action taken',4000),('outcome','Outcome (optional)',1000),('evidence','Evidence links (optional)',2000)] if mode in ('manual','edit') else [('reason','Help needed' if mode=='escalate' else 'Outcome',4000)]
+        if mode in ('manual','escalate'):
+            fields.append(('related', 'Related record or message link (optional)', 500))
         if mode=='answer':
             fields = [('answer'+str(i), q[:45], 4000) for i,q in enumerate(questions or [])]
         self.inputs = {}
         for key, label, limit in fields:
-            field = discord.ui.TextInput(label=label, style=discord.TextStyle.paragraph, required=key not in ('outcome','evidence'), max_length=limit,
-                                         default=self.values.get(key) or None, placeholder=(questions[int(key[6:])][:100] if key.startswith('answer') else None))
+            field = discord.ui.TextInput(label=label, style=discord.TextStyle.paragraph, required=key not in ('outcome','evidence','related'), max_length=limit,
+                                         default=(self.related if key=='related' else self.values.get(key)) or None, placeholder=(questions[int(key[6:])][:100] if key.startswith('answer') else None))
             self.inputs[key] = field
             self.add_item(field)
 
     async def on_submit(self, interaction):
         await interaction.response.defer(ephemeral=True)
+        values = dict(self.values, **{key: str(field.value) for key,field in self.inputs.items()})
+        if self.mode in ('manual', 'escalate'):
+            self.source = self.source or str(interaction.id)
         try:
             actor = await self.cog.actor(interaction.user.id, self.guild)
-            values = dict(self.values, **{key: str(field.value) for key,field in self.inputs.items()})
             if self.mode=='manual':
-                r = await self.cog.call(self.cog.service.manual, actor, values, self.related, self.source or str(interaction.id))
+                r = await self.cog.call(self.cog.service.manual, actor, values, values.get('related', self.related), self.source)
             elif self.mode=='edit':
                 r = await self.cog.call(self.cog.service.edit, actor, self.rid, values, self.values['version'])
             elif self.mode=='escalate':
-                r = await self.cog.call(self.cog.service.escalate, actor, values['reason'], self.related or self.rid, self.source or str(interaction.id))
+                r = await self.cog.call(self.cog.service.escalate, actor, values['reason'], values.get('related', self.related or self.rid), self.source)
             elif self.mode=='handle':
                 r = await self.cog.call(self.cog.service.handle, actor, self.rid, values['reason'])
             else:
                 r = await self.cog.call(self.cog.service.answer, actor, self.rid, [f.value for f in self.inputs.values()])
-            message = ('Response saved. Your answers are available only in The Garden.' if self.mode=='answer' else f"Saved #{r['id']}. Delivery is queued; no need to resubmit.")
-            await interaction.followup.send(message, ephemeral=True, allowed_mentions=discord.AllowedMentions.none())
+            if self.mode=='answer':
+                await interaction.followup.send('Response saved. Your answers are available only in The Garden.', ephemeral=True)
+            else:
+                await self.cog.send_saved(interaction, r)
         except (ValueError, PermissionError) as exc:
-            await interaction.followup.send(str(exc), ephemeral=True)
+            await self.save_error(interaction, str(exc), values)
         except Exception:
             log.exception('Scout form failed mode=%s record=%s', self.mode, self.rid)
-            await interaction.followup.send('Could not confirm this save. Check The Garden before resubmitting.', ephemeral=True)
+            await self.save_error(interaction, 'Could not confirm this save. Check The Garden before resubmitting.', values)
+
+    async def save_error(self, interaction, message, values):
+        kwargs = {}
+        if self.mode in ('manual','edit','escalate'):
+            kwargs['view'] = OpenForm(interaction.user.id, lambda: ScoutModal(
+                self.cog, self.guild, self.mode, rid=self.rid, values=values,
+                related=values.get('related', self.related), source=self.source), label='Review draft')
+            message += '\nYour draft is preserved. Choose Review draft to correct it and try again.'
+        await interaction.followup.send(message, ephemeral=True, allowed_mentions=discord.AllowedMentions.none(), **kwargs)
 
 
 class ReportModal(discord.ui.Modal, title='Report to Staff'):
@@ -181,6 +236,30 @@ class ReportCategory(discord.ui.Select):
             await interaction.response.send_message('This report belongs to another member.', ephemeral=True)
             return
         await interaction.response.send_modal(ReportModal(self.cog, self.message, self.values[0], self.uid, self.source))
+
+
+class DeliveryStatus(discord.ui.View):
+    def __init__(self, cog, uid, guild, rid):
+        super().__init__(timeout=600)
+        self.cog, self.uid, self.guild, self.rid = cog, uid, str(guild), rid
+        if url := dashboard_url(rid):
+            self.add_item(discord.ui.Button(label='View record', url=url))
+
+    @discord.ui.button(label='Check delivery', style=discord.ButtonStyle.secondary)
+    async def check(self, interaction, button):
+        if interaction.user.id != self.uid:
+            await interaction.response.send_message('This receipt belongs to another member.', ephemeral=True)
+            return
+        await interaction.response.defer(ephemeral=True)
+        try:
+            actor = await self.cog.actor(interaction.user.id, self.guild)
+            record = await self.cog.call(self.cog.service.record, actor, self.rid)
+            await interaction.edit_original_response(content=await self.cog.delivery_summary(record), view=self,
+                                                     allowed_mentions=discord.AllowedMentions.none())
+        except (ValueError, PermissionError) as exc:
+            await interaction.followup.send(str(exc), ephemeral=True)
+        except Exception:
+            await interaction.followup.send('Could not check delivery right now. The saved record is retained; try Check delivery again shortly.', ephemeral=True)
 
 
 class ScoutControl(discord.ui.DynamicItem[discord.ui.Button], template=r'scouts:(?P<action>add|escalate|handle|answer):(?P<rid>[a-f0-9]{16}):(?P<guild>[0-9]+)'):
@@ -318,9 +397,11 @@ class ScoutsCog(commands.Cog):
         self.bot.tree.add_command(self.log_menu)
         self.bot.add_dynamic_items(ScoutControl)
         self.worker.start()
+        self.audit_worker.start()
 
     def cog_unload(self):
         self.worker.cancel()
+        self.audit_worker.cancel()
         self.bot.tree.remove_command(self.report_menu.name,type=discord.AppCommandType.message)
         self.bot.tree.remove_command(self.log_menu.name,type=discord.AppCommandType.message)
         self.bot.remove_dynamic_items(ScoutControl)
@@ -337,6 +418,31 @@ class ScoutsCog(commands.Cog):
         except discord.HTTPException:
             raise PermissionError('Current server membership could not be verified.') from None
         return await discord_member_actor(self.service, guild_id, member)
+
+    async def delivery_summary(self, record):
+        jobs = await self.call(self.service.rows,
+            'SELECT status,destination,message_id,error FROM scout_jobs WHERE guild_id=? AND record_id=? AND version=? ORDER BY created_at DESC LIMIT 1',
+            (record['guild_id'], record['id'], record['version']))
+        message = f"Saved **#{record['id']}**. "
+        if not jobs:
+            return message + 'No channel delivery was queued. Check this record in The Garden.'
+        job = jobs[0]
+        destination = channel_reference(job['destination'])
+        if job['status'] == 'sent':
+            return message + f"Posted to {destination}. [View message](https://discord.com/channels/{record['guild_id']}/{job['destination']}/{job['message_id']})."
+        if job['status'] in ('pending', 'sending'):
+            return message + f"{'Queued for' if job['status']=='pending' else 'Posting to'} {destination}. Use Check delivery to confirm it arrives."
+        if job['status'] == 'uncertain':
+            return message + f'Delivery to {destination} is being checked after a connection error. Do not resubmit.'
+        return message + f"Delivery to {destination} {job['status']}: {safe(job['error'] or 'Check The Garden for details.', 250)} The saved record is retained."
+
+    async def send_saved(self, interaction, record):
+        try:
+            message = await self.delivery_summary(record)
+        except Exception:
+            message = f"Saved **#{record['id']}**. Check delivery below or view this record in The Garden; no need to resubmit."
+        await interaction.followup.send(message, ephemeral=True, allowed_mentions=discord.AllowedMentions.none(),
+            view=DeliveryStatus(self, interaction.user.id, record['guild_id'], record['id']))
 
     async def report_member(self, uid, channel):
         # Reporting requires membership and message visibility, never staff/login access.
@@ -382,14 +488,26 @@ class ScoutsCog(commands.Cog):
 
     @scout.command(name='log',description='Write a structured Scout activity record')
     @app_commands.choices(activity_type=[app_commands.Choice(name=t,value=t) for t in ACTIVITY_TYPES])
-    async def log_activity(self,interaction:discord.Interaction,activity_type:str='other',members:str='',channel:Optional[discord.TextChannel]=None,incident_time:str='',related_record:str=''):
+    @app_commands.describe(activity_type='What kind of activity was this?', members='Involved members (names or mentions)',
+        channel='Channel where the activity occurred', incident_time='When it happened, including timezone when known',
+        related_record='Optional Scout ID, Scout card/Garden link, or message evidence link',
+        evidence_link='Optional evidence link to prefill in the form')
+    async def log_activity(self,interaction:discord.Interaction,activity_type:str='other',members:str='',channel:Optional[discord.TextChannel]=None,incident_time:str='',related_record:str='',evidence_link:str=''):
         await interaction.response.defer(ephemeral=True)
         try:
             actor=await self.actor(interaction.user.id,interaction.guild_id)
             actor.require('activity.create')
             await self.call(self.service.enabled,actor.guild_id)
-            values=dict(type=activity_type,members=members,channel=str(channel.id) if channel else '',incident_at=incident_time)
-            await interaction.followup.send('Open the activity form. Automatically captured actions only need a follow-up when you have context to add.',ephemeral=True,view=OpenForm(interaction.user.id,lambda:ScoutModal(self,interaction.guild_id,'manual',values=values,related=related_record,source=str(interaction.id))))
+            reference = await self.call(self.service.resolve_reference, actor, related_record)
+            values=dict(type=activity_type,members=members,channel=str(channel.id) if channel else '',incident_at=incident_time,evidence=evidence_link)
+            self.service._add_evidence(values, reference['evidence'])
+            cfg = await self.call(self.service.settings, actor.guild_id)
+            message = 'Open the form to finish your activity log. It will post to ' + channel_reference(cfg['activity_channel']) + '.'
+            if reference['record_id']:
+                message += f" Linked Scout record: #{reference['record_id']}."
+            elif reference['evidence']:
+                message += ' Your message link is prefilled as evidence.'
+            await interaction.followup.send(message,ephemeral=True,allowed_mentions=discord.AllowedMentions.none(),view=OpenForm(interaction.user.id,lambda:ScoutModal(self,interaction.guild_id,'manual',values=values,related=related_record,source=str(interaction.id))))
         except (ValueError,PermissionError) as exc:
             await interaction.followup.send(str(exc),ephemeral=True)
 
@@ -399,6 +517,10 @@ class ScoutsCog(commands.Cog):
         try:
             actor=await self.actor(interaction.user.id,interaction.guild_id)
             actor.require('activity.create')
+            reference = await self.call(self.service.resolve_reference, actor, record)
+            if not reference['record_id']:
+                raise ValueError('Choose an existing Scout record to edit. An ordinary message link can be used as evidence in /scout log.')
+            record = reference['record_id']
             r=await self.call(self.service.record,actor,record)
             if r['kind']!='manual' or r['author_id']!=actor.user_id or r['status']=='void':
                 raise PermissionError('Only the author can edit an active manual record.')
@@ -417,12 +539,14 @@ class ScoutsCog(commands.Cog):
             await interaction.followup.send(str(exc),ephemeral=True)
 
     @scout.command(name='escalate',description='Ask higher staff for help on a concern or record')
+    @app_commands.describe(record='Optional Scout ID, Scout card/Garden link, or message evidence link')
     async def escalate(self,interaction:discord.Interaction,record:str=''):
         await interaction.response.defer(ephemeral=True)
         try:
             actor=await self.actor(interaction.user.id,interaction.guild_id)
             actor.require('activity.create')
             await self.call(self.service.enabled,actor.guild_id)
+            await self.call(self.service.resolve_reference, actor, record)
             await interaction.followup.send('Explain the help needed.',ephemeral=True,view=OpenForm(interaction.user.id,lambda:ScoutModal(self,interaction.guild_id,'escalate',related=record,source=str(interaction.id))))
         except (ValueError,PermissionError) as exc:
             await interaction.followup.send(str(exc),ephemeral=True)
@@ -661,7 +785,7 @@ class ScoutsCog(commands.Cog):
             try:
                 after=datetime.fromtimestamp(job['attempted_at']-5,timezone.utc)
                 async for message in channel.history(limit=2000,after=after,oldest_first=True):
-                    if message.author.id==self.bot.user.id and any(e.footer.text==marker for e in message.embeds):
+                    if message.author.id==self.bot.user.id and any(delivery_receipt_matches(e,marker) for e in message.embeds):
                         await self.sql("UPDATE scout_jobs SET status='sent',message_id=?,error='' WHERE id=?",(str(message.id),job['id']))
                         return
             except discord.HTTPException:
@@ -708,23 +832,14 @@ class ScoutsCog(commands.Cog):
             # HTTP 5xx/network timeouts can mean the message was sent. Do not blindly resend.
             await self.sql("UPDATE scout_jobs SET status='uncertain',error='Delivery acknowledgement lost; reconciling receipt marker.' WHERE id=?",(job['id'],))
 
-    @tasks.loop(seconds=15)
+    @tasks.loop(seconds=2)
     async def worker(self):
         try:
             if not self._recovered:
                 await self.sql("UPDATE scout_jobs SET status='uncertain',error='Interrupted delivery; reconciling receipt marker.' WHERE status='sending'")
                 self._recovered=True
             await self.sql("UPDATE scout_jobs SET status='uncertain',error='Interrupted delivery; reconciling receipt marker.' WHERE status='sending' AND attempted_at<?",(time.time()-180,))
-            settings=await self.call(self.service.rows,'SELECT guild_id FROM scout_settings')
-            for row in settings:
-                guild=self.bot.get_guild(int(row['guild_id']))
-                if not guild:
-                    continue
-                cfg=await self.call(self.service.settings,guild.id)
-                checkpoint=await self.audit_poll(guild,cfg) if cfg['enabled'] else None
-                await self.heartbeat(guild,cfg,checkpoint)
-                await self.call(self.service.prune,guild.id)
-            jobs=await self.call(self.service.rows,"SELECT j.* FROM scout_jobs j JOIN scout_settings s ON s.guild_id=j.guild_id WHERE json_extract(s.data,'$.enabled')=1 AND (j.status='pending' OR (j.status='uncertain' AND j.checked_at<?)) ORDER BY CASE j.status WHEN 'pending' THEN 0 ELSE 1 END,j.checked_at,j.created_at LIMIT 50", (time.time()-60,))
+            jobs=await self.call(self.service.rows,"SELECT j.* FROM scout_jobs j JOIN scout_settings s ON s.guild_id=j.guild_id JOIN scout_records r ON r.id=j.record_id AND r.guild_id=j.guild_id WHERE json_extract(s.data,'$.enabled')=1 AND (j.status='pending' OR (j.status='uncertain' AND j.checked_at<?)) ORDER BY CASE j.status WHEN 'pending' THEN 0 ELSE 1 END,CASE r.kind WHEN 'checkin' THEN 1 ELSE 0 END,j.checked_at,j.created_at LIMIT 50", (time.time()-60,))
             for job in jobs:
                 try:
                     await self.deliver(job)
@@ -735,6 +850,32 @@ class ScoutsCog(commands.Cog):
 
     @worker.before_loop
     async def before_worker(self):
+        await self.bot.wait_until_ready()
+
+    @tasks.loop(seconds=15)
+    async def audit_worker(self):
+        # Audit history can require multiple HTTP requests. Keep that work off the
+        # serialized delivery worker so it cannot hold up manual logs or reports.
+        try:
+            settings = await self.call(self.service.rows, 'SELECT guild_id FROM scout_settings')
+            for row in settings:
+                guild = self.bot.get_guild(int(row['guild_id']))
+                if not guild:
+                    continue
+                try:
+                    cfg = await self.call(self.service.settings, guild.id)
+                    await self.heartbeat(guild, cfg)
+                    await self.call(self.service.prune, guild.id)
+                    checkpoint = await self.audit_poll(guild, cfg) if cfg['enabled'] else None
+                    if checkpoint:
+                        await self.heartbeat(guild, cfg, checkpoint)
+                except Exception:
+                    log.exception('Scout audit worker failed guild=%s', guild.id)
+        except Exception:
+            log.exception('Scout audit worker iteration failed')
+
+    @audit_worker.before_loop
+    async def before_audit_worker(self):
         await self.bot.wait_until_ready()
 
 

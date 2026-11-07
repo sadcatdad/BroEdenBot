@@ -82,6 +82,27 @@ class ScoutDeliveryTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.job()['status'],'uncertain')
         self.channel.send.assert_not_awaited()
 
+    async def test_compact_card_receipt_recovers_the_correct_send_after_restart(self):
+        from cogs.scouts import card_embed
+        marker = 'Scout delivery ' + self.job()['id']
+        with self.s.connect() as c:
+            c.execute("UPDATE scout_jobs SET status='uncertain',attempted_at=?", (time.time(),))
+        # Cards for the same record have identical human-readable footers. Only
+        # the delivery receipt in the title link identifies this particular send.
+        decoy = SimpleNamespace(id=99, author=SimpleNamespace(id=42),
+            embeds=[card_embed(self.record, 'Scout delivery another-attempt')])
+        found = SimpleNamespace(id=100, author=SimpleNamespace(id=42),
+            embeds=[card_embed(self.record, marker)])
+        async def history(*args, **kwargs):
+            yield decoy
+            yield found
+        self.channel.history = history
+        restarted = ScoutsCog(self.bot)
+        restarted.service = Scouts(self.s.path)
+        await restarted.deliver(self.job())
+        self.assertEqual((self.job()['status'], self.job()['message_id']), ('sent', '100'))
+        self.channel.send.assert_not_awaited()
+
     async def test_permission_denied_is_definite_failure_and_can_retry(self):
         self.channel.send.side_effect=discord.Forbidden(SimpleNamespace(status=403,reason='Forbidden'), 'No access')
         await self.cog.deliver(self.job())

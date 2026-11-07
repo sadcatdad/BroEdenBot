@@ -153,3 +153,25 @@ class ScoutDashboardTests(unittest.TestCase):
         self.assertIn('original draft is preserved',response.text)
         self.assertNotIn('Accept and save activity',response.text)
         self.assertEqual(self.s.rows('SELECT * FROM scout_records'),[])
+
+    def test_dashboard_log_accepts_message_link_as_evidence_and_queues_staff_delivery(self):
+        self.login()
+        token = self.csrf()
+        response = self.client.post('/scouts/activity',data=dict(csrf=token,submission='message-link-test',
+            type='rule reminder',summary='A concern',action='Gave a reminder',members='jojo',
+            channel='2',incident_at='3:30am',related='https://discord.com/channels/1/2/300'))
+        self.assertEqual(response.status_code,200,response.text)
+        row = self.s.rows("SELECT data FROM scout_records WHERE kind='manual'")[0]
+        self.assertEqual(json.loads(row['data'])['evidence'],'https://discord.com/channels/1/2/300')
+        job = self.s.rows('SELECT status,destination FROM scout_jobs')[0]
+        self.assertEqual((job['status'],job['destination']),('pending','9'))
+
+    def test_dashboard_escalation_validation_preserves_the_draft(self):
+        self.login()
+        response = self.client.post('/scouts/escalate',data=dict(csrf=self.csrf(),submission='bad-link-test',
+            reason='KEEP MY ESCALATION DRAFT',related='bad-reference'))
+        self.assertEqual(response.status_code,400,response.text)
+        self.assertIn('KEEP MY ESCALATION DRAFT',response.text)
+        self.assertIn('bad-reference',response.text)
+        self.assertEqual(self.s.rows('SELECT * FROM scout_records'),[])
+        self.assertEqual(self.s.rows('SELECT * FROM scout_jobs'),[])

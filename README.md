@@ -2675,12 +2675,30 @@ when staff need both. Requesting check-ins **never** grants answer access.
 - `/scout log`: choose rule reminder, de-escalation, message removal, timeout,
   concern, or other; the private form asks what happened/action taken and optional
   outcome/evidence. Command options include involved members, channel, incident
-  time, and a related record. The dashboard also exposes all optional fields.
+  time, `related_record`, and `evidence_link`. No related record is required for a
+  standalone manual entry. The `channel` option describes where the incident
+  happened; manual entries post to the **shared staff activity channel** configured
+  in Scouts Settings. The command displays that destination before opening the form.
+  Channel cards include involved members, incident time, evidence, action, and outcome;
+  full text remains in The Garden if the compact card shortens a long entry.
+  The dashboard exposes the same optional fields.
+- Related references accept a Scout record ID (with or without `#`), a Garden
+  record URL, or a Discord message link from the current server. Links to existing
+  Scout channel cards resolve through their stored delivery receipt to the correct
+  record. Ordinary message links are saved as evidence, without requiring an
+  existing Scout record or fetching surrounding/private message content. External
+  evidence links can be entered in Evidence links. Cross-server related message
+  links are rejected, and linked records still require their normal read permission.
+  Private check-ins cannot be linked into shared activity. References are checked
+  before opening a command form and again when saving; manual/escalation forms let
+  staff correct the reference. Failed saves retain the entered draft behind a
+  private **Review draft** button. Retries reuse the original submission ID.
 - `/scout activity [scout] [days]`: private paginated history, default 30 days;
   standalone manual totals exclude voided entries and linked follow-ups. Confirmed
   audit totals appear only with moderation-view permission and represent audit
   counts, not staffing scores. Member submissions never become Scout activity.
 - `/scout edit <record>`: edit an owned active manual entry with revision history.
+  The record argument also accepts a copied Scout card or Garden record link.
   Dashboard editing uses a version check to prevent silently overwriting concurrent
   edits. Authorized staff may void a mistaken manual record with a reason.
 - **Log Scout Activity** message action: prefill context and the selected message's
@@ -2697,7 +2715,9 @@ when staff need both. Requesting check-ins **never** grants answer access.
   reporter about one message within five minutes return the existing report.
 - `/scout escalate [record]`: explain the help needed. Equivalent dashboard/card
   controls create a linked **Escalated** record and notify higher-staff roles in
-  the shared activity channel. There is no assignment or resolution queue.
+  the shared activity channel. The optional reference accepts the same IDs and
+  links as `/scout log`; ordinary message links become evidence for a new concern.
+  There is no assignment or resolution queue.
 - `/scout checkin request <recipients> [deadline] [questions]`: specify one/multiple
   Scout IDs separated by spaces/commas, or `all`. Optional deadlines use an ISO
   timestamp with timezone; custom questions are separated by `|`. Preview the
@@ -2789,6 +2809,21 @@ report/check-in workflow status is separate. Persistent channel and DM controls
 restore after restart. Definite permission/closed-DM failures can be retried from
 **Scouts → Settings** after correcting the cause. Verified missing cards may be
 recreated; ordinary edits update their existing card without repeated role pings.
+
+Staff form confirmations identify the saved record and channel and offer a private
+**Check delivery** button plus a Garden link when the public dashboard URL is
+configured. Status distinguishes queued, posting, posted (with message link),
+failed, and uncertain delivery; a queued confirmation does not claim the card was
+already posted. The saved record remains available if delivery fails. Checking
+status revalidates current membership and read permission. The dedicated delivery
+worker checks the queue every two seconds, independently of audit-history catch-up;
+pending activity/report/escalation posts take priority over bulk check-in DMs.
+
+Scout Discord cards use purple (`#9B59B6`), compact labeled lines, and readable
+member/channel mentions without notification pings. The footer groups the record
+ID, status, and timestamp. Delivery receipts remain in the title link's URL fragment
+instead of displaying a long delivery hash; recovery also recognizes older cards
+whose receipt is in the footer.
 
 Interrupted or ambiguous sends are reconciled against message-history receipt
 markers, never blindly resent. Later revisions wait behind an uncertain earlier

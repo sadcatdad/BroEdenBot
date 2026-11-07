@@ -8,13 +8,16 @@ from __future__ import annotations
 
 import copy
 import json
+import os
+import re
 import sqlite3
 import time
 import uuid
 from dataclasses import dataclass
 from pathlib import Path
+from urllib.parse import urlsplit
 
-from utils.settings import settings_database_path
+from utils.settings import get_setting, settings_database_path
 from utils.sqlite import AutoClosingSQLiteConnection, configure_sync_connection
 
 ACTIVITY_TYPES = ('rule reminder', 'de-escalation', 'message removal', 'timeout', 'concern', 'other')
@@ -61,6 +64,7 @@ CREATE TABLE IF NOT EXISTS scout_jobs(
  destination TEXT NOT NULL DEFAULT '', message_id TEXT NOT NULL DEFAULT '', created_at REAL NOT NULL,
  attempted_at REAL, checked_at REAL NOT NULL DEFAULT 0, error TEXT NOT NULL DEFAULT '', UNIQUE(record_id,version,purpose));
 CREATE INDEX IF NOT EXISTS scout_jobs_queue ON scout_jobs(status,created_at);
+CREATE INDEX IF NOT EXISTS scout_jobs_receipt ON scout_jobs(guild_id,destination,message_id);
 CREATE TABLE IF NOT EXISTS scout_previews(token TEXT PRIMARY KEY, guild_id TEXT NOT NULL, actor_id TEXT NOT NULL, data TEXT NOT NULL, created_at REAL NOT NULL);
 CREATE TABLE IF NOT EXISTS scout_runtime(guild_id TEXT PRIMARY KEY, heartbeat REAL NOT NULL, data TEXT NOT NULL);
 '''
@@ -176,6 +180,79 @@ class Scouts:
             raise ValueError('Record not found in this server.')
         return self.unpack(r)
 
+    def _reference(self, c, actor, value):
+        """Resolve IDs/card links locally; ordinary message links become evidence.
+
+        Never fetch arbitrary URLs or use a message link as an unscoped record ID.
+        A receipt lookup verifies the guild, destination and exact message together.
+        """
+        value = str(value or '').strip()
+        if value.startswith('<') and value.endswith('>'):
+            value = value[1:-1].strip()
+        if not value:
+            return dict(record_id='', evidence='')
+        if len(value) > 500:
+            raise ValueError('The related record or message link must be at most 500 characters.')
+        raw_id = value.lstrip('#')
+        if re.fullmatch(r'[a-fA-F0-9]{16}', raw_id):
+            record = self._record(c, actor.guild_id, raw_id.lower())
+            self.read_allowed(actor, record)
+            if record['kind'] == 'checkin':
+                raise ValueError('Private check-ins cannot be linked into shared activity.')
+            return dict(record_id=record['id'], evidence='')
+        try:
+            url = urlsplit(value)
+        except ValueError:
+            raise ValueError('Use a Scout record ID, a Garden record link, or a Discord message link.') from None
+        if url.scheme in ('https', 'http') and url.netloc in (
+            'discord.com', 'www.discord.com', 'canary.discord.com', 'ptb.discord.com',
+            'discordapp.com', 'www.discordapp.com',
+        ):
+            match = re.fullmatch(r'/channels/(\d+)/(\d+)/(\d+)/?', url.path)
+            if not match:
+                raise ValueError('Paste a full Discord message link, including its server, channel, and message IDs.')
+            guild, channel, message = match.groups()
+            if guild != str(actor.guild_id):
+                raise ValueError('The message link belongs to another server. Use a message from this server.')
+            evidence = f'https://discord.com/channels/{guild}/{channel}/{message}'
+            row = c.execute('''SELECT r.* FROM scout_records r JOIN scout_jobs j ON j.record_id=r.id
+                WHERE r.guild_id=? AND j.guild_id=? AND j.destination=? AND j.message_id=?
+                AND j.status='sent' ORDER BY j.created_at DESC LIMIT 1''',
+                (actor.guild_id, actor.guild_id, channel, message)).fetchone()
+            if row:
+                record = self.unpack(row)
+                self.read_allowed(actor, record)
+                if record['kind'] == 'checkin':
+                    raise ValueError('Private check-ins cannot be linked into shared activity.')
+                return dict(record_id=record['id'], evidence=evidence)
+            return dict(record_id='', evidence=evidence)
+        public_url = str(get_setting('DASHBOARD_PUBLIC_URL', '') or os.getenv('DASHBOARD_PUBLIC_URL', '')).rstrip('/')
+        public = urlsplit(public_url)
+        path = url.path
+        if url.scheme or url.netloc:
+            if not public.netloc or url.scheme != public.scheme or url.netloc != public.netloc:
+                raise ValueError('Use a Scout record ID, this Garden’s record link, or a Discord message link.')
+            prefix = public.path.rstrip('/')
+            if not path.startswith(prefix + '/'):
+                raise ValueError('Use a link to a Scout record in this Garden.')
+            path = path[len(prefix):]
+        match = re.fullmatch(r'/scouts/records/([a-fA-F0-9]{16})/?', path)
+        if match:
+            return self._reference(c, actor, match[1])
+        raise ValueError('Use a Scout record ID, a Garden record link, or a Discord message link. Other evidence links belong in Evidence links.')
+
+    def resolve_reference(self, actor, value):
+        actor.require('activity.create')
+        with self.connect() as c:
+            return self._reference(c, actor, value)
+
+    @staticmethod
+    def _add_evidence(data, link):
+        if link and link not in data.get('evidence', '').splitlines():
+            data['evidence'] = '\n'.join(v for v in (data.get('evidence', ''), link) if v)
+            if len(data['evidence']) > 2000:
+                raise ValueError('Evidence links must fit within 2,000 characters.')
+
     def _revision(self, c, record, actor, action):
         c.execute('INSERT INTO scout_revisions(guild_id,record_id,actor_id,action,data,created_at) VALUES(?,?,?,?,?,?)',
                   (record['guild_id'], record['id'], str(actor), action, encode(record), time.time()))
@@ -278,9 +355,10 @@ class Scouts:
                 if existing:
                     return self._record(c, actor.guild_id, existing['id'])
             if related:
-                parent = self._record(c, actor.guild_id, related)
-                self.read_allowed(actor, parent)
-                data['related'] = parent['id']
+                reference = self._reference(c, actor, related)
+                if reference['record_id']:
+                    data['related'] = reference['record_id']
+                self._add_evidence(data, reference['evidence'])
             return self._create(c, actor.guild_id, 'manual', actor.user_id, data, source=source)
 
     @staticmethod
@@ -381,13 +459,14 @@ class Scouts:
         source = f'escalation:{actor.user_id}:{source}' if source else None
         with self.connect() as c:
             c.execute('BEGIN IMMEDIATE')
-            if related:
-                self.read_allowed(actor, self._record(c, actor.guild_id, related))
             if source:
                 row = c.execute('SELECT id FROM scout_records WHERE guild_id=? AND source_key=?', (actor.guild_id, source)).fetchone()
                 if row:
                     return self._record(c, actor.guild_id, row['id'])
-            return self._create(c, actor.guild_id, 'escalation', actor.user_id, dict(summary=explanation, related=related), 'escalated', source)
+            reference = self._reference(c, actor, related)
+            data = dict(summary=explanation, related=reference['record_id'])
+            self._add_evidence(data, reference['evidence'])
+            return self._create(c, actor.guild_id, 'escalation', actor.user_id, data, 'escalated', source)
 
     def request_checkins(self, actor, recipients, questions=None, deadline=None, source=None):
         actor.require('checkins.request')

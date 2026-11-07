@@ -50,7 +50,7 @@ class DashboardUrlMigrationTests(unittest.TestCase):
             '<link rel="canonical" href="https://garden.broeden.com/login?next=events">',
             response.text,
         )
-        self.assertIn("<h1>The Garden</h1>", response.text)
+        self.assertRegex(response.text, r"<h1\b[^>]*>The Garden</h1>")
 
     def test_unrelated_hosts_are_not_redirected(self):
         response = self.client.get(

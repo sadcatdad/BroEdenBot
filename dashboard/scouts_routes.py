@@ -221,8 +221,14 @@ def install_scout_routes(app, templates, context):
         f = await form(request)
         try:
             r = await asyncio.to_thread(s.escalate, actor, f.get('reason'), str(f.get('related','')), 'dashboard:' + str(f.get('submission','')))
-        except (ValueError, PermissionError) as exc:
-            raise HTTPException(400 if isinstance(exc, ValueError) else 403, str(exc)) from None
+        except PermissionError as exc:
+            raise HTTPException(403, str(exc)) from None
+        except ValueError as exc:
+            request.state.scout_error = str(exc)
+            request.state.scout_draft = dict(f)
+            response = await listing(request, 'activity')
+            response.status_code = 400
+            return response
         audit(request, 'escalate', r['id'])
         return redirect(request, '/scouts/records/' + r['id'])
 
