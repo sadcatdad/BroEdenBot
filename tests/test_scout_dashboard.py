@@ -282,3 +282,19 @@ class ScoutDashboardTests(unittest.TestCase):
         self.assertIn('What support would help?',response.text)
         self.assertIn('Send these check-ins',response.text)
         self.assertEqual(self.s.rows("SELECT * FROM scout_jobs"),[])
+
+    def test_scout_assets_are_versioned_in_head_and_serve_matching_content(self):
+        import hashlib
+        self.login()
+        page=self.client.get('/scouts')
+        head=page.text.split('</head>')[0]
+        for filename,mime in [('scouts.css','text/css'),('scouts.js','javascript')]:
+            path=Path(__file__).resolve().parents[1]/'dashboard/static'/filename
+            digest=hashlib.sha256(path.read_bytes()).hexdigest()[:16]
+            url=f'/static/{filename}?v={digest}'
+            self.assertIn(url,head)
+            response=self.client.get(url)
+            self.assertEqual(response.status_code,200)
+            self.assertIn(mime,response.headers['content-type'])
+            self.assertEqual(response.content,path.read_bytes())
+            self.assertNotIn(f'/static/{filename}"',page.text)

@@ -35,6 +35,7 @@ from dashboard.auth import (
     login_user,
     logout_user,
 )
+from dashboard.assets import static_asset_url
 from dashboard.security import (
     DashboardSecurityMiddleware,
     clear_login_attempts,
@@ -576,6 +577,7 @@ app.add_middleware(
 app.mount("/static", StaticFiles(directory=DASHBOARD_DIR / "static"), name="static")
 app.add_middleware(DashboardSecurityMiddleware)
 templates = Jinja2Templates(directory=DASHBOARD_DIR / "templates")
+templates.env.globals['static_asset_url'] = static_asset_url
 templates.env.filters["display_name"] = normalize_display_name
 
 

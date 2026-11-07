@@ -12,6 +12,7 @@
   <script src="{{ url_for('static', path='dashboard_nav.js') }}?v=keyboard-nav2" defer></script>
   <script src="{{ url_for('static', path='dashboard_forms.js') }}" defer></script>
   <script src="{{ url_for('static', path='discord_pickers.js') }}?v=picker-single-values2" defer></script>
+  {% block page_assets %}{% endblock %}
 </head>
 <body class="{{ 'authenticated' if authenticated else 'login-page' }} {{ 'view-' ~ view_mode if authenticated else '' }}">
   <a class="skip-link" href="#main-content">Skip to main content</a>

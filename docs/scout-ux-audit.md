@@ -84,3 +84,15 @@ and enables the form definitions in Discord. Settings flags outdated renderer/fo
 capabilities. Check **BOT DEPLOY VERIFIED**, destination readiness, buffer activity,
 and a real Scout submission after rollout. Local tests do not establish production
 health or Discord command propagation.
+
+## Follow-up: deployed page lost its layout
+
+The public unversioned `scouts.css` URL returned a Cloudflare cache HIT containing
+the previous 1,582-byte stylesheet, while a fresh query returned the current
+12,846-byte file matching the repository. New markup paired with the old selectors
+rendered rows and navigation as plain inline links.
+
+Scout CSS and JavaScript now load in the document head using content-fingerprinted
+URLs. An asset change generates a new cache key without a manual version bump.
+Tests check matching content/MIME types, content-change invalidation, proxy-safe
+paths, and a browser flow with the obsolete unversioned stylesheet available.

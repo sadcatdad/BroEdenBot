@@ -2892,6 +2892,16 @@ stays uncertain for staff review; the Retry control deliberately does not requeu
 it. Pending work pauses while the feature is disabled. Check delivery status before
 resubmitting a record after a connection error.
 
+### Dashboard asset updates
+
+Scout CSS and JavaScript URLs include a fingerprint of their file contents and
+load in the page head. Deploying changed assets automatically changes those URLs,
+so browser/Cloudflare caches cannot reuse an older stylesheet with newer Scout
+markup. This fixes the plain-link rows and unstyled tabs caused by an older
+cached `scouts.css`. No manual cache purge or browser hard refresh is required
+after the updated template is deployed. Asset URLs stay on the current origin
+when The Garden sits behind a TLS reverse proxy.
+
 ### Validation and pilot
 
 See [Scout UX audit](docs/scout-ux-audit.md) for the workflow review and validation
