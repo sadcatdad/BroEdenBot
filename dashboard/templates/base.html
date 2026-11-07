@@ -47,6 +47,9 @@
       {% endif %}
 
       <nav class="primary-nav">
+        {% if has_scout_access %}
+        <a class="nav-item {{ 'active' if current_path.startswith('/scouts') else '' }}" href="{{ url_for('scouts_overview') }}" {% if current_path.startswith('/scouts') %}aria-current="page"{% endif %}><span class="nav-icon" aria-hidden="true">◇</span><span>Scouts</span></a>
+        {% endif %}
         {% if view_mode == 'member' %}
         <div class="nav-group member-nav">
           <p class="nav-group-label">My Garden</p>

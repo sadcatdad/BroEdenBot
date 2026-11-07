@@ -27,6 +27,7 @@ from dashboard.auth import (
     csrf_is_valid,
     csrf_token,
     current_user,
+    current_permissions,
     has_write_access,
     has_permission,
     is_admin,
@@ -405,6 +406,9 @@ app = FastAPI(
 def required_permission(path: str, method: str) -> str | None:
     """Resolve the stable server-side capability for a dashboard request."""
     normalized_method = method.upper()
+    if path == "/scouts" or path.startswith("/scouts/"):
+        # Scout routes apply independent capabilities after live membership checks.
+        return "scouts.access"
     if path in {"/health", "/login", "/logout", "/view-mode"} or path.startswith("/auth/discord/") or path.startswith("/static/"):
         return None
     if path in {"/users", "/settings/users"} or path.startswith("/settings/access"):
@@ -483,7 +487,13 @@ class DashboardPermissionMiddleware(BaseHTTPMiddleware):
                     url=request.url_for("login_page"),
                     status_code=status.HTTP_303_SEE_OTHER,
                 )
-            if not has_permission(request, permission):
+            allowed = (any(p.startswith("scouts.") for p in current_permissions(request))
+                       if permission == "scouts.access" else has_permission(request, permission))
+            if not allowed:
+                if request.url.path == "/" and request.method == "GET" and any(
+                    p.startswith("scouts.") for p in current_permissions(request)
+                ):
+                    return RedirectResponse(url=request.url_for("scouts_overview"), status_code=303)
                 user = current_user(request)
                 record_audit(
                     actor_user_id=user.get("id"),
@@ -510,7 +520,7 @@ class DashboardPermissionMiddleware(BaseHTTPMiddleware):
                     status_code=status.HTTP_403_FORBIDDEN,
                 )
         response = await call_next(request)
-        if request.url.path.startswith("/events"):
+        if request.url.path.startswith(("/events", "/scouts")):
             response.headers["Cache-Control"] = "private, no-store"
             response.headers["Pragma"] = "no-cache"
         if request.method.upper() in {"POST", "PUT", "PATCH", "DELETE"} and request.url.path not in {"/login", "/logout"}:
@@ -622,6 +632,7 @@ def template_context(request: Request, **values: Any) -> dict[str, Any]:
         "can_write": has_write_access(request),
         "can_manage_users": is_admin(request),
         "permissions": permissions,
+        "has_scout_access": any(p.startswith("scouts.") for p in permissions),
         "can": lambda permission: permission in permissions,
         "view_mode": view_mode,
         "dashboard_view_available": dashboard_view_available,
@@ -715,6 +726,12 @@ DASHBOARD_LANDING_PAGES: DashboardLandingPages = {
     "access.manage": "settings_access",
     "audit_log.view": "settings_audit",
     "event_drops.manage": "event_drops_list",
+    **{key: "scouts_overview" for key in (
+        "scouts.activity.view", "scouts.activity.create", "scouts.activity.review", "scouts.activity.void",
+        "scouts.moderation.view", "scouts.reports.handle", "scouts.reports.identity.view",
+        "scouts.checkins.respond", "scouts.checkins.request", "scouts.checkins.view_all",
+        "scouts.ai.use", "scouts.settings.manage",
+    )},
 }
 FEATURE_ONLY_LANDING_PAGES = {
     feature.permission: feature.key
@@ -4930,6 +4947,8 @@ async def health() -> JSONResponse:
 
 # Event Drops uses the same authentication, CSRF, templates and audit middleware.
 install_event_drop_routes(app, templates, template_context)
+from dashboard.scouts_routes import install_scout_routes
+install_scout_routes(app, templates, template_context)
 
 
 def main() -> None:

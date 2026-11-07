@@ -2587,3 +2587,214 @@ after the first verified deployment.
 After the owner IDs and Pi permissions are configured, `/bot deploy` provides
 the confirmation-gated Discord shortcut. Historical imports are never launched
 from Discord; continue using `bedimportdry` and `bedimport` in the terminal.
+
+## Scout Operations
+
+The Garden now has a **Scouts** area: Overview, Activity, System Actions,
+Reports, Check-ins, and Settings. The workflow is **Scout → Ranger → Admin**;
+Discord continues to manage moderation powers. There are no staffing scores,
+quotas, assignments, automatic staffing decisions, or automatic report-outcome DMs.
+
+Scout Operations starts **disabled**, including automatic capture and both Gemini
+options. Its cog loads alongside existing modules so setup does not require an
+`ENABLED_MODULES` or environment-file change. Tables and versioned additive
+migrations are initialized in the existing settings database by the bot or first
+Scout dashboard request. No existing reporting-bot data is imported or modified.
+
+### Setup in The Garden
+
+1. Open **Scouts → Settings** as an Owner/Administrator. Select the named Scout
+   eligibility roles, private shared staff activity channel, optional separate
+   moderation evidence channel, Scout notification roles, and higher-staff
+   escalation roles. Blank moderation destination uses the shared channel.
+2. Select automatic action types, explicitly monitored message channels/categories,
+   and exclusions. Destinations and their threads are always excluded from the
+   buffer. Set rolling buffer retention (default **7 days**, supported 1–90),
+   report submission cooldown (60 seconds), and repeated-message notification
+   cooldown (300 seconds). Multiple members may report the same message;
+   notifications after the first report within the cooldown omit the role ping.
+3. In **Admin Dashboard → Access**, map Discord Scout roles to the new **Scout**
+   dashboard preset. Eligibility roles never grant capabilities on their own.
+   Assign Ranger permissions and check-in requester/reader capabilities explicitly.
+   Settings cannot modify Access, create Discord roles, or grant moderation powers.
+4. Customize one to three check-in questions (200 characters each) and optionally
+   enable Gemini draft assistance and review summaries independently. The existing
+   Gemini credentials, models, budgets, usage logs, token limits, and staff cooldowns
+   apply; no separate AI environment configuration is introduced.
+5. Enable Scout Operations, and enable automatic logging when capture scope is ready.
+   The readiness panel uses the running bot's heartbeat to show destination posting/
+   history permissions, audit-log access, member/message/moderation/voice event
+   subscriptions, message-content capture, and configured scope. Give the bot
+   **View Audit Log**, **View Channel**, **Send Messages**, **Embed Links**, and
+   **Read Message History** in the destinations/capture channels. Notification
+   roles must be mentionable or the bot must have the appropriate mention permission.
+   Keep the existing privileged Members and Message Content intents enabled in
+   Discord's developer portal. A configured intent flag does not independently
+   prove that Discord has approved that privileged intent.
+
+The existing configured guild and Discord login connection are reused. Live
+Discord membership/roles are checked for Scout routes and submissions; verification
+failure denies access. Discord command capabilities use current mapped roles,
+explicit direct grants/overrides, and account restrictions without requiring a
+Garden login. Role removal immediately removes role-derived access and Scout
+writing/response eligibility. The existing password emergency Owner/Administrator
+can configure and review; Scout authorship and check-in responses require a linked
+Discord identity. Scout-only users land on Scouts without receiving access to
+unrelated Garden/Admin pages.
+
+| Capability under Scout Operations | What it permits |
+| --- | --- |
+| `scouts.activity.view` | Shared manual activity, redacted reports, escalations |
+| `scouts.activity.create` | Create activity, edit owned manual entries, escalate (current Scout eligibility required) |
+| `scouts.activity.review` | Inspect retained revisions of records the viewer can read |
+| `scouts.activity.void` | Void mistaken manual entries with a reason; retain history |
+| `scouts.moderation.view` | Read automatic actions and captured evidence |
+| `scouts.reports.handle` | Add a required outcome and mark a member report Handled |
+| `scouts.reports.identity.view` | Read reporter identity and explanation **only in the dashboard** |
+| `scouts.checkins.respond` | Respond to a requested check-in and read own answers (current Scout eligibility required) |
+| `scouts.checkins.request` | Request, cancel, and manually nudge; view delivery/completion status |
+| `scouts.checkins.view_all` | Read all check-in answers in the dashboard |
+| `scouts.ai.use` | Request previews within existing content permissions |
+| `scouts.settings.manage` | Configure Scout Operations and retry definite delivery failures |
+
+The Scout preset includes activity view/create, moderation view, report handling,
+and check-in response. It excludes reporter identity, check-in requesting/all-answer
+reading, AI, voiding, revision review, settings, and Access administration. Protected
+Owner and Administrator roles receive all new capabilities through an additive
+RBAC migration; existing custom roles and other presets are unchanged. Reading
+shared content and changing it are separate checks; give both relevant capabilities
+when staff need both. Requesting check-ins **never** grants answer access.
+
+### Discord and dashboard workflows
+
+- `/scout log`: choose rule reminder, de-escalation, message removal, timeout,
+  concern, or other; the private form asks what happened/action taken and optional
+  outcome/evidence. Command options include involved members, channel, incident
+  time, and a related record. The dashboard also exposes all optional fields.
+- `/scout activity [scout] [days]`: private paginated history, default 30 days;
+  standalone manual totals exclude voided entries and linked follow-ups. Confirmed
+  audit totals appear only with moderation-view permission and represent audit
+  counts, not staffing scores. Member submissions never become Scout activity.
+- `/scout edit <record>`: edit an owned active manual entry with revision history.
+  Dashboard editing uses a version check to prevent silently overwriting concurrent
+  edits. Authorized staff may void a mistaken manual record with a reason.
+- **Log Scout Activity** message action: prefill context and the selected message's
+  evidence link. Existing AI/rule-card message actions remain registered.
+- **Report to Staff** message action: available to current server members who can
+  access the selected message. Choose a category and write an explanation; only
+  that message's snapshot, attachment references, IDs, timestamps, and jump link
+  are collected, without surrounding conversation. There is no general `/report`.
+- Reports are saved transactionally before notification is queued. Staff cards show
+  **New/Handled**, category, reported-message context, and authorized **Add Activity**,
+  **Escalate**, **Mark Handled**, and **View Dashboard** controls. An outcome is
+  required to mark Handled; the handler, timestamp, and history are retained.
+  Adding activity/escalating leaves the report New. Repeat submissions by one
+  reporter about one message within five minutes return the existing report.
+- `/scout escalate [record]`: explain the help needed. Equivalent dashboard/card
+  controls create a linked **Escalated** record and notify higher-staff roles in
+  the shared activity channel. There is no assignment or resolution queue.
+- `/scout checkin request <recipients> [deadline] [questions]`: specify one/multiple
+  Scout IDs separated by spaces/commas, or `all`. Optional deadlines use an ISO
+  timestamp with timezone; custom questions are separated by `|`. Preview the
+  complete attached recipient list before confirming. The dashboard offers the
+  same preview/send flow, newline-separated questions, and a UTC deadline picker.
+  Each recipient is revalidated at confirmation and delivery. Requests are limited
+  to 500 recipients per batch; each has independent delivery and response status.
+- DMs carry persistent **Respond to Check-in** controls. Forms acknowledge receipt
+  without repeating answers in Discord. The recipient can read their own answers
+  in The Garden; other readers require `scouts.checkins.view_all`. Requesters see
+  status only. Cancel or manually nudge pending requests in the dashboard; overdue
+  pending requests remain visible. There is no recurring schedule/automatic nudge.
+  Closed DMs create a visible failure without a public fallback. Cancelled requests
+  not yet delivered do not send a new DM.
+
+Reporter identity and written explanation live in a separate protected table and
+are never included in Discord cards, commands, delivery jobs, shared searches,
+revisions, general audit events, exports, or Gemini inputs. Check-in answers are
+also stored separately; public record/revision/delivery payloads contain only
+status and questions. Dashboard Scout responses use `private, no-store` headers.
+Database administrators and backup operators retain direct database access; these
+are application permission boundaries, not encryption of SQLite backups.
+
+### Automatic evidence and capture limitations
+
+The bot captures individual/bulk deletion gateway events in configured scope,
+member timeout changes/expiry, and Discord audit evidence for deletions, timeouts,
+moderator voice moves/disconnections. Ordinary voice movement produces no Scout
+moderation record. Timeout expiry is labeled separately from a change/removal;
+only the audit entry confirms a moderator and timeout target.
+
+The persistent message/edit buffer runs independently of AI archives and never
+captures DMs. At deletion, available snapshots and edit versions are copied into
+permanent evidence; absent/expired snapshots say **Content unavailable**. Text may
+be shortened in Discord cards; the dashboard retains the full captured evidence.
+Attachment URLs/names are references and can expire; files are not archived.
+Changing buffer retention/pruning never expires finalized evidence.
+
+Audit entries identify only the actor supplied by Discord. Bot reasons naming a
+human never create human attribution. Role snapshots reflect roles observed when
+attribution was captured and include that observation timestamp. Concurrent/delayed
+or grouped deletion evidence stays **unattributed/uncertain**, with candidate audit
+record links rather than a guessed exact association. Grouped voice entries may
+lack exact affected member IDs. Such gateway evidence is excluded from confirmed
+Scout totals. Audit records remain separate from message snapshots so they can be
+reviewed without implying an exact mapping. See the
+[Discord audit-log merging rules](https://docs.discord.com/developers/resources/audit-log)
+and [raw deletion event limitations](https://discordpy.readthedocs.io/en/stable/api.html#discord.on_raw_message_delete).
+
+A persisted checkpoint, overlapping audit polls, and refreshes of recent grouped
+entries reconcile delays, restarts, and increasing counts. Discord retains audit
+logs for 45 days; offline periods longer than that cannot be recovered from Discord.
+Recent grouped-entry refresh is bounded (100 tracked entries / 300 fetched entries
+per cycle). Original evidence and appended observations/revisions remain available;
+manual edits/voiding never replace automatic evidence. Attach context, a correction,
+or an escalation as a linked manual follow-up instead of repeating the action.
+
+### Gemini and delivery recovery
+
+Gemini previews are dashboard-only. Drafts require explicit acceptance through an
+editable save form. Failures preserve the original draft and never prevent ordinary
+activity/report/check-in workflows. Review summaries select one Scout/date range
+and cite record IDs; they use bounded samples (up to 25 records per permitted kind),
+not an assertion that missing records mean inactivity. System evidence requires
+moderation-view access. Check-in answers enter summaries only when the viewer can
+read those answers. Stored reporter details and member-written report explanations
+are excluded even for identity-authorized viewers. Scout previews suppress prompt and
+response content logging even if global AI content logging is enabled; aggregate
+usage and costs are still recorded. Treat AI output as a draft.
+
+Every workflow save queues a durable outbox job in the same transaction. Jobs have
+permanent receipt markers and distinct pending/sending/sent/failed/uncertain states;
+report/check-in workflow status is separate. Persistent channel and DM controls
+restore after restart. Definite permission/closed-DM failures can be retried from
+**Scouts → Settings** after correcting the cause. Verified missing cards may be
+recreated; ordinary edits update their existing card without repeated role pings.
+
+Interrupted or ambiguous sends are reconciled against message-history receipt
+markers, never blindly resent. Later revisions wait behind an uncertain earlier
+send to prevent duplicates. Reconciliation scans up to 2,000 messages from the
+attempt boundary and retries reconciliation at most once a minute. If history is
+unavailable, the marker was removed, or the search window is insufficient, the job
+stays uncertain for staff review; the Retry control deliberately does not requeue
+it. Pending work pauses while the feature is disabled. Check delivery status before
+resubmitting a record after a connection error.
+
+### Validation and pilot
+
+Run `.venv/bin/python -m unittest discover -s tests -v`. Scout tests cover independent
+permissions, role/account removal, guild isolation, reporter privacy, check-in
+answer privacy, concurrent duplicate submissions, ownership/revisions/voiding,
+outcomes, cooldowns, buffered edits/retention, delayed/grouped audits, timeout
+expiry, bot attribution, persistent controls, partial DM failure, delivery receipts,
+and uncertain-send recovery.
+
+Before production activation, take the established deployment backup (an additional
+verified off-host copy is recommended for migration recovery). Use the established
+`bebotdeploy --check` / `bebotdeploy` workflow when deployment is authorized and
+require **BOT DEPLOY VERIFIED**. Startup synchronizes `/scout` and both message
+context actions. Configure through The Garden and run a controlled pilot: selected
+message deletion and bulk deletion, timeout/expiry, moderator/voluntary voice
+movement, member report, follow-up, escalation, private check-in, closed DM,
+restart/control recovery, and an optional Gemini preview. Verify the live cards,
+capability-restricted pages, intent/permission readiness, worker heartbeat, and
+post-ready logs. Local tests/browser previews do not prove production behavior.

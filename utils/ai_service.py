@@ -358,6 +358,7 @@ async def generate_ai_response(
     channel_id: Optional[object] = None,
     source_command: Optional[str] = None,
     metadata: Optional[dict[str, object]] = None,
+    sensitive_content: bool = False,
     db: Optional[aiosqlite.Connection] = None,
 ) -> AIResult:
     ai_config = get_ai_config()
@@ -451,7 +452,7 @@ async def generate_ai_response(
         )
         return result
 
-    if ai_config.logging.log_prompts:
+    if ai_config.logging.log_prompts and not sensitive_content:
         logger.info(
             "AI prompt logging enabled: task=%s source=%s prompt=%r",
             task_type,
@@ -531,7 +532,7 @@ async def generate_ai_response(
                 usage=usage,
                 estimated_cost_usd=estimated_cost,
             )
-            if ai_config.logging.log_responses:
+            if ai_config.logging.log_responses and not sensitive_content:
                 logger.info(
                     "AI response logging enabled: task=%s source=%s response=%r",
                     task_type,

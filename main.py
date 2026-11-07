@@ -88,6 +88,7 @@ intents.guilds = True
 intents.guild_scheduled_events = True
 intents.emojis_and_stickers = True
 intents.members = True
+intents.moderation = True
 intents.guild_messages = True
 intents.message_content = True
 intents.voice_states = True

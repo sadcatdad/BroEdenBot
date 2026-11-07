@@ -22,6 +22,23 @@ class PermissionDefinition:
 
 
 PERMISSIONS = (
+    *(
+        PermissionDefinition("scouts." + key, "Scout Operations", name, description)
+        for key, name, description in (
+            ("activity.view", "View Scout activity", "Read shared activity, redacted reports and escalations."),
+            ("activity.create", "Write Scout activity", "Create, edit owned manual records and escalate."),
+            ("activity.review", "Review activity history", "Read manual record revisions."),
+            ("activity.void", "Void manual activity", "Void mistaken records with a retained reason and history."),
+            ("moderation.view", "View system evidence", "Read automatic moderation evidence and deleted content."),
+            ("reports.handle", "Handle member reports", "Record outcomes and mark reports handled."),
+            ("reports.identity.view", "View protected reporter details", "Read reporter identity and explanation in The Garden only."),
+            ("checkins.respond", "Respond to check-ins", "Answer requested check-ins and read own answers."),
+            ("checkins.request", "Request check-ins", "Request, cancel and manually nudge; does not grant answer access."),
+            ("checkins.view_all", "Read all check-in answers", "Read check-in answers in The Garden only."),
+            ("ai.use", "Use Scout Gemini assistance", "Preview drafts and summaries within existing content permissions."),
+            ("settings.manage", "Configure Scout Operations", "Configure features and destinations; cannot grant capabilities."),
+        )
+    ),
     PermissionDefinition("dashboard.view", "Monitor", "View dashboard", "Open the dashboard overview."),
     PermissionDefinition("analytics.view", "Monitor", "View analytics", "Read aggregate activity, member, channel, and voice analytics."),
     PermissionDefinition("analytics.manage", "Monitor", "Manage analytics", "Edit, refresh, archive, and export managed statistics."),
@@ -82,6 +99,13 @@ PERMISSIONS = (
 PERMISSION_KEYS = frozenset(item.key for item in PERMISSIONS)
 
 SYSTEM_ROLES = {
+    "scout": {
+        "name": "Scout",
+        "description": "Scout operations only; reporter details require an explicit Access grant.",
+        "permissions": {"scouts." + key for key in (
+            "activity.view", "activity.create", "moderation.view", "reports.handle", "checkins.respond"
+        )},
+    },
     "owner": {
         "name": "Owner",
         "description": "Full dashboard access and emergency recovery authority.",
@@ -129,6 +153,7 @@ SYSTEM_ROLES = {
 }
 
 ROLE_LEVELS = {
+    "scout": 60,
     "owner": 100,
     "administrator": 90,
     "moderator": 70,
@@ -138,6 +163,7 @@ ROLE_LEVELS = {
 }
 
 LEGACY_ROLE_MAP = {
+    "scout": "scout",
     "owner": "owner",
     "admin": "administrator",
     "administrator": "administrator",
@@ -320,6 +346,15 @@ def initialize_rbac_schema() -> None:
                         role_id,
                     ),
                 )
+        scout_migration = "2026_11_scout_operations"
+        if connection.execute("SELECT 1 FROM dashboard_rbac_migrations WHERE migration_key=?", (scout_migration,)).fetchone() is None:
+            for role_key in ("owner", "administrator"):
+                role_id = connection.execute("SELECT id FROM dashboard_roles WHERE role_key=?", (role_key,)).fetchone()[0]
+                connection.executemany(
+                    "INSERT OR IGNORE INTO dashboard_role_permissions(role_id,permission_key) VALUES(?,?)",
+                    [(role_id, key) for key in PERMISSION_KEYS if key.startswith("scouts.")],
+                )
+            connection.execute("INSERT INTO dashboard_rbac_migrations VALUES(?,?)", (scout_migration, now))
         drop_commands_migration = "2026_10_drop_command_permissions"
         if (
             connection.execute(
