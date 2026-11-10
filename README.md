@@ -2866,8 +2866,8 @@ or an escalation as a linked manual follow-up instead of repeating the action.
 
 ### Gemini and delivery recovery
 
-Gemini previews are dashboard-only. Drafts require explicit acceptance through an
-editable save form. Failures preserve the original draft and never prevent ordinary
+Gemini activity drafts and review summaries in The Garden require explicit acceptance
+through an editable save form. Failures preserve the original draft and never prevent ordinary
 activity/report/check-in workflows. Review summaries select one Scout/date range
 and cite record IDs; they use bounded samples (up to 25 records per permitted kind),
 not an assertion that missing records mean inactivity. System evidence requires
@@ -2876,6 +2876,53 @@ read those answers. Stored reporter details and member-written report explanatio
 are excluded even for identity-authorized viewers. Scout previews suppress prompt and
 response content logging even if global AI content logging is enabled; aggregate
 usage and costs are still recorded. Treat AI output as a draft.
+
+**Discord conversation summaries:** `/scout log` uses the incident channel (the
+current channel by default). Right-click **Apps → Log Scout Activity** to anchor
+the draft to a specific message. A `message_link` selects its channel when no
+channel override was supplied. An explicit channel/link mismatch skips the AI
+draft; the manual form remains available. Without a message, the command time is
+used. For an earlier `when`, provide a full ISO date/time with timezone or a
+Discord timestamp; ambiguous times such as “3:30am” skip AI instead of guessing.
+The bot sends a private **Write your log** button immediately, then offers
+**Use summary** / **Write your own**. Using the summary prefills the configured
+“What happened” question; Scouts still enter their own action and outcome.
+Nothing is published until they submit the ordinary activity form. Opening the
+manual form while Gemini runs keeps that draft. Provider failures, timeouts,
+cooldowns, and budget limits never block manual logging.
+
+Configure **Scouts → Settings → Conversation summaries in Discord**. The default
+window is 10 minutes before/after the anchor (configurable 1–30), ending at the
+current time. Requests use at most 80 nearby human messages / 14,000 text
+characters, with up to 1,200 characters per message. The preview labels limited
+samples and links supporting source messages. It uses the existing default
+Gemini model and shared AI budgets/cooldowns; the separate advanced-model toggle
+uses `AI_MODEL_ADVANCED` only if `AI_ENABLE_ADVANCED_MODEL` is enabled, otherwise
+falling back to the default. New installations start with conversation summaries
+off. Existing settings without the new key inherit their `ai_drafts` opt-in.
+
+Only the exact, currently visible server channel/thread is queried. Current
+Scout capability, server membership, channel history access, and private thread
+membership are checked before generation, after generation, and on acceptance.
+The existing message archive is used only while enabled and tracking that channel,
+within retention; deleted, bot/webhook, and later-edited messages are excluded.
+If unavailable, the explicitly scoped Scout capture buffer can be used only by
+Scouts with `scouts.moderation.view`, because it may contain deleted text.
+Scout and message-archive channel exclusions, excluded Scout categories, and
+staff logging destinations take precedence, including parent-channel exclusions.
+The context setting enables this limited assistant for members with
+`scouts.activity.create`; general Scout AI tools still require `scouts.ai.use`.
+This workflow does not grant general `/context` search access.
+It never backfills Discord history, joins sibling threads, reads attachments, or
+uses protected reports or check-in answers. Message/name text is untrusted input;
+obvious credentials are redacted and prompt/response content logging is disabled.
+
+Saving an accepted draft retains the source message links, captured timeframe,
+message count, model, caveats, and accepting Scout in the activity's context panel
+and revision history. Raw surrounding messages are not copied into the activity.
+The Scout's edited summary remains ordinary activity text; AI context does not
+assert a confirmed moderation action or fill in an action/outcome. Manual revisions
+retain this provenance. Discord activity cards label accepted context Gemini-assisted.
 
 Every workflow save queues a durable outbox job in the same transaction. Jobs have
 permanent receipt markers and distinct pending/sending/sent/failed/uncertain states;

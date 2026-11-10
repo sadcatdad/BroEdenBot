@@ -714,3 +714,8 @@ a:focus-visible,summary:focus-visible,button:focus-visible {
 
 .scout-status-link { font-size:.82rem; margin-left:auto; }
 .scout-workflow:target { outline:2px solid var(--scout-accent); outline-offset:3px; }
+
+/* Compact provenance for human-reviewed conversation drafts. */
+.scout-context-facts { display:grid; grid-template-columns:repeat(auto-fit,minmax(min(100%,220px),1fr)); gap:12px 24px; margin:16px 0; }
+.scout-context-facts dt { color:var(--muted); font-size:.82rem; }
+.scout-context-facts dd { margin:4px 0 0; overflow-wrap:anywhere; }

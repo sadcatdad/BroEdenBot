@@ -20,6 +20,7 @@ from urllib.parse import urlsplit
 from utils.settings import get_setting, settings_database_path
 from utils.sqlite import AutoClosingSQLiteConnection, configure_sync_connection
 from utils.scout_forms import FORM_DEFAULTS, validate_forms, answers_for
+from utils.scout_context import clean_context_metadata
 
 ACTIVITY_TYPES = ('rule reminder', 'de-escalation', 'message removal', 'timeout', 'concern', 'other')
 ACTION_TYPES = ('message_delete', 'message_bulk_delete', 'timeout', 'member_move', 'member_disconnect')
@@ -75,6 +76,7 @@ DEFAULTS = dict(
     questions=['What have you handled since your last check-in? “Nothing to report” is acceptable.',
                'Have you encountered difficulties or concerns?', 'What help or feedback would be useful?'],
     ai_drafts=False, ai_summaries=False, report_cooldown=60, notification_cooldown=300,
+    ai_context_summaries=False, ai_context_advanced=False, context_minutes=10,
     forms=copy.deepcopy(FORM_DEFAULTS),
 )
 SCHEMA = '''
@@ -198,7 +200,11 @@ class Scouts:
 
     def settings(self, guild):
         rows = self.rows('SELECT data FROM scout_settings WHERE guild_id=?', (str(guild),))
-        return dict(copy.deepcopy(DEFAULTS), **(json.loads(rows[0]['data']) if rows else {}))
+        stored=json.loads(rows[0]['data']) if rows else {}
+        result=dict(copy.deepcopy(DEFAULTS), **stored)
+        if 'ai_context_summaries' not in stored:
+            result['ai_context_summaries']=bool(stored.get('ai_drafts',False))
+        return result
 
     def save_settings(self, actor, values):
         actor.require('settings.manage')
@@ -215,6 +221,8 @@ class Scouts:
                     number = int(value)
                 except (ValueError, TypeError):
                     raise ValueError(f'Enter a whole number for {key}.') from None
+                if key=='context_minutes' and not 1<=number<=30:
+                    raise ValueError('Conversation context window must be between 1 and 30 minutes on each side.')
                 if not 0 <= number <= (90 if key == 'retention_days' else 86400) or (key == 'retention_days' and number == 0):
                     raise ValueError(f'{key} is outside its supported range.')
                 result[key] = number
@@ -447,10 +455,13 @@ class Scouts:
         args.append((max(1, min(int(page), 100000)) - 1) * 25)
         return [self.unpack(r) for r in self.rows(sql, args)]
 
-    def manual(self, actor, values, related='', source=None):
+    def manual(self, actor, values, related='', source=None, ai_context=None):
         actor.require('activity.create')
         self.enabled(actor.guild_id)
         data = self.manual_values(values, self.settings(actor.guild_id)['forms']['activity'])
+        if ai_context is not None:
+            data['ai_context']=clean_context_metadata(ai_context,actor.guild_id,data['channel'])
+            data['ai_context'].update(accepted_by=actor.user_id,accepted_at=time.time())
         source = f'manual:{actor.user_id}:{source}' if source else None
         with self.connect() as c:
             c.execute('BEGIN IMMEDIATE')
@@ -493,6 +504,8 @@ class Scouts:
                 data['related'] = r['data']['related']
             if r['data'].get('status_update'):
                 data['status_update'] = r['data']['status_update']
+            if r['data'].get('ai_context'):
+                data['ai_context'] = r['data']['ai_context']
             r['data'] = data
             return self._update(c, r, actor.user_id, 'edited')
 

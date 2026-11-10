@@ -23,7 +23,10 @@ from discord.ext import commands, tasks
 from utils.scouts import Scouts, ACTIVITY_TYPES, REPORT_CATEGORIES, CARD_LAYOUT_VERSION, encode, status_label, status_key, record_title
 from utils.scout_access import discord_member_actor
 from utils.scout_forms import FORM_DEFAULTS
-from utils.settings import get_setting
+from utils.scout_context import message_reference,anchor_time,archive_messages,buffer_messages,sample_messages,summarize_context
+from utils.ai_config import get_ai_config
+from utils.message_context import parse_id_set
+from utils.settings import get_setting,get_json_ids_setting
 
 log = logging.getLogger(__name__)
 SCOUT_EMBED_COLOR = 0x9B59B6
@@ -37,6 +40,7 @@ def dashboard_url(rid=''):
 def snapshot(message):
     return dict(message_id=str(message.id), channel_id=str(message.channel.id), author_id=str(message.author.id), author_name=str(getattr(message.author,'display_name',message.author)),
                 content=message.content, created_at=message.created_at.timestamp(),
+                is_bot=bool(getattr(message.author,'bot',False)),is_webhook=bool(getattr(message,'webhook_id',None)),
                 edited_at=message.edited_at.timestamp() if message.edited_at else None,
                 jump_url=message.jump_url,
                 attachments=[dict(id=str(a.id), filename=a.filename, url=a.url, proxy_url=a.proxy_url) for a in message.attachments])
@@ -134,6 +138,8 @@ def card_embed(record, marker):
             lines.append('• **Related:** #' + record['related_short_id'])
         if record['status'] == 'void':
             bullet('Voided', d.get('void_reason'), 250)
+        if d.get('ai_context'):
+            bullet('Context',f"Gemini-assisted · {d['ai_context']['message_count']} captured messages",150)
     bullet(d.get('form_labels',{}).get('outcome','Outcome'), d.get('outcome'), 400)
     for answer in d.get('form_answers',[]) + d.get('outcome_answers',[]):
         bullet(answer['label'],answer['answer'],300)
@@ -204,7 +210,20 @@ class ScoutModal(discord.ui.Modal):
         try:
             actor = await self.cog.actor(interaction.user.id, self.guild)
             if self.mode=='manual':
-                r = await self.cog.call(self.cog.service.manual, actor, values, self.related, self.source)
+                metadata=self.values.get('_ai_context')
+                if metadata:
+                    guild=self.cog.bot.get_guild(int(self.guild))
+                    channel=guild.get_channel_or_thread(int(metadata['channel_id'])) if guild else None
+                    if channel is None:
+                        raise PermissionError('The source channel is no longer available. Open a manual log instead.')
+                    await self.cog.report_member(interaction.user.id,channel)
+                    cfg=await self.cog.call(self.cog.service.settings,self.guild)
+                    if not cfg['ai_context_summaries']:
+                        raise PermissionError('Conversation summaries are disabled. Open a manual log instead.')
+                    await self.cog.context_scope(channel,cfg)
+                    if metadata['source']=='scout_capture':
+                        actor.require('moderation.view')
+                r = await self.cog.call(self.cog.service.manual, actor, values, self.related, self.source, metadata)
             elif self.mode=='edit':
                 r = await self.cog.call(self.cog.service.edit, actor, self.rid, values, self.values['version'])
             elif self.mode=='escalate':
@@ -446,6 +465,7 @@ class ScoutsCog(commands.Cog):
         self.log_menu = app_commands.ContextMenu(name='Log Scout Activity', callback=self.log_message, allowed_contexts=app_commands.AppCommandContext(guild=True,dm_channel=False,private_channel=False), allowed_installs=app_commands.AppInstallationType(guild=True,user=False))
         self.audit_ticks = {}
         self._recovered = False
+        self._context_slots = asyncio.Semaphore(2)
 
     @staticmethod
     async def call(fn,*args,**kwargs):
@@ -536,6 +556,129 @@ class ScoutsCog(commands.Cog):
         except (ValueError,PermissionError) as exc:
             await interaction.followup.send(str(exc),ephemeral=True)
 
+    async def context_scope(self, channel, cfg):
+        """Hard exclusions also apply to explicitly selected messages and saved drafts."""
+        if not getattr(channel,'guild',None):
+            raise PermissionError('Conversation summaries are only available in server channels.')
+        ids={str(channel.id),str(getattr(channel,'parent_id','') or '')}-{''}
+        category=str(getattr(channel,'category_id','') or '')
+        excluded=set(map(str,parse_id_set(os.getenv('MESSAGE_CONTEXT_EXCLUDED_CHANNEL_IDS'))))
+        excluded.update(map(str,await self.call(get_json_ids_setting,'message_context_excluded_channel_ids')))
+        archive=self.bot.get_cog('MessageContext')
+        if archive is not None:
+            excluded.update(map(str,await self.call(archive._query_excluded_channel_ids)))
+        excluded.update(cfg['excluded_channels'])
+        excluded.update({cfg['activity_channel'],cfg['moderation_channel']}-{''})
+        if ids & excluded or category in cfg['excluded_categories']:
+            raise PermissionError('This channel is excluded from conversation summaries. You can write the activity normally.')
+        return archive,excluded
+
+    async def context_draft(self, interaction, actor, channel, cfg, *, selected=None, when='', link=''):
+        if not cfg['ai_context_summaries']:
+            raise ValueError('Conversation summaries are disabled.')
+        if str(getattr(getattr(channel,'guild',None),'id',''))!=actor.guild_id:
+            raise PermissionError('Conversation context must come from this server.')
+        await self.report_member(actor.user_id,channel)
+        actor.require('activity.create')
+        archive,excluded=await self.context_scope(channel,cfg)
+        ref=message_reference(link,actor.guild_id)
+        if ref and str(channel.id)!=ref['channel_id']:
+            raise ValueError('The message link and incident channel differ. Write the log normally, or select the message’s channel.')
+        anchor=anchor_time(when,message_at=selected['created_at'] if selected else ref['at'] if ref else None,
+                           now=interaction.created_at.timestamp() if getattr(interaction,'created_at',None) else None)
+        minutes=cfg['context_minutes'];now=time.time()
+        start,end=anchor-minutes*60,min(now,anchor+minutes*60)
+        if archive is not None and archive.enabled and archive.db is not None and archive._tracks_channel(channel):
+            if archive.retention_days is not None:
+                start=max(start,now-archive.retention_days*86400)
+            rows=await self.call(archive_messages,archive.database_path,actor.guild_id,channel.id,start,end,anchor,excluded)
+            source='message_archive'
+        elif await self.call(self.service.capture_allowed,actor.guild_id,channel.id,
+                            str(getattr(channel,'category_id','') or ''),str(getattr(channel,'parent_id','') or '')):
+            # This buffer can contain deleted text, requiring the evidence-reading permission.
+            actor.require('moderation.view')
+            rows=await self.call(buffer_messages,self.service,actor.guild_id,channel.id,start,end,anchor,cfg['retention_days'])
+            source='scout_capture'
+        else:
+            raise ValueError('No conversation capture is available for this channel. You can write the activity normally.')
+        sample=sample_messages(rows,guild=actor.guild_id,channel=channel.id,anchor=anchor,minutes=minutes,
+                               source=source,selected=selected if not selected or selected['created_at']>=start else None,now=now)
+        async with self._context_slots:
+            current=await self.actor(actor.user_id,actor.guild_id)
+            current.require('activity.create')
+            if source=='scout_capture':
+                current.require('moderation.view')
+            await self.report_member(actor.user_id,channel)
+            fresh=await self.call(self.service.settings,actor.guild_id)
+            if not fresh['ai_context_summaries']:
+                raise PermissionError('Conversation summaries have been disabled.')
+            await self.context_scope(channel,fresh)
+            draft=await summarize_context(self.service,current,sample,advanced=fresh['ai_context_advanced'])
+        # Generating a draft never grants lasting access to the source channel.
+        current=await self.actor(actor.user_id,actor.guild_id)
+        current.require('activity.create')
+        if source=='scout_capture':
+            current.require('moderation.view')
+        await self.report_member(actor.user_id,channel)
+        fresh=await self.call(self.service.settings,actor.guild_id)
+        if not fresh['ai_context_summaries']:
+            raise PermissionError('Conversation summaries have been disabled. You can write the activity normally.')
+        await self.context_scope(channel,fresh)
+        return draft
+
+    async def activity_form(self, interaction, actor, cfg, values, message, *, channel=None, selected=None, related='', context_link=''):
+        opened=False
+        def manual():
+            nonlocal opened
+            opened=True
+            return ScoutModal(self,interaction.guild_id,'manual',values=values,related=related,source=str(interaction.id))
+        view=OpenForm(interaction.user.id,manual,label='Write your log')
+        enabled=cfg['ai_context_summaries'] and channel is not None
+        if enabled:
+            enabled=(await self.call(get_ai_config)).available
+        response=await interaction.followup.send(message+(' Preparing a private conversation summary… You can start writing now.' if enabled else ''),
+            ephemeral=True,allowed_mentions=discord.AllowedMentions.none(),view=view,wait=True)
+        if not enabled:
+            return
+        try:
+            draft=await asyncio.wait_for(self.context_draft(interaction,actor,channel,cfg,selected=selected,
+                when=values.get('incident_at',''),link=context_link),timeout=25)
+            if opened:
+                await response.edit(content=message,view=view)
+                return
+            data=draft['metadata']
+            preview=discord.Embed(title='Review conversation summary',description=safe(draft['summary'],3000),color=SCOUT_EMBED_COLOR)
+            coverage=f"{data['message_count']} captured messages · <#{data['channel_id']}> · <t:{int(data['observed_start'])}:f>–<t:{int(data['observed_end'])}:t>"
+            sources=' · '.join(f'[Message {i+1}](https://discord.com/channels/{actor.guild_id}/{data["channel_id"]}/{mid})' for i,mid in enumerate(data['source_ids']))
+            preview.add_field(name='Context used',value=coverage+'\n'+sources,inline=False)
+            notes=data['caveats']+(['A limited sample was used.'] if data['limited'] else [])
+            if data['source']=='scout_capture':
+                notes.append('Captured text may include messages since deleted.')
+            if notes:
+                preview.add_field(name='Keep in mind',value='\n'.join('• '+safe(n,240) for n in notes)[:1024],inline=False)
+            preview.set_footer(text='Gemini draft · Review before saving · Attachments not read')
+            assisted=dict(values,summary=draft['summary'],_ai_context=data)
+            review=OpenForm(interaction.user.id,lambda:ScoutModal(self,interaction.guild_id,'manual',values=assisted,related=related,source=str(interaction.id)),label='Use summary')
+            own=discord.ui.Button(label='Write your own',style=discord.ButtonStyle.secondary)
+            async def write_own(click):
+                if click.user.id!=interaction.user.id:
+                    await click.response.send_message('This draft belongs to another member.',ephemeral=True)
+                    return
+                await click.response.send_modal(manual())
+            own.callback=write_own
+            review.add_item(own)
+            summary_label=next(f['label'] for f in cfg['forms']['activity'] if f['key']=='summary')
+            await response.edit(content=f'Use this draft to prefill “{safe(summary_label,45)},” then complete the form. Nothing is saved until you submit it.',embed=preview,view=review)
+        except (ValueError,PermissionError) as exc:
+            await response.edit(content=message+'\n'+str(exc),view=view)
+        except Exception as exc:
+            # Never log raw messages, provider responses or exception details here.
+            log.info('Scout conversation draft unavailable (%s)',type(exc).__name__)
+            try:
+                await response.edit(content=message+'\nA conversation summary is unavailable right now. Your manual log is ready.',view=view)
+            except discord.HTTPException:
+                pass
+
     async def log_message(self, interaction: discord.Interaction, message: discord.Message):
         await interaction.response.defer(ephemeral=True)
         try:
@@ -545,7 +688,7 @@ class ScoutsCog(commands.Cog):
             await self.report_member(interaction.user.id,message.channel)
             cfg=await self.call(self.service.settings,actor.guild_id)
             values=dict(_form_schema=cfg['forms']['activity'],type='other', summary=message.content[:4000] or 'Message context', evidence=message.jump_url,members=str(message.author.id),channel=str(message.channel.id))
-            await interaction.followup.send('Log activity with the selected message as context.',ephemeral=True,view=OpenForm(interaction.user.id,lambda: ScoutModal(self,interaction.guild_id,'manual',values=values,source=str(interaction.id))))
+            await self.activity_form(interaction,actor,cfg,values,'Log activity with the selected message as context.',channel=message.channel,selected=snapshot(message))
         except (ValueError,PermissionError) as exc:
             await interaction.followup.send(str(exc),ephemeral=True)
 
@@ -553,7 +696,8 @@ class ScoutsCog(commands.Cog):
     @app_commands.choices(activity_type=[app_commands.Choice(name=t,value=t) for t in ACTIVITY_TYPES])
     @app_commands.rename(activity_type='type',members='member',incident_time='when',related_record='follow_up_to',evidence_link='message_link')
     @app_commands.describe(activity_type='What kind of activity was this?', members='Involved members (names or mentions)',
-        channel='Channel where the activity occurred', incident_time='When it happened, including timezone when known',
+        channel='Incident channel (defaults to this channel or the linked message’s channel)',
+        incident_time='Earlier incident? Full date/time with timezone, or use message_link. Omit for now.',
         related_record='Choose a recent activity/report to follow up. Leave empty for a new log.',
         evidence_link='Paste a Discord message link, or use the message’s Log Scout Activity action.')
     async def log_activity(self,interaction:discord.Interaction,activity_type:str='other',members:Optional[discord.Member]=None,channel:Optional[discord.TextChannel]=None,incident_time:str='',related_record:str='',evidence_link:str=''):
@@ -563,7 +707,22 @@ class ScoutsCog(commands.Cog):
             actor.require('activity.create')
             await self.call(self.service.enabled,actor.guild_id)
             reference = await self.call(self.service.resolve_reference, actor, related_record)
-            values=dict(type=activity_type,members=member_reference(members.id) if hasattr(members,'id') else str(members or ''),channel=str(channel.id) if channel else '',incident_at=incident_time,evidence=evidence_link)
+            source_channel=channel or getattr(interaction,'channel',None)
+            # A supplied message link selects its channel unless explicitly overridden.
+            try:
+                ref=message_reference(evidence_link,actor.guild_id)
+            except ValueError:
+                # Foreign evidence can still be logged manually; never query it.
+                ref=None
+            if ref and channel is None:
+                guild=self.bot.get_guild(int(actor.guild_id))
+                source_channel=guild.get_channel_or_thread(int(ref['channel_id'])) if guild else None
+                if source_channel is None:
+                    try:
+                        source_channel=await self.bot.fetch_channel(int(ref['channel_id']))
+                    except discord.HTTPException:
+                        pass
+            values=dict(type=activity_type,members=member_reference(members.id) if hasattr(members,'id') else str(members or ''),channel=str(source_channel.id) if source_channel else '',incident_at=incident_time,evidence=evidence_link)
             self.service._add_evidence(values, reference['evidence'])
             cfg = await self.call(self.service.settings, actor.guild_id)
             values['_form_schema']=cfg['forms']['activity']
@@ -572,7 +731,7 @@ class ScoutsCog(commands.Cog):
                 message += f" Linked Scout record: #{reference['short_id']}."
             elif reference['evidence']:
                 message += ' Your message link is prefilled as evidence.'
-            await interaction.followup.send(message,ephemeral=True,allowed_mentions=discord.AllowedMentions.none(),view=OpenForm(interaction.user.id,lambda:ScoutModal(self,interaction.guild_id,'manual',values=values,related=related_record,source=str(interaction.id))))
+            await self.activity_form(interaction,actor,cfg,values,message,channel=source_channel,related=related_record,context_link=evidence_link)
         except (ValueError,PermissionError) as exc:
             await interaction.followup.send(str(exc),ephemeral=True)
 

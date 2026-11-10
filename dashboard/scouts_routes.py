@@ -111,7 +111,14 @@ def install_scout_routes(app, templates, context):
             runtime = await asyncio.to_thread(s.rows, 'SELECT data FROM scout_runtime WHERE guild_id=? AND heartbeat>?', (actor.guild_id,time.time()-90))
             values['roster'] = json.loads(runtime[0]['data']).get('scouts',[]) if runtime else []
         if section == 'settings':
-            stats=await asyncio.to_thread(s.rows,'SELECT COUNT(*) count,MAX(observed_at) latest FROM scout_buffer WHERE guild_id=? AND observed_at>?',(actor.guild_id,time.time()-cfg['retention_days']*86400))
+            from utils.ai_config import get_ai_config
+            ai_config=await asyncio.to_thread(get_ai_config)
+            values.update(context_default_model=ai_config.models.default,
+                          context_advanced_model=ai_config.models.advanced,context_advanced_enabled=ai_config.advanced_enabled)
+            # A validation error preserves posted strings for the form; statistics
+            # still use the last valid retention value, never unvalidated input.
+            retention=(await asyncio.to_thread(s.settings,actor.guild_id))['retention_days']
+            stats=await asyncio.to_thread(s.rows,'SELECT COUNT(*) count,MAX(observed_at) latest FROM scout_buffer WHERE guild_id=? AND observed_at>?',(actor.guild_id,time.time()-retention*86400))
             values['capture_stats']=stats[0]
             await asyncio.to_thread(initialize_discord_metadata_schema)
             values['roles'] = await asyncio.to_thread(s.rows, 'SELECT id,name FROM dashboard_discord_roles WHERE guild_id=? AND is_bot_role=0 ORDER BY position DESC', (actor.guild_id,))
