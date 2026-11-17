@@ -407,6 +407,8 @@ app = FastAPI(
 def required_permission(path: str, method: str) -> str | None:
     """Resolve the stable server-side capability for a dashboard request."""
     normalized_method = method.upper()
+    if path == "/library" or path.startswith("/library/"):
+        return "library.access"
     if path == "/scouts" or path.startswith("/scouts/"):
         # Scout routes apply independent capabilities after live membership checks.
         return "scouts.access"
@@ -495,6 +497,10 @@ class DashboardPermissionMiddleware(BaseHTTPMiddleware):
                     p.startswith("scouts.") for p in current_permissions(request)
                 ):
                     return RedirectResponse(url=request.url_for("scouts_overview"), status_code=303)
+                if (request.url.path == "/" and request.method == "GET"
+                    and has_permission(request, "library.access")
+                    and not ({"events.view", "brofiles.view", "brofiles.edit"} & current_permissions(request))):
+                    return RedirectResponse(url=request.url_for("library_index"), status_code=303)
                 user = current_user(request)
                 record_audit(
                     actor_user_id=user.get("id"),
@@ -521,7 +527,7 @@ class DashboardPermissionMiddleware(BaseHTTPMiddleware):
                     status_code=status.HTTP_403_FORBIDDEN,
                 )
         response = await call_next(request)
-        if request.url.path.startswith(("/events", "/scouts")):
+        if request.url.path.startswith(("/events", "/scouts", "/library")):
             response.headers["Cache-Control"] = "private, no-store"
             response.headers["Pragma"] = "no-cache"
         if request.method.upper() in {"POST", "PUT", "PATCH", "DELETE"} and request.url.path not in {"/login", "/logout"}:
@@ -612,7 +618,8 @@ def template_context(request: Request, **values: Any) -> dict[str, Any]:
         & set(permissions)
     )
     member_view_available = bool(
-        {"events.view", "brofiles.view", "brofiles.edit"} & set(permissions)
+        ({"events.view", "brofiles.view", "brofiles.edit"} & set(permissions))
+        or any(p.startswith("library.") for p in permissions)
     )
     requested_view = str(request.session.get("garden_view_mode") or "").casefold()
     if (
@@ -634,6 +641,7 @@ def template_context(request: Request, **values: Any) -> dict[str, Any]:
         "can_write": has_write_access(request),
         "can_manage_users": is_admin(request),
         "permissions": permissions,
+        "has_library_access": any(p.startswith("library.") for p in permissions),
         "has_scout_access": any(p.startswith("scouts.") for p in permissions),
         "can": lambda permission: permission in permissions,
         "view_mode": view_mode,
@@ -761,6 +769,8 @@ def authenticated_landing_url(request: Request) -> Any:
         return request.url_for("my_brofile_page")
     if has_permission(request, "brofiles.view"):
         return request.url_for("brofile_directory")
+    if any(p.startswith("library.") for p in current_permissions(request)):
+        return request.url_for("library_index")
     return request.url_for("login_page")
 
 
@@ -978,13 +988,14 @@ async def set_view_mode(request: Request) -> RedirectResponse:
             has_permission(request, "events.view")
             or has_permission(request, "brofiles.view")
             or has_permission(request, "brofiles.edit")
+            or any(p.startswith("library.") for p in current_permissions(request))
         ):
             raise HTTPException(status_code=403, detail="Member view is unavailable.")
         request.session["garden_view_mode"] = "member"
         destination = (
             request.url_for("events_page")
             if has_permission(request, "events.view")
-            else (request.url_for("my_brofile_page") if has_permission(request, "brofiles.edit") else request.url_for("brofile_directory"))
+            else (request.url_for("my_brofile_page") if has_permission(request, "brofiles.edit") else (request.url_for("brofile_directory") if has_permission(request, "brofiles.view") else request.url_for("library_index")))
         )
     elif mode == "dashboard":
         destination = dashboard_landing_url(request)
@@ -4951,6 +4962,8 @@ async def health() -> JSONResponse:
 install_event_drop_routes(app, templates, template_context)
 from dashboard.scouts_routes import install_scout_routes
 install_scout_routes(app, templates, template_context)
+from dashboard.library_routes import install_library_routes
+install_library_routes(app, templates, template_context)
 
 
 def main() -> None:

@@ -81,7 +81,7 @@ class DashboardRBACTests(unittest.TestCase):
         self.assertIn("bot.restart", owner_permissions)
         self.assertEqual(
             set(roles["administrator"]["permissions"]),
-            set(roles["owner"]["permissions"]),
+            set(roles["owner"]["permissions"]) - {"library.owner"},
         )
         self.assertEqual(
             set(roles["viewer"]["permissions"]),
@@ -93,6 +93,7 @@ class DashboardRBACTests(unittest.TestCase):
                 "brofiles.view",
                 "events.view",
                 "events.subscribe",
+                "library.member",
             },
         )
         self.assertIn("events.create", roles["party_captain"]["permissions"])
@@ -104,6 +105,7 @@ class DashboardRBACTests(unittest.TestCase):
                 "brofiles.view",
                 "events.view",
                 "events.subscribe",
+                "library.member",
             },
         )
         self.assertEqual(roles["verified_events_member"]["name"], "Verified Member")
@@ -169,6 +171,7 @@ class DashboardRBACTests(unittest.TestCase):
                 "brofiles.view",
                 "events.view",
                 "events.subscribe",
+                "library.member",
             },
         )
         self.assertEqual(role_names_for_user(user["id"]), ["Verified Member"])

@@ -236,7 +236,7 @@ class DashboardFeatureAccessTests(unittest.TestCase):
             ).fetchone()[0]
         for permission in (
             "dashboard.view", "analytics.view", "bot.status.view",
-            "events.view", "events.subscribe", "brofiles.view", "brofiles.edit",
+            "events.view", "events.subscribe", "brofiles.view", "brofiles.edit", "library.member",
         ):
             set_user_permission_override(user_id, permission, "deny", changed_by="test")
         set_user_permission_override(user_id, "reminders.view", "allow", changed_by="test")

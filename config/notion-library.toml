@@ -1,0 +1,29 @@
+# Explicit publication list. New Notion children are never published automatically.
+# Audience changes and removals take effect on the next Garden request.
+[[articles]]
+page_id = "41bd6a79-eb95-81de-8740-dbfa49c638c8"
+audience = "ranger"
+
+[[articles]]
+page_id = "41bd6a79-eb95-8157-aca3-fd025b0b5ebc"
+audience = "ranger"
+
+[[articles]]
+page_id = "41bd6a79-eb95-816a-b2c1-ef3c64f34d53"
+audience = "scout"
+
+[[articles]]
+page_id = "41bd6a79-eb95-818c-a92b-d11e1861aca2"
+audience = "captain"
+
+[[articles]]
+page_id = "41bd6a79-eb95-81e6-bca3-d87c54f1a812"
+audience = "captain"
+
+[[articles]]
+page_id = "41bd6a79-eb95-81ec-b355-f5226c245287"
+audience = "admin"
+
+[[articles]]
+page_id = "41bd6a79-eb95-8105-a969-d09d045db113"
+audience = "owner"
