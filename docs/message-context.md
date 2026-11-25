@@ -15,11 +15,24 @@ has approved the channels, access roles, retention policy, and member-facing
 privacy disclosures that apply to the server.
 
 Only users listed in `BOT_OWNER_USER_IDS` or members with a role listed in
-`MESSAGE_CONTEXT_ALLOWED_ROLE_IDS` can use `/context`. Every command response
-is ephemeral except a successful `/context user` evaluation, which the
-authorized invoker deliberately posts to the current channel. An empty
+`MESSAGE_CONTEXT_ALLOWED_ROLE_IDS` can use `/context`. By default, replies
+are ephemeral except a successful `/context user` evaluation, which posts to
+the invoking channel. Search, summarize, timeline, user, and channel accept
+`post_to:<text channel>` to deliberately share a successful response in a
+selected channel in the same server. The invoker receives a private message
+link. `channel` selects source history; `post_to` selects the destination.
+Choose a staff channel for archive excerpts and staff summaries: everyone with
+View Channel in the destination can read the posted response. Help, status,
+validation errors, empty results, and failures remain private. An empty
 allowed-role list does not grant administrators access; only configured bot
 owners remain authorized.
+
+Channel delivery checks the invoker's current archive access and View Channel
+and Send Messages permissions, plus the bot's View Channel, Send Messages, and
+Embed Links permissions. It reloads membership and destination overwrites
+before retrieval and again before publishing, so access lost during AI
+generation prevents posting. Posted results suppress member and role pings.
+Restart the bot to synchronize the new slash-command options with Discord.
 
 The public `/context user` card includes a community-contribution score
 (0–100), observed strengths, constructive growth opportunities, and up to five
@@ -102,21 +115,21 @@ without crashing.
   include/exclude counts, database size, source counts, date coverage, FTS,
   retention, edit tracking, and delete tracking.
 - `/context search query:<text> [channel] [user] [after] [before] [source]
-  [limit]` performs deterministic local FTS5 or LIKE search. It returns short
+  [limit] [post_to]` performs deterministic local FTS5 or LIKE search. It returns short
   excerpts, timestamps, channels, authors, source labels, and jump links.
 - `/context summarize after:<time> [before] [channel] [topic] [style]
-  [include_links]` produces a neutral staff recap.
-- `/context timeline after:<time> [before] [channel] [topic] [granularity]`
+  [include_links] [post_to]` produces a neutral staff recap.
+- `/context timeline after:<time> [before] [channel] [topic] [granularity] [post_to]`
   builds a chronological narrative.
 - `/context user user:<member> timeframe:<24h|3d|7d|14d|30d|60d|90d>
-  [channel] [include_bots] [max_messages]` is an authorized-staff command
+  [channel] [include_bots] [max_messages] [post_to]` is an authorized-staff command
   that posts a public, high-level evaluation of that member's stored
   participation. It uses a 0–100 community-contribution score based on
   observable activity, plus strengths, constructive growth opportunities, and
   up to five representative verbatim quotes with their source links. NSFW
   quotes are permitted; staff/moderation information is not.
 - `/context channel channel:<channel> timeframe:<1h|6h|12h|24h|3d|7d|14d|30d>
-  [topic] [include_bots] [max_messages]` reviews a stored channel timeframe.
+  [topic] [include_bots] [max_messages] [post_to]` reviews a stored channel timeframe.
 
 Dates accept ISO dates/times plus `yesterday` and `today`. Examples:
 
@@ -124,6 +137,8 @@ Dates accept ISO dates/times plus `yesterday` and `today`. Examples:
 /context summarize after:2026-06-21 20:00 before:2026-06-21 23:00
 /context timeline after:yesterday before:today
 /context search query:"NSFW access"
+/context channel channel:#general timeframe:24h post_to:#staff
+/context summarize after:yesterday post_to:#staff
 ```
 
 Gemini commands retrieve locally first, cap the number of rows, summarize

@@ -443,14 +443,17 @@ class MessageContext(commands.Cog):
         except aiosqlite.Error:
             logger.exception("Could not roll back message-context transaction")
 
-    def _has_access(self, interaction: discord.Interaction) -> bool:
+    def _has_access(
+        self, interaction: discord.Interaction, member: Optional[discord.Member] = None
+    ) -> bool:
         allowed_role_ids = set(
             get_csv_ids_setting("MESSAGE_CONTEXT_ALLOWED_ROLE_IDS")
         )
         owner_user_ids = set(get_csv_ids_setting("BOT_OWNER_USER_IDS"))
+        member = member if member is not None else interaction.user
         role_ids = (
-            (role.id for role in interaction.user.roles)
-            if isinstance(interaction.user, discord.Member)
+            (role.id for role in member.roles)
+            if isinstance(member, discord.Member)
             else ()
         )
         return has_message_context_access(
@@ -468,6 +471,91 @@ class MessageContext(commands.Cog):
             ephemeral=True,
         )
         return True
+
+    async def _posting_destination(
+        self, interaction: discord.Interaction, post_to: discord.TextChannel
+    ) -> discord.TextChannel:
+        """Resolve current membership and overwrites before sharing archive output."""
+        guild = interaction.guild
+        if guild is None or post_to.guild.id != guild.id:
+            raise ValueError("Choose a text channel in this server.")
+        member = await guild.fetch_member(interaction.user.id)
+        if not self._has_access(interaction, member):
+            raise ValueError("You no longer have access to the private message context archive.")
+        destination = await guild.fetch_channel(post_to.id)
+        if not isinstance(destination, discord.TextChannel):
+            raise ValueError("Choose a server text channel for `post_to`.")
+        member_permissions = destination.permissions_for(member)
+        if not (member_permissions.view_channel and member_permissions.send_messages):
+            raise ValueError("You need View Channel and Send Messages in the destination channel.")
+        bot_member = await guild.fetch_member(self.bot.user.id)
+        bot_permissions = destination.permissions_for(bot_member)
+        if not (
+            bot_permissions.view_channel
+            and bot_permissions.send_messages
+            and bot_permissions.embed_links
+        ):
+            raise ValueError(
+                "I need View Channel, Send Messages, and Embed Links in the destination channel."
+            )
+        return destination
+
+    async def _posting_error(
+        self, interaction: discord.Interaction, exc: Exception
+    ) -> None:
+        message = str(exc) if isinstance(exc, ValueError) else (
+            "I could not post to that channel. Check channel access and try again."
+        )
+        send = (
+            interaction.followup.send
+            if interaction.response.is_done()
+            else interaction.response.send_message
+        )
+        await send(
+            message, ephemeral=True, allowed_mentions=discord.AllowedMentions.none()
+        )
+
+    async def _check_post_to(
+        self, interaction: discord.Interaction, post_to: Optional[discord.TextChannel]
+    ) -> bool:
+        if post_to is None:
+            return True
+        try:
+            await self._posting_destination(interaction, post_to)
+        except (ValueError, discord.HTTPException) as exc:
+            await self._posting_error(interaction, exc)
+            return False
+        return True
+
+    async def _send_result(
+        self,
+        interaction: discord.Interaction,
+        embed: discord.Embed,
+        *,
+        post_to: Optional[discord.TextChannel] = None,
+        public_result: bool = False,
+    ) -> None:
+        if post_to is None:
+            await interaction.followup.send(
+                embed=embed,
+                ephemeral=not public_result,
+                allowed_mentions=discord.AllowedMentions.none(),
+            )
+            return
+        try:
+            # AI generation may take several minutes; recheck before publishing.
+            destination = await self._posting_destination(interaction, post_to)
+            message = await destination.send(
+                embed=embed, allowed_mentions=discord.AllowedMentions.none()
+            )
+        except (ValueError, discord.HTTPException) as exc:
+            await self._posting_error(interaction, exc)
+            return
+        await interaction.followup.send(
+            f"[Posted context response]({message.jump_url}) in {destination.mention}.",
+            ephemeral=True,
+            allowed_mentions=discord.AllowedMentions.none(),
+        )
 
     @staticmethod
     def _channel_ids(channel: object) -> set[int]:
@@ -1061,6 +1149,7 @@ final Source coverage section. Do not overclaim.
         task_type: str = "staff_context_topic",
         max_output_tokens: int = 1_250,
         empty_message: str = "No stored messages matched that scope.",
+        post_to: Optional[discord.TextChannel] = None,
     ) -> None:
         if not rows:
             await interaction.followup.send(
@@ -1097,14 +1186,14 @@ final Source coverage section. Do not overclaim.
             if len(rows) >= MAX_RETRIEVAL_ROWS
             else ""
         )
-        await interaction.followup.send(
-            embed=branded_embed(
+        await self._send_result(
+            interaction,
+            branded_embed(
                 title,
                 description=safe_excerpt(answer + warning, MAX_OUTPUT_CHARS),
-                footer="Private staff context • Verify important conclusions",
+                footer="Staff context • Verify important conclusions",
             ),
-            ephemeral=True,
-            allowed_mentions=discord.AllowedMentions.none(),
+            post_to=post_to,
         )
 
     async def _synthesize_structured(
@@ -1361,6 +1450,7 @@ Return a single JSON object that matches the required schema exactly.
         task_type: str,
         max_output_tokens: int = 1_300,
         empty_message: str = "No stored messages matched that scope.",
+        post_to: Optional[discord.TextChannel] = None,
         public_result: bool = False,
         system_instruction: str = SYSTEM_INSTRUCTION,
         format_rules: str = JSON_FORMAT_RULES,
@@ -1465,10 +1555,8 @@ Return a single JSON object that matches the required schema exactly.
             )
             embed = truncate_embed(embed)
 
-        await interaction.followup.send(
-            embed=embed,
-            ephemeral=not public_result,
-            allowed_mentions=discord.AllowedMentions.none(),
+        await self._send_result(
+            interaction, embed, post_to=post_to, public_result=public_result
         )
 
     @context.command(name="help", description="Show private archive command help")
@@ -1486,11 +1574,15 @@ Return a single JSON object that matches the required schema exactly.
                     "`/context timeline` — chronological narrative\n"
                     "`/context user` — a member's stored participation\n"
                     "`/context channel` — a channel recap\n\n"
+                    "Use `post_to` on search, summarize, timeline, user, or channel "
+                    "to share the result in a selected text channel. Choose a staff "
+                    "channel for archive searches and staff summaries. Omitting it "
+                    "keeps staff results private; user evaluations post publicly.\n\n"
                     "This is staff-only and searches stored server message content. "
                     "It includes only messages captured after tracking was enabled "
                     "plus imported CSV exports. Public `/ask` never uses this archive."
                 ),
-                footer="All responses are private",
+                footer="Staff results are private unless you choose post_to",
             ),
             ephemeral=True,
         )
@@ -1588,6 +1680,7 @@ Return a single JSON object that matches the required schema exactly.
 
     @context.command(name="search", description="Search archived server messages")
     @app_commands.describe(
+        post_to="Post the result in this text channel; choose staff channels for private context",
         query="Text, author name, or channel name to find",
         channel="Optional channel or forum/thread parent",
         user="Optional member filter",
@@ -1609,6 +1702,7 @@ Return a single JSON object that matches the required schema exactly.
         before: Optional[str] = None,
         source: Literal["all", "live_discord", "imported_csv"] = "all",
         limit: app_commands.Range[int, 1, 50] = 10,
+        post_to: Optional[discord.TextChannel] = None,
     ) -> None:
         if await self._deny(interaction):
             return
@@ -1625,6 +1719,8 @@ Return a single JSON object that matches the required schema exactly.
             )
             return
         await interaction.response.defer(ephemeral=True, thinking=True)
+        if not await self._check_post_to(interaction, post_to):
+            return
         rows = await self._search_rows(
             interaction.guild_id,
             query,
@@ -1661,17 +1757,20 @@ Return a single JSON object that matches the required schema exactly.
                 f"**{timestamp} • #{channel_name} • {author_name}**"
                 f"{link}\n{excerpt}\n`{source_name}`"
             )
-        await interaction.followup.send(
-            embed=branded_embed(
+        await self._send_result(
+            interaction,
+            branded_embed(
                 "Message Context Search",
                 description=safe_excerpt("\n\n".join(lines), MAX_OUTPUT_CHARS),
-                footer=f"{len(rows)} private result(s)",
+                footer=f"{len(rows)} staff result(s)",
             ),
-            ephemeral=True,
-            allowed_mentions=discord.AllowedMentions.none(),
+            post_to=post_to,
         )
 
     @context.command(name="summarize", description="Summarize a stored timeframe")
+    @app_commands.describe(
+        post_to="Post the result in this text channel; choose staff channels for private context"
+    )
     @app_commands.guild_only()
     async def context_summarize(
         self,
@@ -1686,11 +1785,13 @@ Return a single JSON object that matches the required schema exactly.
             "neutral", "moderation", "drama-recap", "decisions", "risks"
         ] = "neutral",
         include_links: bool = True,
+        post_to: Optional[discord.TextChannel] = None,
     ) -> None:
         if await self._deny(interaction):
             return
         await self._run_scope(
             interaction,
+            post_to=post_to,
             after=after,
             before=before,
             channel=channel,
@@ -1702,6 +1803,9 @@ Return a single JSON object that matches the required schema exactly.
         )
 
     @context.command(name="timeline", description="Build a chronological timeline")
+    @app_commands.describe(
+        post_to="Post the result in this text channel; choose staff channels for private context"
+    )
     @app_commands.guild_only()
     async def context_timeline(
         self,
@@ -1713,11 +1817,13 @@ Return a single JSON object that matches the required schema exactly.
         ] = None,
         topic: Optional[str] = None,
         granularity: Literal["auto", "15min", "hourly", "daily"] = "auto",
+        post_to: Optional[discord.TextChannel] = None,
     ) -> None:
         if await self._deny(interaction):
             return
         await self._run_scope(
             interaction,
+            post_to=post_to,
             after=after,
             before=before,
             channel=channel,
@@ -1743,6 +1849,7 @@ Return a single JSON object that matches the required schema exactly.
         extra: str,
         user: Optional[discord.Member] = None,
         include_links: bool = True,
+        post_to: Optional[discord.TextChannel] = None,
     ) -> None:
         try:
             after_value = parse_date_boundary(after)
@@ -1756,6 +1863,8 @@ Return a single JSON object that matches the required schema exactly.
             )
             return
         await interaction.response.defer(ephemeral=True, thinking=True)
+        if not await self._check_post_to(interaction, post_to):
+            return
         rows = await self._range_rows(
             interaction.guild_id,
             channel_id=channel.id if channel else None,
@@ -1777,6 +1886,7 @@ Return a single JSON object that matches the required schema exactly.
             task=task,
             request=request,
             include_links=include_links,
+            post_to=post_to,
         )
 
     @staticmethod
@@ -1803,6 +1913,7 @@ Return a single JSON object that matches the required schema exactly.
 
     @context.command(name="user", description="Post a public member community evaluation")
     @app_commands.describe(
+        post_to="Post the result in this text channel; choose staff channels for private context",
         user="Member to evaluate publicly",
         timeframe="Timeframe: 24h, 3d, 7d, 14d, 30d, 60d, or 90d",
         channel="Optional channel filter",
@@ -1820,6 +1931,7 @@ Return a single JSON object that matches the required schema exactly.
         ] = None,
         include_bots: bool = False,
         max_messages: app_commands.Range[int, 1, 1500] = 500,
+        post_to: Optional[discord.TextChannel] = None,
     ) -> None:
         if await self._deny(interaction):
             return
@@ -1833,7 +1945,9 @@ Return a single JSON object that matches the required schema exactly.
         # The authorized staff member initiates the command, but a successful
         # evaluation is intentionally posted to the channel for everyone.
         # Invalid/no-data/failure responses remain private.
-        await interaction.response.defer(ephemeral=False, thinking=True)
+        await interaction.response.defer(ephemeral=post_to is not None, thinking=True)
+        if not await self._check_post_to(interaction, post_to):
+            return
         total_matching = await self._count_rows(
             interaction.guild_id,
             channel_id=channel.id if channel else None,
@@ -1855,6 +1969,7 @@ Return a single JSON object that matches the required schema exactly.
         await self._send_structured_analysis(
             interaction,
             rows,
+            post_to=post_to,
             kind="public_user",
             title=f"Community Evaluation: {user.display_name}",
             task=(
@@ -1900,6 +2015,7 @@ Return a single JSON object that matches the required schema exactly.
 
     @context.command(name="channel", description="Review a channel's stored activity")
     @app_commands.describe(
+        post_to="Post the result in this text channel; choose staff channels for private context",
         channel="Channel to summarize",
         timeframe="Timeframe: 1h, 6h, 12h, 24h, 3d, 7d, 14d, or 30d",
         topic="Optional topic filter",
@@ -1917,6 +2033,7 @@ Return a single JSON object that matches the required schema exactly.
         topic: Optional[str] = None,
         include_bots: bool = False,
         max_messages: app_commands.Range[int, 1, 1000] = 300,
+        post_to: Optional[discord.TextChannel] = None,
     ) -> None:
         if await self._deny(interaction):
             return
@@ -1928,6 +2045,8 @@ Return a single JSON object that matches the required schema exactly.
             await interaction.response.send_message(str(exc), ephemeral=True)
             return
         await interaction.response.defer(ephemeral=True, thinking=True)
+        if not await self._check_post_to(interaction, post_to):
+            return
         rows = await self._range_rows(
             interaction.guild_id,
             channel_id=channel.id,
@@ -1954,6 +2073,7 @@ Return a single JSON object that matches the required schema exactly.
         await self._send_structured_analysis(
             interaction,
             rows,
+            post_to=post_to,
             kind="channel",
             title=f"Channel Context: #{channel.name}",
             task=(

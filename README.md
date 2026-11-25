@@ -428,8 +428,9 @@ have **View Channel**, **Send Messages** (or **Send Messages in Threads**), and
   `/staffai summarize` — Private imported and live staff-channel context tools.
 - `/context help`, `/context status`, `/context search`, `/context summarize`,
   `/context timeline`, `/context channel` — Private full-server message
-  archive, search, and timeline tools. Authorized staff can run `/context user`
-  to post a deliberately high-level public member evaluation.
+  archive, search, and timeline tools with optional `post_to` channel delivery.
+  Authorized staff can run `/context user` to post a deliberately high-level
+  public member evaluation.
 - `/rulecard draft` — AI-drafted rule reminder preview for staff review.
 - `/vcrewards audit` — Runs a private, read-only VCXP safety audit.
 
@@ -685,13 +686,13 @@ Markdown is escaped, and only Discord message URLs become jump links.
 - `/context help` — Private command and capture-boundary guidance.
 - `/context status` — Tracking mode, intent observation, database/source/date
   coverage, FTS, retention, edit tracking, and delete tracking.
-- `/context search <query> [channel] [user] [after] [before] [source] [limit]`
+- `/context search <query> [channel] [user] [after] [before] [source] [limit] [post_to]`
   — Deterministic local search with brief excerpts and jump links.
 - `/context summarize <after> [before] [channel] [topic] [style]
-  [include_links]` — Chunked Gemini summary of a bounded scope.
-- `/context timeline <after> [before] [channel] [topic] [granularity]` —
+  [include_links] [post_to]` — Chunked Gemini summary of a bounded scope.
+- `/context timeline <after> [before] [channel] [topic] [granularity] [post_to]` —
   Chronological staff narrative.
-- `/context user <user> <timeframe> [channel] [include_bots] [max_messages]`
+- `/context user <user> <timeframe> [channel] [include_bots] [max_messages] [post_to]`
   — Authorized staff can post a public member evaluation with a `0`–`100`
   community-contribution score, strengths, constructive growth opportunities,
   and up to five representative verbatim quotes with source channel/date/jump
@@ -702,13 +703,28 @@ Markdown is escaped, and only Discord message URLs become jump links.
   concise messages, GIFs, personal sharing, and NSFW participation are not
   deductions. Timeframes include `24h`, `3d`, `7d`, `14d`, `30d`, `60d`, and
   `90d`.
-- `/context channel <channel> <timeframe> [topic] [include_bots] [max_messages]`
+- `/context channel <channel> <timeframe> [topic] [include_bots] [max_messages] [post_to]`
   — Channel recap. Timeframes include `1h`, `6h`, `12h`, `24h`, `3d`, `7d`,
   `14d`, and `30d`.
 
 Access requires `MESSAGE_CONTEXT_ALLOWED_ROLE_IDS` or `BOT_OWNER_USER_IDS`.
-`/context user` posts its safe public evaluation to the invoking channel; all
-other `/context` replies are ephemeral. Full privacy, Message Content Intent, retention,
+Search, summarize, timeline, channel, and user commands accept optional
+`post_to:<text channel>`. This posts the completed response in that channel and
+sends the invoker a private confirmation with a message link. `channel` still
+filters the source history; `post_to` selects where the result appears. For
+example: `/context channel channel:#general timeframe:24h post_to:#staff`.
+Choose a staff channel when sharing archive excerpts or staff summaries;
+everyone who can view the destination can read the posted response. Posting
+requires current archive access, View Channel and Send Messages for the
+invoker, and View Channel, Send Messages, and Embed Links for the bot in the
+same server. Membership and channel permissions are checked before retrieval
+and again immediately before posting. Validation, empty results, and failures
+remain private, and posted responses do not ping members or roles.
+
+Without `post_to`, `/context user` keeps posting its safe public evaluation to
+the invoking channel; other `/context` replies remain ephemeral. Help and
+status always remain private. Restarting the bot synchronizes the new command
+options with Discord. Full privacy, Message Content Intent, retention,
 configuration, import, and test instructions are in
 [docs/message-context.md](docs/message-context.md).
 
