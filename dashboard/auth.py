@@ -167,8 +167,6 @@ def current_permissions(request: Request) -> set[str]:
 
 
 def has_permission(request: Request, permission: str) -> bool:
-    if permission == "library.access":
-        return any(p.startswith("library.") for p in current_permissions(request))
     return str(permission) in current_permissions(request)
 
 
