@@ -97,14 +97,6 @@ PERMISSIONS = (
     PermissionDefinition("audit_log.view", "System", "View audit log", "Review dashboard authentication and administrator actions."),
 )
 
-# Reader capabilities are independent of the existing bot Knowledge Manager.
-PERMISSIONS = (*PERMISSIONS, *(
-    PermissionDefinition("library." + key, "Knowledge Base", "Read " + label,
-                         "Read private Notion articles assigned to this audience.")
-    for key, label in (("member", "member guidance"), ("scout", "Scout guidance"),
-                       ("captain", "Party Captain guidance"), ("ranger", "Ranger guidance"),
-                       ("admin", "Admin guidance"), ("owner", "Owner guidance"))
-))
 PERMISSION_KEYS = frozenset(item.key for item in PERMISSIONS)
 
 SYSTEM_ROLES = {
@@ -123,7 +115,7 @@ SYSTEM_ROLES = {
     "administrator": {
         "name": "Administrator",
         "description": "Full dashboard access, including access administration for roles below Administrator.",
-        "permissions": set(PERMISSION_KEYS) - {"library.owner"},
+        "permissions": set(PERMISSION_KEYS),
     },
     "moderator": {
         "name": "Moderator",
@@ -355,20 +347,6 @@ def initialize_rbac_schema() -> None:
                         role_id,
                     ),
                 )
-        library_migration = "2026_11_private_notion_library"
-        if connection.execute("SELECT 1 FROM dashboard_rbac_migrations WHERE migration_key=?", (library_migration,)).fetchone() is None:
-            audiences = {
-                "owner": {"member", "scout", "captain", "ranger", "admin", "owner"},
-                "administrator": {"member", "scout", "captain", "ranger", "admin"},
-                "moderator": {"member", "scout", "captain", "ranger"},
-                "scout": {"member", "scout"}, "party_captain": {"member", "captain"},
-                "viewer": {"member"}, "verified_events_member": {"member"},
-            }
-            for role_key, keys in audiences.items():
-                role_id = connection.execute("SELECT id FROM dashboard_roles WHERE role_key=?", (role_key,)).fetchone()[0]
-                connection.executemany("INSERT OR IGNORE INTO dashboard_role_permissions(role_id,permission_key) VALUES(?,?)",
-                                       [(role_id, "library." + key) for key in keys])
-            connection.execute("INSERT INTO dashboard_rbac_migrations VALUES(?,?)", (library_migration, now))
         scout_migration = "2026_11_scout_operations"
         if connection.execute("SELECT 1 FROM dashboard_rbac_migrations WHERE migration_key=?", (scout_migration,)).fetchone() is None:
             for role_key in ("owner", "administrator"):
@@ -422,7 +400,7 @@ def initialize_rbac_schema() -> None:
                 INSERT OR IGNORE INTO dashboard_role_permissions(role_id, permission_key)
                 VALUES (?, ?)
                 """,
-                [(administrator_id, key) for key in sorted(SYSTEM_ROLES["administrator"]["permissions"])],
+                [(administrator_id, key) for key in sorted(PERMISSION_KEYS)],
             )
             connection.execute(
                 """
@@ -751,7 +729,7 @@ def access_management_scope(user_id: int) -> dict[str, Any]:
         allowed_permissions = set(PERMISSION_KEYS)
     elif "administrator" in keys:
         maximum_level = ROLE_LEVELS["administrator"]
-        allowed_permissions = set(PERMISSION_KEYS) - {"access.manage", "library.owner"}
+        allowed_permissions = set(PERMISSION_KEYS) - {"access.manage"}
     else:
         return {
             "can_create_roles": False,
