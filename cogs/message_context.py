@@ -1495,7 +1495,7 @@ final Source coverage section. Do not overclaim.
             if any(estimate_tokens_from_text(EVIDENCE_SYSTEM + json.dumps(EVIDENCE_SCHEMA) + chunk) + 200
                    > config.token_limits.max_input_tokens for chunk in chunks):
                 raise PublicEvaluationError("The configured AI input limit is too small for an evidence batch. Increase AI_MAX_INPUT_TOKENS before retrying.")
-            keys = [hashlib.sha256(("evidence-v1:" + str(interaction.guild_id) + ":" +
+            keys = [hashlib.sha256(("evidence-v2:" + str(interaction.guild_id) + ":" +
                     config.models.fast + ":" + chunk).encode()).hexdigest() for chunk in chunks]
             now = time.monotonic()
             self._public_evidence_cache = {key: value for key, value in self._public_evidence_cache.items()
@@ -1515,17 +1515,18 @@ final Source coverage section. Do not overclaim.
                 raise RuntimeError(AI_BUDGET_MESSAGE)
             semaphore = asyncio.Semaphore(PUBLIC_CHUNK_CONCURRENCY)
             budget_exhausted = False
+            provider_failure: Optional[str] = None
             reviewed_ids: set[str] = set()
 
             async def extract(number: int, key: str, chunk: str) -> Optional[dict]:
-                nonlocal budget_exhausted
+                nonlocal budget_exhausted, provider_failure
                 source_ids = set(re.findall(r"(?m)^TARGET messageId=([^\n]+)", chunk))
                 if key in cached:
                     reviewed_ids.update(source_ids)
                     return cached[key]
                 try:
                     async with semaphore:
-                        if budget_exhausted:
+                        if budget_exhausted or provider_failure:
                             return None
                         result = await asyncio.wait_for(generate_ai_response(
                             task_type=task_type, prompt=f"Evidence batch {number}/{len(chunks)}.\n<archived_messages>\n{chunk}\n</archived_messages>",
@@ -1536,13 +1537,15 @@ final Source coverage section. Do not overclaim.
                             channel_id=interaction.channel_id, source_command=source_command,
                             db=getattr(self.bot, "db", None),
                         ), timeout=CHUNK_CALL_TIMEOUT_SECONDS)
-                    if result.blocked_by_budget:
-                        budget_exhausted = True
-                        return None
-                    if not result.ok or not result.text:
-                        logger.warning("Public evidence batch failed: batch=%s model=%s reason=%s",
-                                       number, result.model_used, result.error)
-                        return None
+                        if result.blocked_by_budget:
+                            budget_exhausted = True
+                            return None
+                        if not result.ok or not result.text:
+                            logger.warning("Public evidence batch failed: batch=%s model=%s reason=%s",
+                                           number, result.model_used, result.error)
+                            if getattr(result, "failure_kind", None):
+                                provider_failure = result.error
+                            return None
                     evidence = parse_evidence(result.text, source_ids)
                 except Exception as exc:
                     logger.warning("Public evidence batch rejected: batch=%s type=%s", number, type(exc).__name__)
@@ -1553,11 +1556,28 @@ final Source coverage section. Do not overclaim.
                 reviewed_ids.update(source_ids)
                 return evidence
 
-            batches = await asyncio.gather(*(extract(i, key, chunk)
-                                            for i, (key, chunk) in enumerate(zip(keys, chunks), 1)))
+            pending = [(i, key, chunk) for i, (key, chunk) in enumerate(zip(keys, chunks), 1)]
+            batches = []
+            # Prove one uncached request works before fanning out. A shared SDK,
+            # schema, auth or model failure must not generate a row per chunk.
+            probe = next((item for item in pending if item[1] not in cached), None)
+            if probe is not None:
+                first = await extract(*probe)
+                if budget_exhausted:
+                    raise RuntimeError(AI_BUDGET_MESSAGE)
+                if first is None:
+                    raise PublicEvaluationError(
+                        (provider_failure or "The first history batch failed. Please try again later.")
+                        + " The remaining history requests were stopped. No member score was published."
+                    )
+                batches.append(first)
+                pending.remove(probe)
+            batches.extend(await asyncio.gather(*(extract(*item) for item in pending)))
             successful = [batch for batch in batches if batch is not None]
             if budget_exhausted:
                 raise RuntimeError(AI_BUDGET_MESSAGE)
+            if provider_failure:
+                raise PublicEvaluationError(provider_failure + " No member score was published.")
             if not successful:
                 raise PublicEvaluationError("The history review could not be completed. No member score was published. Please try again later.")
             prefix = (f"Task: {task}\nRequest: {request}\nCoverage: {self._coverage(rows)}\n"
@@ -1583,6 +1603,11 @@ final Source coverage section. Do not overclaim.
             ), timeout=FINAL_CALL_TIMEOUT_SECONDS)
             if result.blocked_by_budget:
                 raise RuntimeError(AI_BUDGET_MESSAGE)
+            if not result.ok and getattr(result, "failure_kind", None):
+                raise PublicEvaluationError(
+                    f"{result.error} No member score was published. "
+                    "Completed history batches can be reused for 20 minutes after the issue is corrected."
+                )
             try:
                 if not result.ok or not result.text:
                     raise ValueError(result.error)

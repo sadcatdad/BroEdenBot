@@ -153,3 +153,31 @@ verification later fails. Stop it and capture its current four databases and
 assets together before any reverse transfer. Restore and validate that current
 state on the chosen host, then start exactly one bot. Resuming the old frozen
 Railway files alone would discard newer activity.
+
+### Restarting the deployed release
+
+The Mac companion command **`bebotrestart`** reuses the existing `bebotdeploy`
+SSH route. Install it once with
+`zsh ~/Documents/BroEdenBot/scripts/install-terminal-shortcuts.zsh`, then open a
+new terminal or run `source ~/.zshrc`. The installer appends an idempotent source
+line and preserves existing aliases. The client sends only the public restart
+helper as a quoted Python command, leaving the SSH terminal available for
+password prompts. It does not copy private configuration into the repository
+or require the new helper to already exist in the server checkout.
+
+`bebotrestart --plan` validates the production Compose files, persistent state,
+existing image, and safe Event Drop window, without recreating a container.
+The normal command shares the deployment lock, checks the configured image
+matches the existing app's image ID, and uses `compose up --no-build --no-deps
+--pull never --force-recreate app`. Recreating the app reloads `service.env`;
+plain `docker compose restart` would retain the old container environment.
+The tunnel is untouched. The bot and dashboard share app and briefly restart
+together. Git/source revision metadata and all four existing databases remain
+in place, with no backup restoration or new image build/pull.
+
+Success requires the same image ID, a fresh Discord-ready log entry, and a
+healthy readable dashboard database, then prints **BOT RESTART VERIFIED**.
+`--timeout` changes the readiness wait (default 180 seconds, range 1–600).
+Private startup logs are saved under `~/broedenbot/restarts/<timestamp>/`.
+A failed verification exits nonzero and names the startup log; it does not
+claim that the app became healthy or silently change releases/configuration.

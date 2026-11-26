@@ -25,6 +25,30 @@ def evidence_response(kwargs):
 
 
 class PublicEvaluationValidationTests(unittest.TestCase):
+    def test_schemas_serialize_through_sdk_without_empty_enum_options(self):
+        # Exercise the pinned SDK's actual wire conversion, not a mocked
+        # generate_content method that silently accepts invalid schemas.
+        from google.genai import models, types
+
+        def validate(node):
+            if isinstance(node, dict):
+                if 'enum' in node:
+                    self.assertTrue(node['enum'])
+                    self.assertTrue(all(isinstance(value, str) and value for value in node['enum']))
+                for child in node.values():
+                    validate(child)
+            elif isinstance(node, list):
+                for child in node:
+                    validate(child)
+
+        for schema in (EVIDENCE_SCHEMA, PUBLIC_USER_EVALUATION_SCHEMA):
+            parameters = types._GenerateContentParameters(
+                model='gemini-2.5-flash-lite', contents='Offline schema check',
+                config=types.GenerateContentConfig(response_schema=schema),
+            )
+            wire = models._GenerateContentParameters_to_mldev(SimpleNamespace(vertexai=False), parameters)
+            validate(wire['generationConfig']['responseSchema'])
+
     def test_truncated_json_is_never_salvaged(self):
         for text in ['{"summary":"Enthusiastic and supportive","contributionRubric":',
                      '{"summary":"Enthusiastic and supportive"} trailing prose']:
@@ -78,6 +102,45 @@ class PublicEvaluationPipelineTests(unittest.IsolatedAsyncioTestCase):
 
     async def invoke(self):
         return await self.cog._synthesize_structured(self.rows, **self.kwargs)
+
+    async def test_first_provider_failure_stops_all_other_batches_and_surfaces_safe_reason(self):
+        failure = SimpleNamespace(ok=False, text=None, blocked_by_budget=False,
+            model_used='gemini-2.5-flash-lite', error='Gemini rejected the AI request configuration (400).',
+            failure_kind='invalid_request')
+        self.rows = evaluation_rows(26)
+        with patch('cogs.message_context.MAX_GEMINI_ROWS_PER_CHUNK', 2), \
+             patch('cogs.message_context.generate_ai_response', new=AsyncMock(return_value=failure)) as generate:
+            with self.assertRaisesRegex(PublicEvaluationError, r'configuration \(400\).*remaining history requests were stopped'):
+                await self.invoke()
+            generate.assert_awaited_once()
+        self.assertFalse(self.cog._active_public_evaluations)
+
+    async def test_later_shared_failure_stops_queued_batches_but_keeps_valid_cache(self):
+        self.rows = evaluation_rows(26)
+        calls = []
+        async def generate(**kwargs):
+            calls.append(kwargs)
+            if len(calls) == 1:
+                return evidence_response(kwargs)
+            await asyncio.sleep(0)
+            return SimpleNamespace(ok=False, text=None, blocked_by_budget=False, model_used='test',
+                error='AI is rate limited right now.', failure_kind='rate_limited')
+        with patch('cogs.message_context.MAX_GEMINI_ROWS_PER_CHUNK', 2), \
+             patch('cogs.message_context.generate_ai_response', side_effect=generate):
+            with self.assertRaisesRegex(PublicEvaluationError, 'rate limited'):
+                await self.invoke()
+        self.assertLessEqual(len(calls), 4)  # First batch plus at most three already in flight.
+        self.assertEqual(len(self.cog._public_evidence_cache), 1)
+        self.assertFalse(self.cog._active_public_evaluations)
+
+    async def test_generic_first_failure_also_prevents_an_entire_failed_review(self):
+        failure = SimpleNamespace(ok=False, text=None, blocked_by_budget=False,
+            model_used='test', error='AI could not complete that request right now.')
+        with patch('cogs.message_context.MAX_GEMINI_ROWS_PER_CHUNK', 2), \
+             patch('cogs.message_context.generate_ai_response', new=AsyncMock(return_value=failure)) as generate:
+            with self.assertRaisesRegex(PublicEvaluationError, 'first history batch failed'):
+                await self.invoke()
+            generate.assert_awaited_once()
 
     async def test_failed_final_reuses_batches_and_edited_content_invalidates_cache(self):
         calls = []

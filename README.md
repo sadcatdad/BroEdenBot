@@ -819,7 +819,12 @@ Markdown is escaped, and only Discord message URLs become jump links.
 (example data, not an evaluation of a real member).
 
 User evaluations extract compact structured evidence through the fast tier,
-then validate a complete rubric from the default tier. Final input is bounded
+then validate a complete rubric from the default tier. One uncached evidence
+batch must succeed before the remaining batches run concurrently. Shared
+request-configuration, authentication, missing-model, or rate-limit failures
+stop queued requests and return a private actionable error; they never publish
+a member score. The evidence schema uses `none` for positive observations'
+concern type because Gemini rejects empty enum options. Final input is bounded
 locally and balanced across categories/dates. Summary-only, incomplete, or
 truncated responses are private generation errors, never a public
 "Insufficient evidence" judgment about the member. A full-review budget
@@ -2680,6 +2685,29 @@ This shortcut connects to the server and runs `~/broedenbot/deploy-from-git.sh`.
 Enter the server's sudo password when prompted. A successful run ends with
 `BOT DEPLOY VERIFIED` and the deployed commit ID. This updates both the bot and
 The Garden; the public website has its own independent deployment command.
+
+For a quick restart of the **currently deployed image**, install the companion
+Mac terminal shortcut once:
+
+```zsh
+zsh ~/Documents/BroEdenBot/scripts/install-terminal-shortcuts.zsh
+source ~/.zshrc
+```
+
+Then use **`bebotrestart`**, or `bebotrestart --plan` to validate without
+restarting. It reuses the existing `bebotdeploy` SSH alias and prompts for the
+same server sudo password. It recreates only the app container from the
+already-deployed local image, reloading `service.env` (including AI budget
+changes), then waits for fresh Discord readiness and dashboard health. Both
+the bot and dashboard briefly restart; the Cloudflare tunnel stays running.
+It never pulls Git, builds/pulls an image, or restores a database. Active Event
+Drop windows, a concurrent deployment/restart, seed mode, or a configured image
+that differs from the existing app prevent the restart. Successful completion
+prints **`BOT RESTART VERIFIED`**; private startup logs are under
+`~/broedenbot/restarts/`. `--timeout 300` changes the default 180-second readiness
+wait. The local client sends its public restart helper over SSH, so installing
+this shortcut does not require a new code deployment first; it uses the
+server's existing self-hosted deployment utilities.
 
 `bebotdeploy --plan` checks source/configuration paths without building or
 restarting. `bebotdeploy --check` builds and checks the candidate image without

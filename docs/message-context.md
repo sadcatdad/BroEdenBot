@@ -151,6 +151,16 @@ answer; at least 4,096 tokens and 3,072 tokens beyond the configured thinking
 budget are required. The final input includes schema overhead and is bounded
 to `AI_MAX_INPUT_TOKENS`. This never overrides a configured limit.
 
+The first uncached evidence batch runs by itself before the rest fan out. If it
+fails, the review stops instead of sending every remaining batch. A shared
+configuration, authentication, missing-model or rate-limit error later in the
+review also stops queued requests (already running requests may finish).
+The private response and AI usage logs distinguish Gemini request rejection
+(`400`), authentication, missing models, rate limits and SDK setup errors;
+raw exception messages, archived text and credentials are never included.
+The evidence schema uses the non-empty enum option `none` for positive
+observations' concern type; an empty string enum option is rejected by Gemini.
+
 Up to 128 verified evidence batches are retained only in bot memory for 20
 minutes. Retrying an identical source selection after final generation fails
 reuses completed batches; updated message text or nearby context invalidates

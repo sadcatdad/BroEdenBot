@@ -197,6 +197,40 @@ class AIProviderAccountingTests(unittest.IsolatedAsyncioTestCase):
         self.client_patch.start()
         self.addCleanup(self.client_patch.stop)
 
+    async def test_provider_configuration_errors_are_actionable_without_exposing_raw_details(self):
+        from google.genai import errors
+        secret = 'private archived message and API credential'
+        for code, kind, expected in [
+            (400, 'invalid_request', 'configuration (400)'),
+            (401, 'authentication', 'authenticate'),
+            (403, 'authentication', 'authenticate'),
+            (404, 'model_not_found', 'model was not found'),
+            (429, 'rate_limited', 'rate limited'),
+        ]:
+            with self.subTest(code=code):
+                self.generate.side_effect = errors.ClientError(code, {'error': {
+                    'code': code, 'status': 'INVALID_ARGUMENT', 'message': secret}})
+                with self.assertLogs('utils.ai_service', level='ERROR') as logs:
+                    result = await generate_ai_response(task_type='test', prompt='hello', db=self.connection,
+                                                        sensitive_content=True)
+                self.assertFalse(result.ok)
+                self.assertEqual(result.failure_kind, kind)
+                self.assertIn(expected, result.error)
+                self.assertNotIn(secret, str(result.as_dict()))
+                self.assertNotIn(secret, str(logs.output))
+        cursor = await self.connection.execute('SELECT error_message FROM ai_usage_logs')
+        self.assertNotIn(secret, str(await cursor.fetchall()))
+        await cursor.close()
+
+    async def test_client_initialization_failure_is_distinguished_from_provider_failure(self):
+        self.client_patch.stop()
+        with patch('utils.ai_service.genai.Client', side_effect=ImportError('sensitive proxy URI')):
+            result = await generate_ai_response(task_type='test', prompt='hello', db=self.connection)
+        self.assertEqual(result.failure_kind, 'client_configuration')
+        self.assertIn('dependencies and proxy', result.error)
+        self.assertNotIn('sensitive proxy URI', result.error)
+        self.generate.assert_not_awaited()
+
     async def test_legacy_blocked_estimates_are_excluded_without_erasing_history(self):
         from datetime import datetime
         from utils.ai_service import get_monthly_ai_usage_usd

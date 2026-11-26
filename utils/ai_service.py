@@ -63,6 +63,7 @@ class AIResult:
     blocked_by_budget: bool = False
     error: Optional[str] = None
     finish_reason: Optional[str] = None
+    failure_kind: Optional[str] = None
 
     def as_dict(self) -> dict[str, object]:
         return {
@@ -77,6 +78,7 @@ class AIResult:
             "estimatedCostUsd": self.estimated_cost_usd,
             "blockedByBudget": self.blocked_by_budget,
             "error": self.error,
+            "failureKind": self.failure_kind,
         }
 
 
@@ -345,13 +347,30 @@ def _friendly_error(exc: Exception) -> str:
     if isinstance(exc, errors.APIError):
         code = getattr(exc, "code", None)
         status = str(getattr(exc, "status", "") or "").casefold()
+        if code == 400:
+            return "Gemini rejected the AI request configuration (400). Check the configured model and response schema."
         if code in {401, 403} or "permission" in status or "unauthenticated" in status:
             return "AI could not authenticate with Gemini."
         if code == 404 or "not_found" in status:
             return "The configured AI model was not found."
         if code == 429 or "rate" in status:
             return "AI is rate limited right now. Please try again later."
+    if isinstance(exc, (ValueError, TypeError)):
+        return "The AI client could not prepare the request. Check the server's AI configuration and SDK compatibility."
+    if isinstance(exc, ImportError):
+        return "The AI client could not initialize. Check the server's installed dependencies and proxy configuration."
     return AI_GENERIC_ERROR_MESSAGE
+
+
+def _failure_kind(exc: Exception) -> Optional[str]:
+    # Shared configuration/access failures will affect every batch. Never copy
+    # raw provider exceptions: they can contain prompts or credentials.
+    if isinstance(exc, errors.APIError):
+        return {400: "invalid_request", 401: "authentication", 403: "authentication",
+                404: "model_not_found", 429: "rate_limited"}.get(getattr(exc, "code", None))
+    if isinstance(exc, (ValueError, TypeError, ImportError)):
+        return "client_configuration"
+    return None
 
 
 def _reserve_request_budget(generate):
@@ -628,6 +647,7 @@ async def generate_ai_response(
             usage=AITokenUsage(input_tokens, 0, input_tokens, True),
             estimated_cost_usd=0.0,
             error=_friendly_error(exc),
+            failure_kind=_failure_kind(exc),
         )
 
     await log_ai_usage(

@@ -34,6 +34,8 @@ public-safe, without secrets, staff notes, moderation history or other members'
 names. Use exact TARGET messageId values. Prefer independent examples spread
 across dates. Return no observation when nothing is supported. Select at most
 two useful TARGET quoteMessageIds; the bot retrieves verbatim text itself.
+Set concernType to none for positive observations; otherwise use the supported
+concern type. Keep at most 10 observations, with explanations under 160 characters.
 """.strip()
 
 EVIDENCE_SCHEMA = {
@@ -48,7 +50,7 @@ EVIDENCE_SCHEMA = {
                     "explanation": {"type": "string", "maxLength": 160},
                     "evidenceMessageIds": {"type": "array", "maxItems": 4,
                                            "items": {"type": "string"}},
-                    "concernType": {"type": "string", "enum": ["", *CONCERNS]},
+                    "concernType": {"type": "string", "enum": ["none", *CONCERNS]},
                 },
                 "required": ["category", "explanation", "evidenceMessageIds", "concernType"],
             },
