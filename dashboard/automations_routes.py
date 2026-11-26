@@ -18,7 +18,8 @@ from pydantic import Field, ValidationError
 from automations.evaluator import Event
 from automations.executor import preview_action
 from automations.models import (
-    ACTIONS, CHANNEL_TRIGGERS, CONDITIONS, MAX_DEPTH, MAX_NODES, MEMBER_CHANGES, PRESENCES,
+    ACTIONS, CHANNEL_TRIGGERS, CONDITIONS, CONDITION_ALIASES, MAX_DEPTH, MAX_NODES,
+    MEMBER_CHANGES, MESSAGE_TRIGGERS, NEGATIVE_CONDITIONS, PRESENCES,
     TEMPLATE_KEYS, TRIGGERS, VOICE_CHANGES, DryRun, Revision, Rule, RuleUpdate, SimulatedUser, StrictModel, Toggle,
 )
 from automations.storage import MissingRule, RevisionConflict, Store, configured_guild
@@ -60,7 +61,10 @@ class DraftReply(StrictModel):
 EDITOR = {
     "triggers": TRIGGERS,
     "channel_triggers": sorted(CHANNEL_TRIGGERS),
+    "message_triggers": sorted(MESSAGE_TRIGGERS),
     "conditions": CONDITIONS,
+    "condition_aliases": CONDITION_ALIASES,
+    "negative_conditions": NEGATIVE_CONDITIONS,
     "actions": ACTIONS,
     "member_changes": MEMBER_CHANGES,
     "voice_changes": VOICE_CHANGES,
@@ -84,6 +88,11 @@ Rule example:
 "channel_id":"123456789012345678","template":"Welcome, {actor.mention}!"}]}
 Conditions example: {"operator":"AND","rules":[{"type":"HAS_ROLE","target":"actor","value":"123"},
 {"operator":"NOT","rules":[{"type":"IS_BOT","value":true}]}]}
+Use negate:true on any condition to invert its comparison. For no attachment use
+{"type":"HAS_ATTACHMENT","value":true,"negate":true}.
+For ?verify @member use {"type":"COMMAND","command":{"name":"?verify","require_mention":true,
+"access":"administrators"}}. The actor runs the command and the mentioned member is the subject.
+For role-based command access, set command.access to "roles" and supply command.role_ids.
 A cooldown has value {"scope":"user","seconds":60,"target":"actor"} (or scope channel/server
 without a user target). For button clicks the trigger needs button_id. SEND_MESSAGE buttons
 are objects with id, label and style (primary, secondary, success, danger). For role changes

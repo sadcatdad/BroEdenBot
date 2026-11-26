@@ -200,3 +200,82 @@ def test_real_extension_lifecycle_registers_and_removes_commands_and_views(tmp_p
             assert pattern not in bot._connection._view_store._dynamic_items
 
     asyncio.run(exercise())
+
+
+def test_text_command_gateway_checks_live_invoker_and_runs_actions_for_mentioned_subject(tmp_path, monkeypatch):
+    async def exercise():
+        guild = SimpleNamespace(id=100, name="Test guild", owner_id=1, default_role=object())
+        roles = {role_id: discord.Role(guild=guild, state=None, data={
+            "id": str(role_id), "name": str(role_id), "position": position, "permissions": "0",
+        }) for position, role_id in enumerate((601, 602, 603, 604, 605), start=1)}
+
+        def member(user_id, user_roles):
+            user = Mock(spec=discord.Member)
+            user.id = user_id
+            user.display_name = f"Member {user_id}"
+            user.bot = user.pending = False
+            user.roles = user_roles
+            user.top_role = max(user_roles, default=roles[601])
+            user.guild_permissions = discord.Permissions.none()
+            user.created_at = discord.utils.snowflake_time(user_id)
+            user.joined_at = None
+            return user
+
+        actor = member(300, [roles[604]])
+        subject = member(400, [roles[601], roles[602]])
+        guild.me = member(500, [roles[605]])
+        members = {actor.id: actor, subject.id: subject}
+        guild.get_member = members.get
+        guild.get_role = roles.get
+        guild.fetch_member = AsyncMock(side_effect=lambda uid: members[uid])
+        source = server_channel(guild, 201)
+        destination = server_channel(guild, 202)
+        guild.get_channel_or_thread = {201: source, 202: destination}.get
+        bot = SimpleNamespace(user=discord.Object(id=500), intents=discord.Intents.none())
+        monkeypatch.setattr("automations.cog.configured_guild", lambda: "100")
+        monkeypatch.setattr("automations.executor.asyncio.sleep", AsyncMock())
+        cog = AutomationCog(bot)
+        rule = Rule.model_validate({
+            "name": "Verify member",
+            "trigger": {"type": "COMMAND", "channel_ids": ["201"],
+                        "command": {"name": "?verify", "access": "roles", "role_ids": ["604"]}},
+            "conditions": {"operator": "AND", "rules": [{"type": "HAS_ATTACHMENT", "value": True, "negate": True}]},
+            "actions": [
+                {"type": "SEND_MESSAGE", "template": "Verified {subject.mention}"},
+                {"type": "ADD_ROLE", "target": "subject", "role_id": "603"},
+                {"type": "REMOVE_ROLE", "target": "subject", "role_id": "601"},
+                {"type": "REMOVE_ROLE", "target": "subject", "role_id": "602"},
+                {"type": "SEND_MESSAGE", "channel_id": "202",
+                 "embed": {"title": "{subject.name}", "description": "Verified by {actor.mention}"}},
+            ],
+        })
+        message = SimpleNamespace(
+            id=999, guild=guild, webhook_id=None, channel=source, author=actor, mentions=[subject],
+            role_mentions=[], attachments=[], embeds=[], content="?verify <@400>",
+            jump_url="https://discord.test/channels/100/201/999",
+        )
+        async with Store.open(tmp_path / "rules.db") as store:
+            cog.store = store
+            await store.initialize()
+            row = await store.create("100", rule, "dashboard")
+            await store.update("100", row.id, row.revision, "dashboard", enabled=True)
+            await cog.refresh()
+            await cog.on_message(message)
+            kind, _, args = cog.queue.get_nowait()
+            assert kind == "COMMAND"
+            members[actor.id] = member(actor.id, [])  # Role removed after the message was queued.
+            await cog.process(kind, guild, *args)
+            source.send.assert_not_awaited()
+            subject.add_roles.assert_not_awaited()
+
+            members[actor.id] = actor
+            await cog.process(kind, guild, *args)
+            await cog.process(kind, guild, *args)  # Same Discord message may only run once.
+            source.send.assert_awaited_once()
+            assert source.send.await_args.kwargs["content"] == "Verified <@400>"
+            subject.add_roles.assert_awaited_once_with(roles[603], reason=f"Garden automation #{row.id}")
+            assert [call.args[0] for call in subject.remove_roles.await_args_list] == [roles[601], roles[602]]
+            assert destination.send.await_args.kwargs["embed"].description == "Verified by <@300>"
+            assert (await store.history("100", row.id))["runs"][0]["status"] == "succeeded"
+
+    asyncio.run(exercise())

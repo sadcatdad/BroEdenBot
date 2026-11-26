@@ -17,7 +17,7 @@ import discord
 from discord import app_commands
 from discord.ext import commands
 
-from automations.evaluator import Event, User, conditions_in, emoji_key, trigger_matches
+from automations.evaluator import Event, User, command_access, conditions_in, emoji_key, parse_command, trigger_matches
 from automations.executor import Executor
 from automations.models import DryRun, Rule
 from automations.storage import MissingRule, Store, RevisionConflict, configured_guild
@@ -204,13 +204,17 @@ class AutomationCog(commands.Cog, name=COG_NAME):
                     await interaction.edit_original_response(content="This automation could not finish.")
                 raise
             return
-        if kind == "MESSAGE":
+        if kind in {"MESSAGE", "COMMAND"}:
             message = args[0]
             channel = message.channel
             event = self.event(kind, guild, message.author, channel=channel, message=message)
-            if not any(trigger_matches(rule.rule.trigger, event) for rule in rules):
-                return
-            event.subject = self.user(await self.subject_for_message(message))
+            if kind == "COMMAND":
+                if not await self.resolve_command(guild, message, event, rules):
+                    return
+            else:
+                if not any(trigger_matches(rule.rule.trigger, event) for rule in rules):
+                    return
+                event.subject = self.user(await self.subject_for_message(message))
             key = f"message:{message.id}"
         elif kind in {"REACTION_ADD", "REACTION_REMOVE"}:
             payload = args[0]
@@ -266,6 +270,36 @@ class AutomationCog(commands.Cog, name=COG_NAME):
             key = str(uuid4())
         await self.run_rules(guild, event, key, rules, channel=channel, previous_channel=previous_channel, message=message)
 
+    async def resolve_command(self, guild, message, event, rules):
+        parsed = parse_command(message.content)
+        author = message.author
+        if not parsed or not isinstance(author, discord.Member):
+            return False
+        _, target_id = parsed
+        mentioned = next((user for user in message.mentions if str(user.id) == target_id), None)
+        event.subject = self.user(mentioned)
+        event.actor_is_admin = author.guild_permissions.administrator
+        event.actor_pending = author.pending
+        if not any(
+            (not author.bot or row.rule.allow_bots)
+            and trigger_matches(row.rule.trigger, event)
+            and command_access(row.rule.trigger.command, event)
+            for row in rules
+        ):
+            return False
+
+        # Refresh the invoker before any user-triggered access decision can start actions.
+        author = await guild.fetch_member(author.id)
+        event.actor = self.user(author)
+        event.actor_is_admin = author.guild_permissions.administrator
+        event.actor_pending = author.pending
+        if target_id:
+            subject = author if str(author.id) == target_id else await self.member(guild, target_id)
+            event.subject = self.user(subject)
+            if event.subject is None:
+                return False
+        return True
+
     async def run_rules(self, guild, event, key, rules, *, channel=None, previous_channel=None, message=None, interaction=None):
         bot_id = self.bot.user.id
         if not event.actor or event.actor.id == str(bot_id):
@@ -276,6 +310,8 @@ class AutomationCog(commands.Cog, name=COG_NAME):
         replied = False
         for stored in rules:
             if (event.actor.bot and not stored.rule.allow_bots) or not trigger_matches(stored.rule.trigger, event):
+                continue
+            if stored.rule.trigger.command and not command_access(stored.rule.trigger.command, event):
                 continue
             for condition in conditions_in(stored.rule.conditions):
                 target = condition.target
@@ -329,6 +365,10 @@ class AutomationCog(commands.Cog, name=COG_NAME):
     async def on_message(self, message):
         if self.bot.user and message.author.id != self.bot.user.id and message.webhook_id is None:
             self.enqueue("MESSAGE", message.guild, message)
+            if self.rules_by_trigger.get("COMMAND"):
+                parsed = parse_command(message.content)
+                if parsed and any(row.rule.trigger.command.name == parsed[0] for row in self.rules_by_trigger["COMMAND"]):
+                    self.enqueue("COMMAND", message.guild, message)
 
     @commands.Cog.listener()
     async def on_member_join(self, member):
@@ -436,17 +476,23 @@ class AutomationCog(commands.Cog, name=COG_NAME):
             await interaction.followup.send(str(exc), ephemeral=True)
             return
         trigger = row.rule.trigger.type
+        actor = actor or interaction.user
+        if row.rule.trigger.command and message is None:
+            message = row.rule.trigger.command.name + (f" <@{subject.id}>" if subject else "")
         role_ids = {str(changed_role.id)} if changed_role else set()
         event = self.event(
-            trigger, interaction.guild, actor or interaction.user, subject=subject,
+            trigger, interaction.guild, actor, subject=subject,
             channel=interaction.channel if trigger not in {"MEMBER_JOIN", "MEMBER_UPDATE"} else None,
             emoji=emoji, button_id=button_id, source_rule_id=source_rule_id, reaction_count=reaction_count,
             voice_change=voice_change, member_changes={member_change} if member_change else set(),
             added_roles=role_ids if member_change == "role_added" else set(),
             removed_roles=role_ids if member_change == "role_removed" else set(),
+            actor_is_admin=actor.guild_permissions.administrator, actor_pending=actor.pending,
         )
         sample = Event.simulated(event.trigger, DryRun(message_content=message), time.time())
         event.message_content, event.mentions_users, event.mentions_roles = message, sample.mentions_users, sample.mentions_roles
+        if trigger == "COMMAND" and (not event.subject or not sample.subject or event.subject.id != sample.subject.id):
+            event.subject = sample.subject
         matched, _, trace = await self.store.preview(row.rule, event, row.id, bot_id=str(self.bot.user.id))
 
         def lines(node, depth=0):

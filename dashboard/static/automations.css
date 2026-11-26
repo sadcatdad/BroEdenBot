@@ -195,6 +195,7 @@
   line-height: 1;
 }
 .auto-optional { display: block; margin-top: 0.35rem; }
+.auto-command-hint { margin: 0.2rem 0 0.45rem; font-size: 0.84rem; }
 .auto-group {
   min-width: 0;
   padding-inline-start: 0.65rem;

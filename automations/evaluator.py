@@ -8,9 +8,22 @@ import re
 from time import monotonic
 from typing import Optional
 
-from automations.models import Condition, CONDITIONS, DryRun, PLACEHOLDER, TraceNode, TRIGGERS, compiled_pattern
+from automations.models import (
+    COMMAND_NAME, CONDITIONS, CONDITION_ALIASES, NEGATIVE_CONDITIONS, PLACEHOLDER, TRIGGERS,
+    Condition, DryRun, TraceNode, compiled_pattern, is_id,
+)
 
 CooldownKey = tuple[str, str, int]
+COMMAND_MESSAGE = re.compile(rf"({COMMAND_NAME})(?:[ \t]+<@!?([0-9]{{1,20}})>)?[ \t]*")
+
+
+def parse_command(content):
+    if not content or not content.startswith("?"):
+        return None
+    match = COMMAND_MESSAGE.fullmatch(content)
+    if not match or (match[2] is not None and not is_id(match[2])):
+        return None
+    return match[1].lower(), match[2]
 
 
 @dataclass
@@ -56,6 +69,8 @@ class Event:
     voice_change: Optional[str] = None
     previous_channel_id: Optional[str] = None
     guild_name: Optional[str] = None
+    actor_is_admin: bool = False
+    actor_pending: bool = False
 
     def user(self, target):
         if target in (None, "actor"):
@@ -92,15 +107,20 @@ class Event:
             )
             for user in sample.users
         }
-        for value in (sample.actor_id, sample.subject_id):
+        message = sample.message_content
+        subject_id = sample.subject_id
+        if trigger == "COMMAND":
+            command = parse_command(message)
+            subject_id = command[1] if command else None
+        for value in (sample.actor_id, subject_id):
             if value and value not in users:
                 users[value] = User(value, created_at=from_id(value))
-        message = sample.message_content
         voice_change = sample.voice_change
         return cls(
             trigger=trigger,
             actor=users.get(sample.actor_id),
-            subject=users.get(sample.subject_id),
+            subject=users.get(subject_id),
+            actor_is_admin=sample.actor_is_admin,
             users=users,
             channel_id=sample.channel_id,
             previous_channel_id=sample.previous_channel_id,
@@ -140,6 +160,14 @@ def trigger_matches(trigger, event):
         return False
     if trigger.emoji and (event.emoji is None or emoji_key(trigger.emoji) != emoji_key(event.emoji)):
         return False
+    if trigger.command:
+        parsed = parse_command(event.message_content)
+        if not parsed or parsed[0] != trigger.command.name:
+            return False
+        target_id = parsed[1]
+        if target_id:
+            return event.subject is not None and target_id == event.subject.id
+        return not trigger.command.require_mention
     if trigger.button_id and trigger.button_id != event.button_id:
         return False
     if trigger.source_rule_id and trigger.source_rule_id != event.source_rule_id:
@@ -153,6 +181,16 @@ def trigger_matches(trigger, event):
             roles = event.added_roles if trigger.member_change == "role_added" else event.removed_roles
             return trigger.role_id in roles
     return True
+
+
+def command_access(command, event):
+    if not event.actor or event.actor_pending:
+        return False
+    if command.access == "everyone":
+        return True
+    if command.access == "roles":
+        return bool(event.actor.roles and event.actor.roles.intersection(command.role_ids))
+    return event.actor_is_admin
 
 
 def conditions_in(node):
@@ -261,14 +299,20 @@ def evaluate(rule, event, *, now, timestamps=None, trace=False, bot_id=None):
             event.actor and event.actor.id != bot_id and (rule.allow_bots or not event.actor.bot)
         )),
     ]
+    if rule.trigger.command:
+        gate.append(TraceNode(label="Command access", result=command_access(rule.trigger.command, event)))
     if not trace and not all(node.result for node in gate):
         return False, set(), None
 
     def walk(node):
         if isinstance(node, Condition):
             passed, detail = _condition(node, event, now, timestamps, regex_deadline)
-            keys = {cooldown_key(node.value, event)} if passed and node.type == "COOLDOWN_READY" else set()
-            label = CONDITIONS[node.type][0]
+            if node.negate and passed is not None:
+                passed = not passed
+            keys = {cooldown_key(node.value, event)} if passed and not node.negate and node.type == "COOLDOWN_READY" else set()
+            canonical = CONDITION_ALIASES.get(node.type, node.type)
+            negative = node.negate ^ (canonical != node.type or node.value is False)
+            label = NEGATIVE_CONDITIONS[canonical] if negative else CONDITIONS[canonical][0]
             if CONDITIONS[node.type][2]:
                 label += f" ({node.target or 'actor'})"
             return passed, keys, TraceNode(label=label, result=passed, detail=detail) if trace else None

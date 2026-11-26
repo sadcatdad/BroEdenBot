@@ -292,7 +292,8 @@
   function drawChoices() {
     const query = pickerSearch.value.trim().toLowerCase();
     const { choices, pick } = pickerActive;
-    const items = choices.filter((choice) => (choice.label + " " + (choice.group || "")).toLowerCase().includes(query));
+    const items = choices.filter((choice) => [choice.label, choice.group, choice.keywords]
+      .some((value) => value?.toLowerCase().includes(query)));
     const grid = by("picker-options");
     grid.replaceChildren(...items.map((choice) => {
       const control = button(choice.label, () => {
@@ -354,7 +355,7 @@
       { type: "VOICE_STATE_UPDATE", voice_change: "move", label: "Member moves voice channels", group: "Voice" },
     ];
     const categories = {
-      MESSAGE: "Messages", REACTION_ADD: "Messages", REACTION_REMOVE: "Messages", BUTTON_CLICK: "Messages",
+      MESSAGE: "Messages", COMMAND: "Messages", REACTION_ADD: "Messages", REACTION_REMOVE: "Messages", BUTTON_CLICK: "Messages",
       THREAD_CREATE: "Threads", MEMBER_JOIN: "Members", MEMBER_UPDATE: "Members", VOICE_STATE_UPDATE: "Voice",
     };
     return Object.entries(state.catalog.triggers).map(([type, label]) => ({
@@ -376,6 +377,9 @@
       choose("Choose a trigger", triggerOptions(), ({ type, member_change, voice_change }) => {
         if (trigger.type !== type) {
           state.draft.trigger = { type };
+          if (type === "COMMAND") {
+            state.draft.trigger.command = { name: "", require_mention: true, access: "administrators" };
+          }
           if (trigger.channel_ids?.length && catalog.channel_triggers.includes(type)) {
             state.draft.trigger.channel_ids = trigger.channel_ids;
           }
@@ -393,6 +397,28 @@
     }
     const grid = el("div", { class: "auto-grid" });
     const set = (key) => (value) => put(trigger, key, value);
+    if (trigger.type === "COMMAND") {
+      const command = trigger.command;
+      const changeAccess = (access) => {
+        command.access = access;
+        if (access !== "roles") delete command.role_ids;
+        drawTrigger(container);
+        container.querySelector("[data-command-access] select")?.focus();
+      };
+      grid.append(
+        input("Command name", command.name, (name) => { command.name = name.trim(); }, {
+          maxlength: 33, placeholder: "?verify",
+          hint: "Start with ? and use letters, numbers, underscores or hyphens.",
+          autocapitalize: "off", spellcheck: "false",
+        }),
+        el("div", { "data-command-access": "" }, select("Who can run it", command.access, [
+          ["administrators", "Discord administrators"], ["roles", "Members with selected roles"], ["everyone", "Everyone in the server"],
+        ], changeAccess)),
+        check("Require a mentioned member", command.require_mention, (required) => {
+          command.require_mention = required;
+        }),
+        command.access === "roles" && arrayPicker("Allowed role", command.role_ids || [], "role", (roles) => { command.role_ids = roles; }));
+    }
     if (["REACTION_ADD", "REACTION_REMOVE"].includes(trigger.type)) {
       grid.append(picker("Filter by emoji", trigger.emoji, set("emoji"), "emoji"));
     }
@@ -430,7 +456,10 @@
       el("div", { class: "auto-node-head auto-row auto-between" },
         el("h3", {}, triggerLabel(trigger)),
         editable() && button("Change trigger", selectTrigger, "auto-quiet")),
-      grid.children.length ? grid : null, filters));
+      grid.children.length ? grid : null,
+      trigger.type === "COMMAND" && el("p", { class: "muted auto-command-hint" },
+        "The actor runs the command. The mentioned member is the subject."),
+      filters));
   }
 
   function newCondition(type, target) {
@@ -446,9 +475,11 @@
       channels: "Channels", categories: "Channels", id: "Channels",
       text: "Messages", regex: "Messages", emoji: "Reactions", button: "Buttons", cooldown: "Cooldown",
     };
-    const options = Object.entries(state.catalog.conditions).map(([type, [label, kind]]) => ({
-      type, label, group: groupNames[kind],
-    }));
+    const options = Object.entries(state.catalog.conditions)
+      .filter(([type]) => !state.catalog.condition_aliases[type])
+      .map(([type, [label, kind]]) => ({
+        type, label, group: groupNames[kind], keywords: state.catalog.negative_conditions[type],
+      }));
     choose(change ? "Change condition" : "Add a condition", options, ({ type }) => onPick(type), "condition");
   }
 
@@ -511,7 +542,19 @@
   }
 
   function renderCondition(node, redraw, remove, replace) {
-    const [label, type, hasTarget] = state.catalog.conditions[node.type];
+    const canonical = state.catalog.condition_aliases[node.type] || node.type;
+    const [label, type, hasTarget] = state.catalog.conditions[canonical];
+    const negativeLabel = state.catalog.negative_conditions[canonical];
+    const negative = Boolean(node.negate) !== (canonical !== node.type || node.value === false);
+    const heading = el("h3", {}, negative ? negativeLabel : label);
+    const comparison = select("Comparison", negative ? "negative" : "positive", [
+      ["positive", label], ["negative", negativeLabel],
+    ], (choice) => {
+      node.type = canonical;
+      if (type === "boolean") node.value = true;
+      node.negate = choice === "negative";
+      heading.textContent = node.negate ? negativeLabel : label;
+    });
     const set = (value) => { node.value = value; };
     const pickerKinds = { users: "user", channels: "channel", roles: "role", categories: "category" };
     const list = (items) => items.map((key) => [key, title(key)]);
@@ -520,8 +563,6 @@
       config = arrayPicker(title(pickerKinds[type]), Array.isArray(node.value) ? node.value : [], pickerKinds[type], set);
     } else if (["id", "user", "role", "emoji"].includes(type)) {
       config = picker(type === "id" ? "Forum tag ID" : title(type), node.value, set, type);
-    } else if (type === "boolean") {
-      config = select("Expected value", String(node.value), [["true", "Yes"], ["false", "No"]], (value) => set(value === "true"));
     } else if (type === "presence") {
       config = select("Presence", node.value, list(state.catalog.presences), set);
     } else if (type === "cooldown") {
@@ -534,22 +575,22 @@
         }),
         input("Cooldown seconds", value.seconds, (seconds) => put(value, "seconds", seconds), { type: "number", min: 1 }),
         value.scope === "user" && targetPicker("Cooldown user", value.target || "actor", (target) => put(value, "target", target)));
-    } else {
+    } else if (type !== "boolean") {
       const labels = { regex: "Regular expression", button: "Button ID", text: "Match text", number: "Minimum value" };
       config = input(labels[type], node.value, set, type === "number" ? { type: "number", min: 0 } : {});
     }
     return el("div", { class: "auto-node auto-condition" },
       el("div", { class: "auto-node-head auto-row auto-between" },
-        el("h3", {}, label),
+        heading,
         editable() && el("div", { class: "auto-row" },
           button("Change", () => chooseCondition(replace, true), "auto-quiet"),
           button("Remove condition", remove, "auto-quiet auto-danger"))),
       hasTarget && targetPicker("Check user", node.target || "actor", (target) => put(node, "target", target)),
-      config);
+      comparison, config);
   }
 
   function actionChoices() {
-    const messageTriggers = ["MESSAGE", "REACTION_ADD", "REACTION_REMOVE", "BUTTON_CLICK"];
+    const messageTriggers = state.catalog.message_triggers;
     const groups = {
       SEND_MESSAGE: "Messages", REPLY_MESSAGE: "Messages", DM_USER: "Messages", EDIT_MESSAGE: "Messages",
       DELETE_TRIGGER_MESSAGE: "Messages", PIN_MESSAGE: "Messages", EPHEMERAL_REPLY: "Messages",
@@ -570,7 +611,9 @@
       choose(change ? "Change action" : "Add an action", actionChoices(), ({ type }) => {
         if (change && actions[index].type === type) return;
         actions[index] = { type };
-        if (state.catalog.actions[type][1].includes("target")) actions[index].target = "actor";
+        if (state.catalog.actions[type][1].includes("target")) {
+          actions[index].target = state.draft.trigger.command?.require_mention ? "subject" : "actor";
+        }
         redraw();
         container.querySelectorAll(".auto-action")[index]?.querySelector("button")?.focus();
       }, "action");
@@ -683,14 +726,26 @@
       set(key)(value === "" ? undefined : value === "true"), false);
     const kind = state.draft.trigger.type;
     const trigger = state.draft.trigger;
+    const command = trigger.command;
     const defaultChannel = trigger.channel_ids?.length === 1 ? trigger.channel_ids[0] : "";
     if (defaultChannel) sample.channel_id = defaultChannel;
     const actor = picker("Actor ID", "", set("actor_id"), "user", false);
     const subject = picker("Subject ID", "", set("subject_id"), "user", false);
-    const details = el("div", { class: "auto-grid" }, actor, subject);
+    const details = el("div", { class: "auto-grid" }, actor, !command && subject);
     if (state.catalog.channel_triggers.includes(kind)) details.append(
       picker("Event channel", defaultChannel, set("channel_id"), "channel", false));
-    if (["MESSAGE", "REACTION_ADD", "REACTION_REMOVE", "BUTTON_CLICK"].includes(kind)) details.append(
+    let commandSample;
+    if (command) {
+      sample.message_content = command.name;
+      commandSample = input("Sample command", command.name, set("message_content"), {
+        maxlength: 4000, disabled: false,
+        hint: "Use the member picker below or enter a mention as <@USER_ID>.",
+      });
+      details.append(commandSample);
+      if (command.access === "administrators") {
+        details.append(check("Actor is a Discord administrator", false, set("actor_is_admin"), false));
+      }
+    } else if (state.catalog.message_triggers.includes(kind)) details.append(
       input("Sample message", "", set("message_content"), { type: "textarea", maxlength: 4000, disabled: false }));
     if (["REACTION_ADD", "REACTION_REMOVE"].includes(kind)) {
       if (trigger.emoji) sample.emoji = trigger.emoji;
@@ -737,8 +792,14 @@
       if (index >= 0) simulatedUsers[index] = member;
       else if (simulatedUsers.length < 10) simulatedUsers.push(member);
       else return false;
-      control.querySelector("input").value = member.id;
-      sample[key] = member.id;
+      if (command && key === "subject_id") {
+        const token = sample.message_content?.trim().split(/\s+/)[0] || command.name;
+        sample.message_content = `${token} <@${member.id}>`;
+        commandSample.querySelector("input").value = sample.message_content;
+      } else {
+        control.querySelector("input").value = member.id;
+        sample[key] = member.id;
+      }
       drawUsers();
       return true;
     }

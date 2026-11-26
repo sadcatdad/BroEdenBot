@@ -90,3 +90,22 @@ def test_trigger_and_action_compatibility():
     assert Action.model_validate({"type": "EDIT_MESSAGE", "buttons": []})
     with pytest.raises(ValidationError):
         DryRun.model_validate({"actor_id": 999})
+
+
+@pytest.mark.parametrize("command", [
+    None, {"name": "!verify"}, {"name": "?verify @user"}, {"name": "verify"}, {"name": "?9verify"},
+    {"name": "?verify", "access": "roles"}, {"name": "?verify", "role_ids": ["123"]},
+])
+def test_command_requires_a_valid_name_and_access_configuration(command):
+    with pytest.raises(ValidationError):
+        Rule.model_validate(make_rule(trigger={"type": "COMMAND", "command": command}))
+
+
+def test_command_trigger_roundtrips_with_message_actions_and_normalizes_name():
+    model = Rule.model_validate(make_rule(
+        trigger={"type": "COMMAND", "command": {"name": "?Verify", "access": "roles", "role_ids": ["123"]}},
+        actions=[{"type": "REPLY_MESSAGE", "template": "Verified {subject.mention}"}],
+    ))
+    assert model.trigger.command.name == "?verify"
+    assert model.trigger.command.require_mention
+    assert Rule.model_validate_json(model.model_dump_json(exclude_none=True)) == model

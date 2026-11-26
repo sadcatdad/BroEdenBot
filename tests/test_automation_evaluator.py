@@ -125,3 +125,67 @@ def test_voice_and_member_update_filters_include_previous_channel_and_role_direc
     voice_event = Event("VOICE_STATE_UPDATE", actor=User("100"), channel_id="300", previous_channel_id="200", voice_change="move")
     assert evaluate(rule(trigger={"type": "VOICE_STATE_UPDATE", "channel_ids": ["200"], "voice_change": "move"}), voice_event, now=NOW)[0]
     assert not evaluate(rule(trigger={"type": "VOICE_STATE_UPDATE", "channel_ids": ["200"], "voice_change": "leave"}), voice_event, now=NOW)[0]
+
+
+@pytest.mark.parametrize("attachment, expected", [(True, False), (False, True), (None, False)])
+def test_negative_attachment_comparison_and_legacy_boolean_match(attachment, expected):
+    event = Event("MESSAGE", actor=User("33"), has_attachment=attachment)
+    for leaf in (condition("HAS_ATTACHMENT", True, negate=True), condition("HAS_ATTACHMENT", False)):
+        matched, _, trace = evaluate(rule(group(leaf)), event, now=NOW, trace=True)
+        step = trace.children[2].children[0]
+        assert matched is expected
+        assert step.result is (None if attachment is None else expected)
+        assert step.label == "Message does not have an attachment"
+
+
+def test_negative_role_comparison_preserves_missing_roles_and_legacy_alias():
+    event = Event("MESSAGE", actor=User("33"), subject=User("44"))
+    negative = condition("HAS_ROLE", "456", target="subject", negate=True)
+    assert not evaluate(rule(group(negative)), event, now=NOW)[0]
+    event.subject.roles = set()
+    assert evaluate(rule(group(negative)), event, now=NOW)[0]
+    assert evaluate(rule(group(condition("LACKS_ROLE", "456", target="subject"))), event, now=NOW)[0]
+    event.subject.roles = {"456"}
+    assert not evaluate(rule(group(negative)), event, now=NOW)[0]
+
+
+def test_negative_cooldown_matches_active_window_without_consuming_it():
+    tree = group(condition("COOLDOWN_READY", {"scope": "user", "seconds": 60}, negate=True))
+    event = Event("MESSAGE", actor=User("33"))
+    assert evaluate(rule(tree), event, now=NOW, timestamps={("user", "33", 60): NOW - 10})[:2] == (True, set())
+    assert not evaluate(rule(tree), event, now=NOW)[0]
+
+
+@pytest.mark.parametrize("message", ["?verify", "?verify <@&44>", "?verify <@44> <@55>",
+                                     "?verify <@44> extra", "?verify2 <@44>", "x ?verify <@44>"])
+def test_command_requires_exact_name_and_single_user_mention(message):
+    value = rule(trigger={"type": "COMMAND", "command": {"name": "?verify"}})
+    event = Event.simulated("COMMAND", DryRun(actor_id="33", actor_is_admin=True,
+                                             subject_id="44", message_content=message), NOW)
+    assert not evaluate(value, event, now=NOW)[0]
+
+
+def test_command_simulation_resolves_target_from_argument_and_checks_invoker_access():
+    value = rule(trigger={"type": "COMMAND", "command": {"name": "?verify", "access": "roles", "role_ids": ["77"]}})
+    sample = DryRun.model_validate({"actor_id": "33", "subject_id": "55", "message_content": "?VERIFY <@!44>",
+                                   "users": [{"id": "33", "roles": ["77"]}, {"id": "44", "name": "Fern"}]})
+    event = Event.simulated("COMMAND", sample, NOW)
+    assert evaluate(value, event, now=NOW)[0]
+    assert substitute("{actor.id} verified {subject.name}", event) == "33 verified Fern"
+    event.actor.roles.clear()
+    event.subject.roles = {"77"}
+    matched, _, trace = evaluate(value, event, now=NOW, trace=True)
+    assert not matched
+    assert trace.children[2].label == "Command access"
+    assert trace.children[2].result is False
+
+
+def test_command_default_requires_discord_admin_and_bare_command_can_be_allowed():
+    value = rule(trigger={"type": "COMMAND", "command": {"name": "?ping", "require_mention": False}})
+    event = Event.simulated("COMMAND", DryRun(actor_id="33", message_content="?ping"), NOW)
+    assert not evaluate(value, event, now=NOW)[0]
+    event.actor_is_admin = True
+    assert evaluate(value, event, now=NOW)[0]
+    assert event.subject is None
+    event.actor_pending = True
+    assert not evaluate(value, event, now=NOW)[0]

@@ -26,6 +26,7 @@ MAX_RULES = 100
 
 TRIGGERS = {
     "MESSAGE": "Message sent",
+    "COMMAND": "Text command",
     "MEMBER_JOIN": "Member joined",
     "MEMBER_UPDATE": "Member updated",
     "REACTION_ADD": "Reaction added",
@@ -34,7 +35,7 @@ TRIGGERS = {
     "VOICE_STATE_UPDATE": "Voice state changed",
     "BUTTON_CLICK": "Automation button clicked",
 }
-MESSAGE_TRIGGERS = {"MESSAGE", "REACTION_ADD", "REACTION_REMOVE", "BUTTON_CLICK"}
+MESSAGE_TRIGGERS = {"MESSAGE", "COMMAND", "REACTION_ADD", "REACTION_REMOVE", "BUTTON_CLICK"}
 CHANNEL_TRIGGERS = MESSAGE_TRIGGERS | {"THREAD_CREATE", "VOICE_STATE_UPDATE"}
 VOICE_CHANGES = ("any", "join", "leave", "move", "settings")
 MEMBER_CHANGES = ("any", "role_added", "role_removed", "nickname", "timeout", "screening")
@@ -70,6 +71,34 @@ CONDITIONS = {
     "COOLDOWN_READY": ("Cooldown has elapsed", "cooldown", False),
 }
 
+CONDITION_ALIASES = {"USER_ID_NOT_IN": "USER_ID_IN", "LACKS_ROLE": "HAS_ROLE", "CHANNEL_NOT_IN": "CHANNEL_IN"}
+NEGATIVE_CONDITIONS = {
+    "USER_ID_IN": "User is not in list",
+    "IS_BOT": "User is not a bot",
+    "ACCOUNT_AGE_DAYS_GTE": "Account age is less than (days)",
+    "SERVER_JOIN_AGE_DAYS_GTE": "Server membership is less than (days)",
+    "USER_STATUS_IS": "User presence is not",
+    "HAS_ROLE": "User does not have role",
+    "HAS_ANY_ROLE": "User has none of the listed roles",
+    "HAS_ALL_ROLES": "User does not have all listed roles",
+    "CHANNEL_IN": "Channel is not in list",
+    "CATEGORY_IN": "Category is not in list",
+    "IS_THREAD": "Channel is not a thread",
+    "FORUM_TAG_IS": "Forum post does not have tag",
+    "KEYWORD_MATCH": "Message does not match regular expression",
+    "STARTS_WITH": "Message does not start with",
+    "EXACT_MATCH": "Message does not equal",
+    "HAS_ATTACHMENT": "Message does not have an attachment",
+    "HAS_EMBED": "Message does not have an embed",
+    "MENTIONS_USER_ID": "Message does not mention user",
+    "MENTIONS_ROLE_ID": "Message does not mention role",
+    "MESSAGE_LENGTH_GTE": "Message is shorter than (characters)",
+    "EMOJI_IS": "Reaction emoji is not",
+    "REACTION_COUNT_GTE": "Emoji reaction count is less than",
+    "BUTTON_ID_IS": "Button ID is not",
+    "COOLDOWN_READY": "Cooldown has not elapsed",
+}
+
 ACTIONS = {
     "SEND_MESSAGE": ("Send message", (), ("channel_id", "template", "embed", "buttons")),
     "REPLY_MESSAGE": ("Reply to message", (), ("template", "embed", "buttons")),
@@ -101,8 +130,27 @@ class StrictModel(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True, revalidate_instances="always")
 
 
+COMMAND_NAME = r"\?[A-Za-z][A-Za-z0-9_-]{0,31}"
+
+
+class TextCommand(StrictModel):
+    name: Annotated[str, StringConstraints(pattern=rf"^{COMMAND_NAME}$", to_lower=True)]
+    require_mention: bool = True
+    access: Literal["administrators", "roles", "everyone"] = "administrators"
+    role_ids: list[Snowflake] = Field(default_factory=list, max_length=25)
+
+    @model_validator(mode="after")
+    def check_access(self):
+        if self.access == "roles" and not self.role_ids:
+            raise ValueError("Choose at least one role allowed to run this command.")
+        if self.role_ids and self.access != "roles":
+            raise ValueError("Choose role-based access to allow specific roles.")
+        return self
+
+
 class Trigger(StrictModel):
     type: str
+    command: Optional[TextCommand] = None
     channel_ids: list[Snowflake] = Field(default_factory=list, max_length=25)
     emoji: Optional[str] = Field(default=None, min_length=1, max_length=100)
     button_id: Optional[ButtonID] = None
@@ -115,6 +163,10 @@ class Trigger(StrictModel):
     def check_fields(self):
         if self.type not in TRIGGERS:
             raise ValueError("Choose a supported trigger.")
+        if self.type == "COMMAND" and self.command is None:
+            raise ValueError("Enter a text command such as ?verify.")
+        if self.command is not None and self.type != "COMMAND":
+            raise ValueError("Command settings require a text command trigger.")
         if self.channel_ids and self.type not in CHANNEL_TRIGGERS:
             raise ValueError("This trigger has no channel.")
         if self.emoji and self.type not in {"REACTION_ADD", "REACTION_REMOVE"}:
@@ -156,6 +208,7 @@ def is_id(value):
 class Condition(StrictModel):
     type: str
     target: Optional[Target] = None
+    negate: bool = False
     value: Union[StrictBool, int, str, list[Snowflake], Cooldown]
 
     @model_validator(mode="after")
@@ -336,6 +389,7 @@ class SimulatedUser(StrictModel):
 class DryRun(StrictModel):
     rule: Optional[Rule] = None
     actor_id: Optional[Snowflake] = None
+    actor_is_admin: bool = False
     subject_id: Optional[Snowflake] = None
     users: list[SimulatedUser] = Field(default_factory=list, max_length=10)
     channel_id: Optional[Snowflake] = None

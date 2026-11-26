@@ -146,14 +146,16 @@ up saved changes on the bot within a few seconds. The list shows the last execut
 time, and **History** shows retained revisions and up to 25 recent runs with
 per-action outcomes. Archiving disables a rule and keeps its revisions.
 
-- **Triggers** include messages, member joins and updates, reaction adds and
+- **Triggers** include messages, text commands, member joins and updates, reaction adds and
   removes, thread and forum post creation, voice transitions, and automation
   button clicks. A member-update trigger can filter for a role gain or loss.
-- **Conditions** can group checks with AND, OR, and single-child NOT. Target the
+- **Conditions** have a **Comparison** selector, such as **Message has an
+  attachment** or **Message does not have an attachment**. Group checks with
+  AND, OR, and single-child NOT. Target the
   actor, a related subject, or a specific Discord user ID. A reply's author takes
   precedence over the first mention for message subjects. The subject of a
-  reaction or button click is the message author. Unavailable data stays
-  unavailable through NOT. Regex matches are bounded. Use a user, channel, or
+  reaction or button click is the message author. Negative comparisons and NOT
+  preserve unavailable data. Regex matches are bounded. Use a user, channel, or
   server cooldown to limit successful matches.
 - **Actions** run in order. Send, reply, DM, edit, delete, or pin messages, assign
   or remove roles, issue timeouts, create threads or forum posts, add members to
@@ -172,6 +174,30 @@ per-action outcomes. Archiving disables a rule and keeps its revisions.
   It can ask for missing details such as a channel ID. **Open draft in builder**
   loads an unsaved, disabled draft for inspection, validation and simulation.
   Draft requests share the staff AI cooldown and budget.
+
+### Run a rule with a text command
+
+Choose **Text command** under **When** and enter a name such as `?verify`.
+Names start with `?` followed by a letter and can contain letters, numbers,
+underscores, and hyphens. Matching is case-insensitive. The command accepts a
+single Discord member mention. Leave **Require a mentioned member** on for
+commands such as `?verify @member`, or turn it off to also accept the bare command.
+
+**Who can run it** defaults to Discord administrators. To delegate a
+verification command, choose **Members with selected roles** and select the
+staff roles that can use it. Administrators also need one of those roles when
+role-based access is selected. Choose **Everyone in the server** for commands
+intended for general use. Use **Trigger filters** to limit the command to
+specific channels.
+
+For `?verify @member`, the **actor** is the person running the command and the
+**subject** is the mentioned member. Add a **Send message** action with a blank
+destination to post in the current channel. Add **Add role** and two
+**Remove role** actions targeting **Subject**, then a second **Send message**
+with an embed and an explicit destination. Test the command using a sample
+invoker with the configured access and a sample member mention. Save the rule
+and enable it when ready. Discord role hierarchy and destination visibility
+checks apply to the actions.
 
 Both processes use the existing `DATABASE_PATH` and scope rules to the configured
 `GUILD_ID`. Add `automations` to an explicit `ENABLED_MODULES` list. An empty
