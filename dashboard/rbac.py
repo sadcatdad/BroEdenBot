@@ -68,6 +68,8 @@ PERMISSIONS = (
     PermissionDefinition("operations.manage", "Operations", "Manage operations", "Run narrow maintenance and backup actions."),
     PermissionDefinition("bot.status.view", "Operations", "View bot status", "Read bot and dashboard service health."),
     PermissionDefinition("bot.restart", "Operations", "Restart services", "Restart the bot or dashboard service."),
+    PermissionDefinition("automations.view", "Operations", "View automations", "Read Discord rules, revision history and dry-run results."),
+    PermissionDefinition("automations.manage", "Operations", "Manage automations", "Create, edit, activate and archive rules that can perform Discord actions."),
     PermissionDefinition("reminders.view", "Operations", "View reminders", "Read reminder and delivery status."),
     PermissionDefinition("reminders.manage", "Operations", "Manage reminders", "Queue reminder retries, cancellation, or archival."),
     PermissionDefinition("voice.view", "Monitor", "View voice feature", "Read voice-stat and VC XP feature configuration."),
@@ -356,6 +358,15 @@ def initialize_rbac_schema() -> None:
                     [(role_id, key) for key in PERMISSION_KEYS if key.startswith("scouts.")],
                 )
             connection.execute("INSERT INTO dashboard_rbac_migrations VALUES(?,?)", (scout_migration, now))
+        automations_migration = "2026_11_automations"
+        if connection.execute("SELECT 1 FROM dashboard_rbac_migrations WHERE migration_key=?", (automations_migration,)).fetchone() is None:
+            connection.execute(
+                """INSERT OR IGNORE INTO dashboard_role_permissions (role_id, permission_key)
+                   SELECT id, 'automations.view' FROM dashboard_roles WHERE role_key IN ('owner','administrator')
+                   UNION ALL
+                   SELECT id, 'automations.manage' FROM dashboard_roles WHERE role_key IN ('owner','administrator')"""
+            )
+            connection.execute("INSERT INTO dashboard_rbac_migrations VALUES (?,?)", (automations_migration, now))
         drop_commands_migration = "2026_10_drop_command_permissions"
         status_migration = "2026_11_scout_workflow_status"
         if connection.execute("SELECT 1 FROM dashboard_rbac_migrations WHERE migration_key=?", (status_migration,)).fetchone() is None:

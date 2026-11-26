@@ -450,6 +450,12 @@ def required_permission(path: str, method: str) -> str | None:
         return "brofiles.view"
     if path.startswith("/analytics") or path.startswith("/stats"):
         return "analytics.manage" if normalized_method != "GET" else "analytics.view"
+    if path in {"/automations", "/api/automations"} or path.startswith("/api/automations/"):
+        if normalized_method == "GET" or path == "/api/automations/members" or (
+            path.endswith("/test") and path != "/api/automations/test"
+        ):
+            return "automations.view"
+        return "automations.manage"
     if path.startswith("/operations/reminders"):
         return "reminders.manage" if normalized_method != "GET" else "reminders.view"
     if path.startswith("/operations/restart"):
@@ -521,7 +527,7 @@ class DashboardPermissionMiddleware(BaseHTTPMiddleware):
                     status_code=status.HTTP_403_FORBIDDEN,
                 )
         response = await call_next(request)
-        if request.url.path.startswith(("/events", "/scouts")):
+        if request.url.path.startswith(("/events", "/scouts", "/automations", "/api/automations")):
             response.headers["Cache-Control"] = "private, no-store"
             response.headers["Pragma"] = "no-cache"
         if request.method.upper() in {"POST", "PUT", "PATCH", "DELETE"} and request.url.path not in {"/login", "/logout"}:
@@ -728,6 +734,7 @@ DASHBOARD_LANDING_PAGES: DashboardLandingPages = {
     "access.manage": "settings_access",
     "audit_log.view": "settings_audit",
     "event_drops.manage": "event_drops_list",
+    "automations.view": "automations_page",
     **{key: "scouts_overview" for key in (
         "scouts.activity.view", "scouts.activity.create", "scouts.activity.review", "scouts.activity.void",
         "scouts.moderation.view", "scouts.reports.handle", "scouts.reports.identity.view",
@@ -4951,6 +4958,8 @@ async def health() -> JSONResponse:
 install_event_drop_routes(app, templates, template_context)
 from dashboard.scouts_routes import install_scout_routes
 install_scout_routes(app, templates, template_context)
+from dashboard.automations_routes import install_automation_routes
+install_automation_routes(app, templates, template_context)
 
 
 def main() -> None:

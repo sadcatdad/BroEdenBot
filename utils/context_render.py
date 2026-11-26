@@ -10,6 +10,7 @@ from typing import Optional
 
 import discord
 
+from utils.community_contribution import BASELINE, Scorecard
 from utils.message_context import parse_timestamp, safe_discord_jump_url
 from utils.privacy import redact_sensitive_text
 from utils.ui import branded_embed, truncate
@@ -181,6 +182,7 @@ def format_timeframe(
     message_count: int,
     *,
     total_count: Optional[int] = None,
+    sampled: bool = False,
 ) -> str:
     start = format_readable_date_only(after_value)
     end = format_readable_date_only(before_value)
@@ -188,7 +190,7 @@ def format_timeframe(
         return (
             f"{start} – {end}\n"
             f"{message_count:,} of {total_count:,} matching messages "
-            "reviewed (most recent)"
+            f"reviewed ({'sampled across period/channels' if sampled else 'most recent'})"
         )
     return f"{start} – {end}\n{message_count:,} messages reviewed"
 
@@ -295,7 +297,16 @@ def truncate_embed(embed: discord.Embed, *, max_total: int = EMBED_TOTAL_LIMIT) 
             if trimmed:
                 break
         if not trimmed:
-            break
+            # New public scorecard fields share a message-wide budget. Fall
+            # back to trimming the longest field, not just legacy field names.
+            candidates = [(index, field) for index, field in enumerate(embed.fields)
+                          if len(field.value) > 60]
+            if not candidates:
+                break
+            index, field = max(candidates, key=lambda item: len(item[1].value))
+            embed.set_field_at(index, name=field.name,
+                               value=truncate(field.value, max(60, len(field.value) - 200), "Details truncated."),
+                               inline=field.inline)
     overage = _embed_total_length(embed) - max_total
     if overage > 0 and embed.description:
         new_length = max(0, len(embed.description) - overage)
@@ -357,18 +368,6 @@ def build_user_context_embed(data: dict, metadata: dict) -> discord.Embed:
     return truncate_embed(embed)
 
 
-def _community_score(value: object) -> int:
-    """Return a display-safe whole-number community score.
-
-    The model is instructed to produce an integer from 0 through 100, but this
-    guard keeps an unexpected response from rendering an implausible score.
-    """
-    try:
-        return max(0, min(100, int(value)))
-    except (TypeError, ValueError):
-        return 0
-
-
 def build_public_user_evaluation_embed(data: dict, metadata: dict) -> discord.Embed:
     """Render the deliberately high-level, public `/context user` result.
 
@@ -377,16 +376,10 @@ def build_public_user_evaluation_embed(data: dict, metadata: dict) -> discord.Em
     add staff concerns, staff follow-up, or a raw synthesis fallback here.
     """
     summary = clean_markdown(str(data.get("summary") or ""))
-    score = _community_score(data.get("communityContributionScore"))
     embed = branded_embed(
         metadata["title"],
         description=truncate(summary, DESCRIPTION_LIMIT, "No evaluation available."),
         footer=PUBLIC_EVALUATION_FOOTER_TEXT,
-    )
-    embed.add_field(
-        name="Community Contribution Score",
-        value=f"**{score}/100**",
-        inline=False,
     )
     embed.add_field(name="Timeframe", value=metadata["timeframe_text"], inline=False)
     embed.add_field(
@@ -423,6 +416,71 @@ def build_public_user_evaluation_embed(data: dict, metadata: dict) -> discord.Em
         inline=False,
     )
     return truncate_embed(embed)
+
+
+def build_community_score_embed(scorecard: Scorecard, metadata: dict) -> discord.Embed:
+    """A second public embed explains the actual deterministic rubric result."""
+    title = str(metadata["title"]).replace("Community Evaluation:", "Community Contribution Score:")
+    if scorecard.score is None:
+        label = "Staff review required" if scorecard.status == "review_required" else "Insufficient evidence"
+    else:
+        score = scorecard.score
+        label = ("Exceptional sustained contribution" if score >= 90 else
+                 "Clearly positive contributor" if score >= 80 else
+                 "Healthy community participation" if score >= 70 else
+                 "Repeated detracting behavior" if score >= 60 else
+                 "Substantial harmful behavior")
+    embed = branded_embed(title, description=(
+        f"**{scorecard.score}/100 — {label}**" if scorecard.score is not None else f"**{label}**"
+    ), footer="Community rubric v1 • AI evidence assessment; bot-calculated total")
+    for category in scorecard.categories:
+        explanation = truncate(clean_markdown(category.explanation), 180, "Not observed.")
+        embed.add_field(name=category.name, value=(
+            f"**{category.rating}/4 → +{category.bonus:g}/{category.maximum}**\n{explanation}"
+        ), inline=False)
+    if not scorecard.categories:
+        embed.add_field(name="Rubric results", value="A complete, supported rubric was unavailable.", inline=False)
+    # Do not publish unreviewed serious allegations or an implied numerical total.
+    if scorecard.status == "scored":
+        arithmetic = f"{BASELINE} baseline + {scorecard.bonus:g} bonuses − {scorecard.penalty} deductions"
+        if scorecard.ceiling is not None:
+            arithmetic += f"\nApplicable ceiling: {scorecard.ceiling}/100."
+        arithmetic += f"\nRounded final score: **{scorecard.score}/100**."
+        embed.add_field(name="Calculation", value=arithmetic, inline=False)
+        deduction_text = "\n".join(
+            f"• −{points}: {truncate(clean_markdown(reason), 150, 'Supported conduct concern.')}"
+            for points, reason in scorecard.deductions[:4]
+        ) or "No supported conduct deductions."
+        if len(scorecard.deductions) > 4:
+            remaining = sum(points for points, _ in scorecard.deductions[4:])
+            deduction_text += f"\n• {len(scorecard.deductions) - 4} additional incidents: −{remaining} combined."
+        embed.add_field(name="Conduct deductions", value=deduction_text, inline=False)
+    else:
+        embed.add_field(name="Score status", value=scorecard.explanation, inline=False)
+    embed.add_field(name="Confidence and coverage", value=(
+        f"**{scorecard.confidence} confidence** • {scorecard.exchanges} interpretable sessions\n"
+        f"{metadata['timeframe_text']}"
+    ), inline=False)
+    embed.add_field(name="How to read this rubric", value=(
+        "0 = not observed · 1 = one example · 2 = separate exchanges · "
+        "3 = recurring across dates · 4 = sustained across weeks.\n"
+        "70–79 healthy · 80–89 positive · 90+ exceptional. Missing activity is not a deduction."
+    ), inline=False)
+    if scorecard.status == "scored":
+        embed.add_field(name="Limitations", value=scorecard.explanation, inline=False)
+    return truncate_embed(embed, max_total=3_000)
+
+
+def fit_public_evaluation_embeds(overview: discord.Embed, score: discord.Embed) -> list[discord.Embed]:
+    """Discord's 6000-character limit is shared by ALL embeds in a message."""
+    for embed in (overview, score):
+        # Bound every field as well, including any unexpected model verbosity.
+        for index, field in enumerate(embed.fields):
+            embed.set_field_at(index, name=truncate(field.name, 256, "Details"),
+                               value=truncate(field.value, 900, "No details."), inline=field.inline)
+    truncate_embed(score, max_total=3_000)
+    truncate_embed(overview, max_total=5_800 - len(score))
+    return [overview, score]
 
 
 def build_channel_context_embed(data: dict, metadata: dict) -> discord.Embed:

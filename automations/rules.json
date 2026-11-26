@@ -1,0 +1,10 @@
+[
+  {
+    "name": "Example · Reply to a phrase",
+    "trigger": {"type": "MESSAGE"},
+    "conditions": {"operator": "AND", "rules": [
+      {"type": "EXACT_MATCH", "value": "!garden-example"}
+    ]},
+    "actions": [{"type": "REPLY_MESSAGE", "template": "Hello, {actor.mention}!"}]
+  }
+]

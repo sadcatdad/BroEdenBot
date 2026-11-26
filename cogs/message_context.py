@@ -25,13 +25,21 @@ from utils.ai_service import (
     set_ai_cooldown,
 )
 from utils.context_render import (
+    build_community_score_embed,
     build_channel_context_embed,
     build_fallback_context_embed,
     build_public_user_evaluation_embed,
     build_user_context_embed,
     format_timeframe,
+    fit_public_evaluation_embeds,
     parse_ai_json_response,
     truncate_embed,
+)
+from utils.community_contribution import (
+    RUBRIC_INSTRUCTION, RUBRIC_SCHEMA, calculate_scorecard, verified_public_quotes,
+)
+from utils.context_commands import (
+    COMMAND_USAGE_SQL, COMMAND_USAGE_INDEX_SQL, command_name, public_command_response,
 )
 from utils.message_context import (
     MESSAGE_CONTEXT_FTS_SQL,
@@ -74,6 +82,9 @@ FINAL_CALL_TIMEOUT_SECONDS = 60
 FINAL_SYNTHESIS_MAX_OUTPUT_TOKENS = 6144
 STRUCTURED_TIMEOUT_BUFFER_SECONDS = 30
 STRUCTURED_TIMEOUT_MAX_SECONDS = 600
+PUBLIC_CHUNK_CONCURRENCY = 3
+PUBLIC_TIMEOUT_MAX_SECONDS = 840
+DEFAULT_USER_MESSAGES = 2_500
 TIMEFRAME_SECONDS = {
     "1h": 60 * 60,
     "6h": 6 * 60 * 60,
@@ -109,19 +120,16 @@ member's archived messages. Quotes may come from NSFW-marked channels and may
 include NSFW content when present in the archive. Copy each quote, timestamp,
 channel name, and Discord jump URL exactly from the source data; never invent
 or paraphrase a quotation. Describe specific behavior using constructive
-language that can help the member improve. Calibrate scores generously and
-consistently: 70–79 is a generally respectful, genuine member; 80–89 is an
-actively positive, welcoming, or consistently constructive member; 90–100 is
-exceptional, sustained positive leadership or community-building. Reserve
-60–69 for clear, repeated evidence that participation is mixed or detracting,
-and scores below 60 for clear, repeated harmful or disruptive behavior. Never
+language that can help the member improve. 70–79 is a generally respectful, genuine member;
+80–89 is an actively positive contributor; 90–100 requires exceptional,
+sustained community-building. The bot calculates the score from the rubric. Never
 deduct for concise messages, GIFs, personal sharing, NSFW participation, or
 activity unavailable to the archive such as voice chat. Do not invent generic
 growth opportunities: leave them empty unless direct archived evidence
 supports a constructive improvement. State archive coverage limits in
 `limitations` without reducing the score for unobserved activity. Public /ask
 does not use this context.
-""".strip()
+""".strip() + "\n\n" + RUBRIC_INSTRUCTION
 
 CONTEXT_FAILURE_MESSAGE = (
     "Context summary failed while processing message history. This usually "
@@ -170,6 +178,9 @@ Formatting rules for the JSON response:
   by another member.
 - If a list section has nothing noteworthy, return an empty array rather than
   a placeholder string.
+- Every contextQuote requires its exact source messageId. Evidence IDs must
+  belong to TARGET messages, never nearby OTHER messages. Explanations must
+  be concise and safe to publish; omit other members' names and identities.
 """.strip()
 
 USER_CONTEXT_SCHEMA = {
@@ -212,7 +223,7 @@ PUBLIC_USER_EVALUATION_SCHEMA = {
     "type": "object",
     "properties": {
         "summary": {"type": "string"},
-        "communityContributionScore": {"type": "integer", "minimum": 0, "maximum": 100},
+        "contributionRubric": RUBRIC_SCHEMA,
         "strengths": {"type": "array", "items": {"type": "string"}},
         "growthOpportunities": {"type": "array", "items": {"type": "string"}},
         "contextQuotes": {
@@ -220,19 +231,20 @@ PUBLIC_USER_EVALUATION_SCHEMA = {
             "items": {
                 "type": "object",
                 "properties": {
+                    "messageId": {"type": "string"},
                     "quote": {"type": "string"},
                     "timestamp": {"type": "string"},
                     "channelName": {"type": "string"},
                     "jumpUrl": {"type": "string"},
                 },
-                "required": ["quote", "timestamp", "channelName"],
+                "required": ["messageId", "quote", "timestamp", "channelName"],
             },
         },
         "limitations": {"type": "string"},
     },
     "required": [
         "summary",
-        "communityContributionScore",
+        "contributionRubric",
         "strengths",
         "growthOpportunities",
         "contextQuotes",
@@ -324,6 +336,8 @@ class MessageContext(commands.Cog):
         ).strip()
         api_key = os.getenv("GEMINI_API_KEY", "").strip()
         self.client = genai.Client(api_key=api_key) if api_key else None
+        self.nsfw_access_role_ids = parse_id_set(os.getenv("MESSAGE_CONTEXT_NSFW_ACCESS_ROLE_IDS", ""))
+        self.rank_bot_ids = parse_id_set(os.getenv("MESSAGE_CONTEXT_RANK_BOT_IDS", ""))
 
     async def cog_load(self) -> None:
         self.database_path.parent.mkdir(parents=True, exist_ok=True)
@@ -331,6 +345,8 @@ class MessageContext(commands.Cog):
         self.db.row_factory = aiosqlite.Row
         await configure_connection(self.db)
         await self.db.execute(MESSAGE_CONTEXT_TABLE_SQL)
+        await self.db.execute(COMMAND_USAGE_SQL)
+        await self.db.execute(COMMAND_USAGE_INDEX_SQL)
         cursor = await self.db.execute(
             "PRAGMA table_info(message_context_messages)"
         )
@@ -428,6 +444,7 @@ class MessageContext(commands.Cog):
             "DELETE FROM message_context_messages WHERE timestamp < ?",
             (cutoff,),
         )
+        await self.db.execute("DELETE FROM message_context_command_usage WHERE timestamp < ?", (cutoff,))
         await self.db.commit()
         removed = max(0, cursor.rowcount)
         await cursor.close()
@@ -530,14 +547,15 @@ class MessageContext(commands.Cog):
     async def _send_result(
         self,
         interaction: discord.Interaction,
-        embed: discord.Embed,
+        embed: Union[discord.Embed, list[discord.Embed]],
         *,
         post_to: Optional[discord.TextChannel] = None,
         public_result: bool = False,
     ) -> None:
+        payload = {"embeds": embed} if isinstance(embed, list) else {"embed": embed}
         if post_to is None:
             await interaction.followup.send(
-                embed=embed,
+                **payload,
                 ephemeral=not public_result,
                 allowed_mentions=discord.AllowedMentions.none(),
             )
@@ -546,7 +564,7 @@ class MessageContext(commands.Cog):
             # AI generation may take several minutes; recheck before publishing.
             destination = await self._posting_destination(interaction, post_to)
             message = await destination.send(
-                embed=embed, allowed_mentions=discord.AllowedMentions.none()
+                **payload, allowed_mentions=discord.AllowedMentions.none()
             )
         except (ValueError, discord.HTTPException) as exc:
             await self._posting_error(interaction, exc)
@@ -605,6 +623,7 @@ class MessageContext(commands.Cog):
 
     @commands.Cog.listener()
     async def on_message(self, message: discord.Message) -> None:
+        await self._observe_command_response(message)
         if self.db is None or not self._tracks_message(message):
             return
         raw_content = message.content or ""
@@ -619,6 +638,7 @@ class MessageContext(commands.Cog):
                     "Confirm Message Content Intent is enabled in the Developer "
                     "Portal, then restart or deploy the bot."
                 )
+
         content = redact_sensitive_text(raw_content)
         names = self._attachment_names(message)
         channel_data = self._channel_metadata(message)
@@ -674,12 +694,113 @@ class MessageContext(commands.Cog):
                 message.id,
             )
 
+    def _tracks_command_channel(self, guild: object, channel: object) -> bool:
+        return bool(self.enabled and self.db is not None and guild is not None
+                    and channel is not None and self._tracks_channel(channel)
+                    and not (self._channel_ids(channel) & self._query_excluded_channel_ids()))
+
+    async def _record_command(self, *, guild: object, channel: object, user: object,
+                              application_id: object, interaction_id: object,
+                              name: str, timestamp: str, source: str,
+                              confidence: str, message_id: object = None) -> None:
+        if not self._tracks_command_channel(guild, channel) or getattr(user, "bot", False):
+            return
+        member = guild.get_member(user.id) if hasattr(guild, "get_member") else None
+        if member is None and isinstance(user, discord.Member):
+            member = user
+        access = None
+        if self.nsfw_access_role_ids and member is not None:
+            access = int(bool({role.id for role in member.roles} & self.nsfw_access_role_ids))
+        try:
+            await self.db.execute("""
+                INSERT INTO message_context_command_usage
+                (guild_id, channel_id, parent_channel_id, user_id, application_id, interaction_id,
+                 command_name, timestamp, source, confidence, nsfw_access, message_id)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT (guild_id, application_id, interaction_id) DO UPDATE SET
+                    command_name = excluded.command_name,
+                    confidence = excluded.confidence
+                WHERE message_context_command_usage.confidence = 'unknown'
+                    AND excluded.confidence != 'unknown'
+            """, (str(guild.id), str(channel.id), str(getattr(getattr(channel, "parent", None), "id", "")) or None,
+                  str(user.id), str(application_id),
+                  str(interaction_id), name, timestamp, source, confidence, access,
+                  str(message_id) if message_id else None))
+            await self.db.commit()
+        except aiosqlite.Error:
+            await self._rollback_quietly()
+            logger.exception("Could not store command observation")
+
+    @commands.Cog.listener()
+    async def on_interaction(self, interaction: discord.Interaction) -> None:
+        if interaction.type != discord.InteractionType.application_command:
+            return
+        await self._record_command(guild=interaction.guild, channel=interaction.channel,
+            user=interaction.user, application_id=interaction.application_id,
+            interaction_id=interaction.id, name=command_name(interaction.data),
+            timestamp=interaction.created_at.isoformat(), source="own_command", confidence="exact")
+
+    async def _observe_command_response(self, message: discord.Message) -> None:
+        if not self._tracks_command_channel(message.guild, message.channel):
+            return
+        if message.author.id == getattr(getattr(self.bot, "user", None), "id", None):
+            return  # Own invocations were already recorded, including ephemeral ones.
+        observation = public_command_response(message, self.rank_bot_ids)
+        if observation is None:
+            return
+        user, interaction_id, name, confidence = observation
+        await self._record_command(guild=message.guild, channel=message.channel, user=user,
+            application_id=getattr(message, "application_id", None) or message.author.id,
+            interaction_id=interaction_id, name=name, timestamp=message.created_at.isoformat(),
+            source="public_bot_response", confidence=confidence, message_id=message.id)
+
+    async def _command_usage_summary(self, guild_id: int, user_id: int, *, after: str,
+                                     before: str, channel_id: Optional[int] = None) -> str:
+        # Public cards use visible bot responses only; own ephemeral/staff
+        # invocations stay in the private archive and never feed the AI score.
+        # Apply channel AND parent exclusions even when the channel contains
+        # command observations without any archived conversational messages.
+        excluded = self._query_excluded_channel_ids()
+        where = ["c.guild_id = ?", "c.user_id = ?", "c.timestamp >= ?", "c.timestamp < ?",
+                 "c.source = 'public_bot_response'"]
+        args = [str(guild_id), str(user_id), after, before]
+        if channel_id:
+            where.append("(c.channel_id = ? OR c.parent_channel_id = ?)")
+            args.extend((str(channel_id), str(channel_id)))
+        if excluded:
+            placeholders = ",".join("?" for _ in excluded)
+            where.append(f"c.channel_id NOT IN ({placeholders}) AND "
+                         f"(c.parent_channel_id IS NULL OR c.parent_channel_id NOT IN ({placeholders}))")
+            args.extend([str(v) for v in excluded] * 2)
+        rows = await self._fetchall(f"SELECT c.* FROM message_context_command_usage c WHERE {' AND '.join(where)} ORDER BY timestamp", tuple(args))
+        if not rows:
+            return "No public command responses observed. Other bots' private/ephemeral uses are unavailable; tracking begins after this update."
+        rank = [row for row in rows if row["command_name"].split()[0] == "rank"]
+        exact = sum(row["confidence"] == "exact" for row in rank)
+        lines = [f"{len(rows):,} public command invocations observed (follow-ups deduplicated)."]
+        if rank:
+            stamps = [dt.datetime.fromisoformat(row["timestamp"]) for row in rank]
+            start = peak = 0
+            for end, stamp in enumerate(stamps):
+                while (stamp - stamps[start]).total_seconds() > 900:
+                    start += 1
+                peak = max(peak, end - start + 1)
+            lines.append(f"Rank checks: {len(rank):,} ({exact} exact command names; {len(rank)-exact} inferred rank responses). Busiest 15 minutes: {peak}.")
+            without_access = sum(row["nsfw_access"] == 0 for row in rank)
+            if any(row["nsfw_access"] is not None for row in rank):
+                lines.append(f"{without_access} rank checks occurred without a configured NSFW-access role. This does not establish a numeric level.")
+            else:
+                lines.append("NSFW eligibility at invocation is unknown (access-role tracking not configured or member unavailable).")
+        lines.append("Partial visibility only. Frequency alone causes no score deduction or inference about intent.")
+        return safe_excerpt("\n".join(lines), 850)
+
     @commands.Cog.listener()
     async def on_message_edit(
         self,
         before: discord.Message,
         after: discord.Message,
     ) -> None:
+        await self._observe_command_response(after)
         if (
             self.db is None
             or not self.track_edits
@@ -971,6 +1092,74 @@ class MessageContext(commands.Cog):
         )
         return int(rows[0]["total"]) if rows else 0
 
+    async def _evaluation_rows(self, guild_id: int, *, user_id: int,
+                               after: str, before: str, channel_id: Optional[int],
+                               max_messages: int) -> tuple[list, int]:
+        """Stable, bounded sampling across weeks/channels, not latest-N retrieval."""
+        conditions, parameters = self._filters(
+            guild_id, user_id=user_id, channel_id=channel_id,
+            after=after, before=before, include_bots=False,
+        )
+        conditions.extend([
+            "COALESCE(m.is_deleted, 0) = 0", "COALESCE(m.is_webhook, 0) = 0",
+            "LOWER(COALESCE(m.author_name, '')) NOT LIKE 'deleted user%'",
+            "LOWER(COALESCE(m.author_name, '')) NOT IN "
+            "('pokétwo#8236', 'wamellow#1138', 'carl-bot#1536', 'dyno')",
+        ])
+        where = " AND ".join(conditions)
+        count = await self._fetchall(
+            f"SELECT COUNT(*) total FROM message_context_messages m WHERE {where}", tuple(parameters))
+        rows = await self._fetchall(f"""
+            SELECT * FROM (
+                SELECT m.*, ROW_NUMBER() OVER (
+                    PARTITION BY CAST((julianday(m.timestamp) - julianday(?)) / 7 AS INTEGER), m.channel_id
+                    ORDER BY (m.id * 1103515245 + 12345) % 2147483647, m.id
+                ) AS sample_rank
+                FROM message_context_messages m WHERE {where}
+            ) ORDER BY sample_rank, timestamp DESC, message_id LIMIT ?
+        """, (after, *parameters, max_messages))
+        return sorted(rows, key=lambda row: (row["timestamp"], row["message_id"])), int(count[0]["total"])
+
+    async def _evaluation_nearby(self, guild_id: int, rows: list, *,
+                                 after: str, before: str) -> dict[str, list]:
+        """Enrich a bounded mix of representative/ambiguous exchanges, same scope."""
+        if not rows:
+            return {}
+        stride = max(1, len(rows) // 80)
+        anchors = {str(row["message_id"]): row for row in rows[::stride][:80]}
+        pattern = re.compile(r"\b(stop|sorry|jok\w*|respect\w*|boundar\w*|uncomfortable|shut)\b", re.I)
+        candidates = [row for row in rows if pattern.search(str(row["content"] or ""))]
+        stride = max(1, len(candidates) // 80)
+        anchors.update({str(row["message_id"]): row for row in candidates[::stride][:80]})
+        values = list(anchors.values())
+        result = {}
+        for offset in range(0, len(values), 40):
+            batch = values[offset:offset + 40]
+            parameters = []
+            for row in batch:
+                stamp = dt.datetime.fromisoformat(row["timestamp"])
+                parameters.extend((row["message_id"], row["channel_id"],
+                                   (stamp - dt.timedelta(minutes=5)).isoformat(),
+                                   (stamp + dt.timedelta(minutes=5)).isoformat(), row["timestamp"]))
+            conditions, filters = self._filters(guild_id, after=after, before=before, include_bots=False)
+            placeholders = ",".join("(?,?,?,?,?)" for _ in batch)
+            neighbors = await self._fetchall(f"""
+                WITH anchors(anchor_id, channel_id, start, end, stamp) AS (VALUES {placeholders})
+                SELECT * FROM (
+                    SELECT m.*, a.anchor_id, ROW_NUMBER() OVER (
+                        PARTITION BY a.anchor_id
+                        ORDER BY ABS(julianday(m.timestamp) - julianday(a.stamp)), m.message_id
+                    ) neighbor_rank
+                    FROM anchors a JOIN message_context_messages m
+                        ON m.channel_id = a.channel_id AND m.timestamp BETWEEN a.start AND a.end
+                    WHERE {' AND '.join(conditions)} AND m.message_id != a.anchor_id
+                        AND COALESCE(m.is_deleted, 0) = 0 AND COALESCE(m.is_webhook, 0) = 0
+                ) WHERE neighbor_rank <= 4 ORDER BY timestamp, message_id
+            """, (*parameters, *filters))
+            for row in neighbors:
+                result.setdefault(str(row["anchor_id"]), []).append(row)
+        return result
+
     _LONG_URL_PATTERN = re.compile(r"https?://\S{60,}")
 
     @classmethod
@@ -1001,12 +1190,25 @@ class MessageContext(commands.Cog):
         rows: list[aiosqlite.Row],
         *,
         include_links: bool,
+        nearby: Optional[dict[str, list]] = None,
     ) -> list[str]:
         chunks: list[str] = []
         current: list[str] = []
         size = 0
         for row in rows:
             text = cls._row_text(row, include_links=include_links)
+            if nearby is not None:
+                item = dict(row)
+                text = f"TARGET messageId={item.get('message_id', '')}\n{text}"
+                context = []
+                for neighbor in nearby.get(str(item.get("message_id")), []):
+                    # Preserve conversational meaning without supplying other
+                    # members' identities or their messages as score evidence.
+                    body = re.sub(r"<@!?\d+>|<@&\d+>", "[member]", str(neighbor["content"] or ""))
+                    speaker = "SAME MEMBER" if neighbor["author_id"] == item.get("author_id") else "OTHER"
+                    context.append(f"{speaker}/context only [{neighbor['timestamp']}]: {cls._compact_content(body, 180)}")
+                if context:
+                    text += "\nNearby context (never quote or score as TARGET):\n" + "\n".join(context)
             if current and (
                 len(current) >= MAX_GEMINI_ROWS_PER_CHUNK
                 or size + len(text) > MAX_CHUNK_CHARS
@@ -1211,6 +1413,7 @@ final Source coverage section. Do not overclaim.
         system_instruction: str = SYSTEM_INSTRUCTION,
         public_result: bool = False,
         format_rules: str = JSON_FORMAT_RULES,
+        nearby: Optional[dict[str, list]] = None,
     ) -> tuple[Optional[dict], str]:
         """Runs the same chunked-recap pipeline as `_synthesize`, but asks for
         a structured JSON object on the final call. Each Gemini call gets its
@@ -1220,11 +1423,15 @@ final Source coverage section. Do not overclaim.
         possible. Returns (parsed_json_or_None, raw_text) — callers fall back
         to rendering raw_text as plain text if parsing fails or the final
         synthesis call itself couldn't complete."""
-        chunks = self._chunks(rows, include_links=include_links)
+        chunks = self._chunks(rows, include_links=include_links, nearby=(nearby or {}) if public_result else None)
         partials: list[str] = []
+        reviewed_ids: set[str] = set()
         failed_chunks = 0
         budget_exhausted = False
-        for number, chunk in enumerate(chunks, start=1):
+        semaphore = asyncio.Semaphore(PUBLIC_CHUNK_CONCURRENCY if public_result else 1)
+
+        async def recap(number: int, chunk: str) -> Optional[str]:
+            nonlocal failed_chunks, budget_exhausted
             reference_instruction = (
                 "Preserve the exact ISO timestamp, channel name/author, and Jump URL "
                 "(if present) for up to 5 of the most noteworthy messages so they "
@@ -1246,6 +1453,9 @@ final Source coverage section. Do not overclaim.
                 "contributions, respectful growth opportunities, and up to five concise "
                 "representative direct quotes from the selected member. Preserve each "
                 "quote's exact timestamp, channel name, and Jump URL when present."
+                " Preserve exact TARGET messageId values for each rubric category "
+                "and conduct incident, including examples across dates. OTHER messages "
+                "are context only. Never invent evidence IDs."
                 if public_result
                 else (
                     "Capture key events, initiators only when clear, channel and time "
@@ -1267,8 +1477,11 @@ Chunk: {number} of {len(chunks)}
 {reference_instruction}
 """.strip()
             try:
-                result = await asyncio.wait_for(
-                    generate_ai_response(
+                async with semaphore:
+                    if budget_exhausted:
+                        failed_chunks += 1
+                        return None
+                    result = await asyncio.wait_for(generate_ai_response(
                         task_type=task_type,
                         prompt=prompt,
                         system_instruction=system_instruction,
@@ -1280,9 +1493,7 @@ Chunk: {number} of {len(chunks)}
                         channel_id=interaction.channel_id,
                         source_command=source_command,
                         db=getattr(self.bot, "db", None),
-                    ),
-                    timeout=CHUNK_CALL_TIMEOUT_SECONDS,
-                )
+                    ), timeout=CHUNK_CALL_TIMEOUT_SECONDS)
             except Exception as exc:
                 # Any failure mode (timeout, a DB error surfacing from
                 # generate_ai_response's usage logging, etc.) should degrade
@@ -1293,7 +1504,7 @@ Chunk: {number} of {len(chunks)}
                     "Message-context chunk %s/%s errored for %s: %s",
                     number, len(chunks), source_command, exc,
                 )
-                continue
+                return None
             if result.blocked_by_budget:
                 failed_chunks += 1
                 budget_exhausted = True
@@ -1302,15 +1513,19 @@ Chunk: {number} of {len(chunks)}
                     "%s at chunk %s/%s",
                     source_command, number, len(chunks),
                 )
-                break
+                return None
             if not result.ok or not result.text:
                 failed_chunks += 1
                 logger.warning(
                     "Message-context chunk %s/%s failed for %s: %s",
                     number, len(chunks), source_command, result.error,
                 )
-                continue
-            partials.append(result.text)
+                return None
+            reviewed_ids.update(re.findall(r"(?m)^TARGET messageId=([^\n]+)", chunk))
+            return result.text
+
+        results = await asyncio.gather(*(recap(number, chunk) for number, chunk in enumerate(chunks, 1)))
+        partials = [result for result in results if result]
 
         if not partials:
             if budget_exhausted:
@@ -1412,6 +1627,10 @@ Return a single JSON object that matches the required schema exactly.
                 result.model_used,
             )
             return None, combined
+        if public_result:
+            # Trusted pipeline metadata replaces any model-supplied values.
+            parsed["_rubricCoverage"] = {"reviewedIds": sorted(reviewed_ids),
+                                        "failedChunks": failed_chunks}
         return parsed, result.text
 
     @staticmethod
@@ -1454,19 +1673,30 @@ Return a single JSON object that matches the required schema exactly.
         public_result: bool = False,
         system_instruction: str = SYSTEM_INSTRUCTION,
         format_rules: str = JSON_FORMAT_RULES,
+        nearby: Optional[dict[str, list]] = None,
+        command_usage: Optional[str] = None,
     ) -> None:
         if not rows:
+            if kind == "public_user" and command_usage and not command_usage.startswith("No public"):
+                metadata = {"title": title, "timeframe_text": timeframe_text}
+                overview = build_public_user_evaluation_embed({
+                    "summary": "No archived conversational messages were available in this period.",
+                    "limitations": "Only observed public command responses are available; these cannot establish a contribution score.",
+                }, metadata)
+                overview.add_field(name="Observed command usage", value=command_usage, inline=False)
+                score = build_community_score_embed(calculate_scorecard({}, [], total_matching=0), metadata)
+                await self._send_result(interaction, fit_public_evaluation_embeds(overview, score),
+                                        post_to=post_to, public_result=True)
+                return
             await interaction.followup.send(empty_message, ephemeral=True)
             return
-        chunk_estimate = max(1, -(-len(rows) // MAX_GEMINI_ROWS_PER_CHUNK))
-        # Must stay >= the worst-case sum of the per-call timeouts inside
-        # _synthesize_structured (chunk_estimate chunk calls + 1 final call),
-        # plus a buffer. Otherwise this outer timeout could fire while a
-        # chunk is still within its own legitimate budget, cancelling work
-        # that the per-chunk resilience below was designed to let finish.
+        chunk_estimate = max(1, len(self._chunks(rows, include_links=include_links,
+                                               nearby=(nearby or {}) if public_result else None)))
+        # Account for bounded parallel public recaps and character-sized
+        # chunks. The public hard ceiling stays below Discord's token expiry.
         outer_timeout = min(
-            STRUCTURED_TIMEOUT_MAX_SECONDS,
-            chunk_estimate * CHUNK_CALL_TIMEOUT_SECONDS
+            PUBLIC_TIMEOUT_MAX_SECONDS if public_result else STRUCTURED_TIMEOUT_MAX_SECONDS,
+            (-(-chunk_estimate // (PUBLIC_CHUNK_CONCURRENCY if public_result else 1))) * CHUNK_CALL_TIMEOUT_SECONDS
             + FINAL_CALL_TIMEOUT_SECONDS
             + STRUCTURED_TIMEOUT_BUFFER_SECONDS,
         )
@@ -1485,6 +1715,7 @@ Return a single JSON object that matches the required schema exactly.
                     system_instruction=system_instruction,
                     public_result=public_result,
                     format_rules=format_rules,
+                    nearby=nearby,
                 ),
                 timeout=outer_timeout,
             )
@@ -1525,7 +1756,30 @@ Return a single JSON object that matches the required schema exactly.
                 if kind == "user":
                     embed = build_user_context_embed(parsed, metadata)
                 elif kind == "public_user":
+                    coverage = parsed.get("_rubricCoverage", {})
+                    reviewed_ids = set(coverage.get("reviewedIds", []))
+                    reviewed_rows = [row for row in rows if str(row["message_id"]) in reviewed_ids] if coverage else rows
+                    parsed["contextQuotes"] = verified_public_quotes(parsed.get("contextQuotes"), reviewed_rows)
+                    target_id = str(dict(reviewed_rows[0]).get("author_id")) if reviewed_rows else ""
+                    available_context = {
+                        str(mid) for mid, neighbors in (nearby or {}).items()
+                        if any(str(neighbor["author_id"]) != target_id for neighbor in neighbors)
+                    }
+                    scorecard = calculate_scorecard(
+                        parsed, reviewed_rows, total_matching=total_matching_count,
+                        failed_chunks=coverage.get("failedChunks", 0),
+                        context_available_ids=available_context,
+                    )
+                    if scorecard.status == "review_required":
+                        parsed = {"summary": "A complete public evaluation is unavailable pending staff review.",
+                                  "strengths": [], "growthOpportunities": [], "contextQuotes": [],
+                                  "limitations": "No numerical judgment has been published."}
+                    if coverage.get("failedChunks"):
+                        metadata["timeframe_text"] += f"\n{len(reviewed_rows):,} messages processed; {coverage['failedChunks']} AI batches failed."
                     embed = build_public_user_evaluation_embed(parsed, metadata)
+                    if command_usage:
+                        embed.add_field(name="Observed command usage", value=command_usage, inline=False)
+                    score_embed = build_community_score_embed(scorecard, metadata)
                 else:
                     embed = build_channel_context_embed(parsed, metadata)
             except Exception:
@@ -1547,7 +1801,8 @@ Return a single JSON object that matches the required schema exactly.
                 name="Note",
                 value=(
                     f"{total_matching_count:,} matching messages found. "
-                    f"Reviewed the {len(rows):,} most recent messages; "
+                    f"Reviewed {len(rows):,} messages "
+                    f"{'sampled across the period and channels' if kind == 'public_user' else '(most recent)'}; "
                     "narrow the timeframe or raise max_messages for full "
                     "coverage."
                 ),
@@ -1556,7 +1811,8 @@ Return a single JSON object that matches the required schema exactly.
             embed = truncate_embed(embed)
 
         await self._send_result(
-            interaction, embed, post_to=post_to, public_result=public_result
+            interaction, fit_public_evaluation_embeds(embed, score_embed) if kind == "public_user" else embed,
+            post_to=post_to, public_result=public_result
         )
 
     @context.command(name="help", description="Show private archive command help")
@@ -1572,7 +1828,8 @@ Return a single JSON object that matches the required schema exactly.
                     "`/context search` — deterministic local message search\n"
                     "`/context summarize` — neutral timeframe/topic recap\n"
                     "`/context timeline` — chronological narrative\n"
-                    "`/context user` — a member's stored participation\n"
+                    "`/context user` — member overview + rubric scorecard "
+                    "(90d / 2,500 messages by default; max 5,000)\n"
                     "`/context channel` — a channel recap\n\n"
                     "Use `post_to` on search, summarize, timeline, user, or channel "
                     "to share the result in a selected text channel. Choose a staff "
@@ -1609,6 +1866,12 @@ Return a single JSON object that matches the required schema exactly.
             (cutoff_24h, cutoff_7d, str(interaction.guild_id)),
         )
         row = rows[0]
+        command_rows = await self._fetchall(
+            "SELECT COUNT(*) total, MIN(timestamp) oldest, MAX(timestamp) newest "
+            "FROM message_context_command_usage WHERE guild_id = ?",
+            (str(interaction.guild_id),),
+        )
+        command_status = command_rows[0]
         top_channel_rows = await self._fetchall(
             """
             SELECT COALESCE(channel_name, channel_id) AS channel, COUNT(*) AS total
@@ -1667,7 +1930,11 @@ Return a single JSON object that matches the required schema exactly.
             f"**Retention:** "
             f"{str(self.retention_days) + ' days' if self.retention_days else 'Indefinite'}\n"
             f"**Track edits:** {'Yes' if self.track_edits else 'No'}\n"
-            f"**Track deletes:** {'Yes' if self.track_deletes else 'No'}"
+            f"**Track deletes:** {'Yes' if self.track_deletes else 'No'}\n"
+            f"**Command observations:** {command_status['total'] or 0:,} "
+            f"(since {command_status['oldest'] or 'not yet observed'})\n"
+            f"**NSFW access-role tracking:** {'Configured' if self.nsfw_access_role_ids else 'Unknown (not configured)'}\n"
+            f"**Trusted rank bots:** {len(self.rank_bot_ids)}"
         )
         await interaction.followup.send(
             embed=branded_embed(
@@ -1915,22 +2182,22 @@ Return a single JSON object that matches the required schema exactly.
     @app_commands.describe(
         post_to="Post the result in this text channel; choose staff channels for private context",
         user="Member to evaluate publicly",
-        timeframe="Timeframe: 24h, 3d, 7d, 14d, 30d, 60d, or 90d",
+        timeframe="Review period (default 90d): 24h, 3d, 7d, 14d, 30d, 60d, or 90d",
         channel="Optional channel filter",
-        include_bots="Include bot-authored messages",
-        max_messages="Maximum stored messages to summarize, capped at 1500",
+        include_bots="Compatibility option; contribution scoring always excludes bots",
+        max_messages="Messages to review (default 2500, maximum 5000); samples the full period when capped",
     )
     @app_commands.guild_only()
     async def context_user(
         self,
         interaction: discord.Interaction,
         user: discord.Member,
-        timeframe: str,
+        timeframe: str = "90d",
         channel: Optional[
             Union[discord.TextChannel, discord.Thread, discord.ForumChannel]
         ] = None,
         include_bots: bool = False,
-        max_messages: app_commands.Range[int, 1, 1500] = 500,
+        max_messages: app_commands.Range[int, 1, 5000] = DEFAULT_USER_MESSAGES,
         post_to: Optional[discord.TextChannel] = None,
     ) -> None:
         if await self._deny(interaction):
@@ -1948,23 +2215,21 @@ Return a single JSON object that matches the required schema exactly.
         await interaction.response.defer(ephemeral=post_to is not None, thinking=True)
         if not await self._check_post_to(interaction, post_to):
             return
-        total_matching = await self._count_rows(
-            interaction.guild_id,
-            channel_id=channel.id if channel else None,
-            user_id=user.id,
-            after=after_value,
-            include_bots=include_bots,
+        if getattr(user, "bot", False):
+            await interaction.followup.send("Choose a human member for a community evaluation.", ephemeral=True)
+            return
+        before_value = utcnow_iso()
+        rows, total_matching = await self._evaluation_rows(
+            interaction.guild_id, user_id=user.id, after=after_value, before=before_value,
+            channel_id=channel.id if channel else None, max_messages=max_messages,
         )
-        rows = await self._range_rows(
-            interaction.guild_id,
+        nearby = await self._evaluation_nearby(interaction.guild_id, rows, after=after_value, before=before_value)
+        command_usage = await self._command_usage_summary(
+            interaction.guild_id, user.id, after=after_value, before=before_value,
             channel_id=channel.id if channel else None,
-            user_id=user.id,
-            after=after_value,
-            include_bots=include_bots,
-            max_messages=max_messages,
         )
         timeframe_text = format_timeframe(
-            after_value, utcnow_iso(), len(rows), total_count=total_matching
+            after_value, before_value, len(rows), total_count=total_matching, sampled=True,
         )
         await self._send_structured_analysis(
             interaction,
@@ -1973,24 +2238,15 @@ Return a single JSON object that matches the required schema exactly.
             kind="public_user",
             title=f"Community Evaluation: {user.display_name}",
             task=(
-                "Produce a constructive public evaluation of the member's observable "
-                "community participation. Assign a communityContributionScore from 0 "
-                "to 100 based only on the available activity: 70–79 is generally "
-                "respectful/genuine; 80–89 is actively positive, welcoming, or "
-                "consistently constructive; and 90+ requires exceptional, sustained "
-                "community-building. Reserve 60–69 for clear, repeated mixed or "
-                "detracting behavior, and scores below 60 for clear, repeated harmful "
-                "or disruptive behavior. Never deduct for concise messages, GIFs, "
-                "personal sharing, NSFW participation, or voice-chat activity the "
-                "archive cannot observe. Include direct-evidence strengths and only "
-                "include growth opportunities when the archive supports them; otherwise "
-                "leave them empty. Consider all retrieved messages regardless "
-                "of an NSFW channel flag. Include up to five representative, concise "
-                "verbatim quotes from the selected member, with their source channel, "
-                "timestamp, and message link. NSFW quotes are permitted. Never expose "
-                "secrets, staff concerns, moderation history, or other members' "
-                "identities. Do not infer motives, mental health, or protected traits, "
-                "and do not recommend punishment."
+                "Produce a constructive public member evaluation and complete all five "
+                "contributionRubric categories using the supplied rubric. Give exact "
+                "TARGET message IDs as evidence; the bot computes the total. Include "
+                "strengths, evidence-supported growth opportunities only, and up to "
+                "five concise verbatim target quotations with messageId and source "
+                "metadata. NSFW quotes are permitted. Never expose secrets, staff "
+                "concerns, moderation history or other members' identities. Nearby "
+                "OTHER messages provide interpretation only and must never be quoted. "
+                "Do not infer motives or recommend punishment."
             ),
             request=(
                 f"user={user.display_name} ({user.id}); timeframe={timeframe}; "
@@ -2007,6 +2263,8 @@ Return a single JSON object that matches the required schema exactly.
             max_output_tokens=1_300,
             empty_message="No matching messages found for that user/timeframe.",
             public_result=True,
+            nearby=nearby,
+            command_usage=command_usage,
             system_instruction=PUBLIC_EVALUATION_SYSTEM_INSTRUCTION,
             format_rules=PUBLIC_EVALUATION_JSON_FORMAT_RULES,
         )

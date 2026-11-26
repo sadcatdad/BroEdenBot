@@ -41,6 +41,7 @@ logger = logging.getLogger(__name__)
 COG_MODULE_REQUIREMENTS = {
     "ai.py": {"ask", "mod_ai", "staff_ai"},
     "ask.py": {"ask"},
+    "automations.py": {"automations"},
     "bank.py": {"bank"},
     "checklist.py": {"checklists"},
     "disboard_bumps.py": {"bumps"},
@@ -90,6 +91,11 @@ intents.emojis_and_stickers = True
 intents.members = True
 intents.moderation = True
 intents.guild_messages = True
+intents.guild_reactions = True
+intents.presences = (
+    os.getenv("AUTOMATIONS_PRESENCE_INTENT", "").strip().casefold() in {"1", "true", "yes", "on"}
+    and cog_is_enabled("automations.py", configured_modules())
+)
 intents.message_content = True
 intents.voice_states = True
 

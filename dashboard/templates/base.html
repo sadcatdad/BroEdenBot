@@ -140,13 +140,19 @@
         </div>
         {% endif %}
 
-        {% if can('operations.view') or can('reminders.view') %}
+        {% if can('operations.view') or can('reminders.view') or can('automations.view') %}
         <div class="nav-group">
           <p class="nav-group-label">Operations</p>
           {% if can('operations.view') %}
           <a class="nav-item {{ 'active' if current_path == '/operations' else '' }}" href="{{ url_for('operations_page') }}" {% if current_path == '/operations' %}aria-current="page"{% endif %}>
             <svg class="nav-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3v4m0 10v4M3 12h4m10 0h4M5.6 5.6l2.8 2.8m7.2 7.2 2.8 2.8m0-12.8-2.8 2.8m-7.2 7.2-2.8 2.8"/><circle cx="12" cy="12" r="4"/></svg>
             <span>Operations</span>
+          </a>
+          {% endif %}
+          {% if can('automations.view') %}
+          <a class="nav-item {{ 'active' if current_path == '/automations' else '' }}" href="{{ url_for('automations_page') }}" {% if current_path == '/automations' %}aria-current="page"{% endif %}>
+            <svg class="nav-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M13 2 5 14h6l-1 8 9-12h-6l1-8Z"/></svg>
+            <span>Automations</span>
           </a>
           {% endif %}
           {% if can('reminders.view') %}

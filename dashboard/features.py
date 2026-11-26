@@ -26,6 +26,7 @@ class FeatureDefinition:
 FEATURES = (
     FeatureDefinition("streaks", "Activity Streaks", "Daily message streaks, milestones, leaderboards, and recovery.", "Community & engagement", "streaks.view", "/streaks", ("streaks",), ("STREAK_TIMEZONE",)),
     FeatureDefinition("bumps", "DISBOARD Bumps", "Verified bumps, points, reminders, reward roles, and Bump Legends.", "Community & engagement", "bumps.view", "/features/bumps", ("bumps",), ("DISBOARD_BOT_USER_ID",)),
+    FeatureDefinition("automations", "Automations", "Build, test, and manage Discord triggers, conditions, and actions.", "Reminders & automation", "automations.view", "/automations", ("automations",), ("GUILD_ID",)),
     FeatureDefinition("reminders", "Reminders", "Personal reminders, scheduled delivery, subscriptions, and operator recovery.", "Reminders & automation", "reminders.view", "/operations/reminders", ("reminders",), ("REMINDER_TIMEZONE",)),
     FeatureDefinition("events", "Events", "Private Verified-member Discord event schedule, DM subscriptions, and Captain authoring.", "Reminders & automation", "events.view", "/events", ("events",), ("EVENTS_ARTWORK_STORAGE_CHANNEL_ID",), support_status="supported"),
     FeatureDefinition("ask", "Ask", "Private, public-knowledge-grounded member answers with channel controls.", "AI & knowledge", "ask.view", "/features/ask", ("ask",), ("ASK_COOLDOWN_SECONDS",)),

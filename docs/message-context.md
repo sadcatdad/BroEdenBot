@@ -34,20 +34,112 @@ before retrieval and again before publishing, so access lost during AI
 generation prevents posting. Posted results suppress member and role pings.
 Restart the bot to synchronize the new slash-command options with Discord.
 
-The public `/context user` card includes a community-contribution score
-(0–100), observed strengths, constructive growth opportunities, and up to five
-representative verbatim quotes from the selected member with their archived
-channel/date/message links. Quotes from NSFW-marked channels, including NSFW
-content, may be shown publicly. It never posts secrets, staff-only concerns,
-moderation history, or content written by other members.
+A successful `/context user` response posts **two embeds in one message**:
 
-Scores are intentionally calibrated around observable positive participation:
-70–79 means generally respectful and genuine, 80–89 means actively positive,
-welcoming, or consistently constructive, and 90–100 requires exceptional,
-sustained community-building. Concise messages, GIFs, personal sharing, NSFW
-participation, and activity the archive cannot observe (such as voice chat) do
-not lower a score. Growth opportunities appear only when the archive contains
-direct evidence for one.
+1. A member overview with strengths, evidence-supported growth opportunities,
+   up to five representative verbatim quotes, limitations, and observed public
+   command usage. Quotes from NSFW-marked channels are permitted; secrets,
+   staff concerns, moderation history, and other members' content are not.
+2. A Community Contribution Score card with five category ratings, earned
+   bonuses, supported conduct deductions, the calculation, confidence, and
+   archive coverage. Discord's 6,000-character budget is enforced across both
+   embeds together, including delivery through `post_to`.
+
+### Community contribution rubric v1
+
+The bot calculates `70 + bonuses - deductions`, clamps the result to 0–100,
+rounds the final result half-up, and applies any supported conduct ceiling.
+The AI supplies assessments and exact target-message evidence IDs, never the
+final total. Missing, malformed, or insufficient evidence displays
+**Insufficient evidence**, never a fabricated zero.
+
+| Category | Maximum bonus |
+| --- | ---: |
+| Connection and conversation | 10 |
+| Welcoming and inclusion | 7 |
+| Support and helpfulness | 6 |
+| Shared experiences and initiative | 4 |
+| Constructive conduct | 3 |
+
+Each category earns `maximum × rating / 4`. Ratings are 0 (not observed,
+neutral), 1 (one example), 2 (separate exchanges), 3 (recurring on different
+dates), or 4 (sustained across weeks). The bot caps ratings to what the cited
+source evidence actually supports: rating 2 needs two channel conversation
+sessions, rating 3 needs three dates, and rating 4 needs four dates spanning
+at least 21 days. Sessions conservatively group messages in the same channel
+until there is a gap longer than 30 minutes. At least five interpretable
+sessions are needed for a numerical score; messages containing only an
+unreadable attachment or URL cannot establish one. They are not misconduct.
+A score of 90+ also requires sustained positive evidence across three weeks.
+
+Conduct deductions are -3 for an isolated unaddressed disrespectful exchange,
+-10 for repeated antagonism (ceiling 69), and -25 for persistent harm
+(ceiling 59). Patterns replace their constituent incidents; overlapping
+sessions cannot be charged twice. Persistent harm, serious incidents, and
+conduct concerns without retrieved surrounding context withhold the numerical
+score for staff review. Their allegations, growth advice, and quotes are not
+published as a substitute for review; this does not perform moderation or
+create an automatic disciplinary decision.
+
+70–79 denotes healthy participation, 80–89 clearly positive contribution, and
+90–100 exceptional sustained contribution. No direct credit is awarded for
+volume, XP, reactions, money, popularity, or staff rank. Concise messages,
+GIFs, personal sharing, appropriate NSFW participation, civil disagreement,
+boundary-setting, and unavailable VC activity do not lower conduct scores.
+Growth opportunities require direct evidence. All quotation metadata is
+rebuilt from the selected member's actual retrieved messages, and invented or
+non-verbatim quotes are rejected.
+
+Confidence is separate from score: low for failed AI batches or less than
+seven days of interpretable evidence; high for complete retrieval, at least
+21 days and ten sessions; medium otherwise. The card reports capped coverage
+and skipped AI batches. Only messages from successful AI batches can support
+ratings, deductions, and quotations.
+
+### Review coverage and command observations
+
+The default user review is **90 days and 2,500 messages**, adjustable to
+**5,000 messages**. When capped, stable sampling distributes retrieval across
+weeks and channels, rather than taking only the latest messages. Up to 160
+representative or potentially ambiguous source messages receive up to four
+nearby messages from their own channel within five minutes, within the same
+requested period and archive exclusions. Nearby messages are labeled context
+only and cannot become the selected member's contributions or public quotes.
+Deleted, webhook, known automation, and unattributable imported Deleted User
+rows are excluded from user evaluations. This is not an exhaustive historical
+bot classifier. Public AI chunk recaps run at bounded concurrency (three)
+with existing AI budget checks; failures report partial coverage or remain
+private when no usable evaluation is available.
+
+With archive tracking enabled, `message_context_command_usage` stores minimal
+live command metadata: invocation IDs, member/application/channel/parent IDs,
+command path, timestamp, observation source/confidence, optional response
+message ID, and optional NSFW-access role state. It never stores command
+arguments or response contents. Records follow the archive's configured
+channels, exclusions, and retention. Tracking starts after this update; it
+does not reconstruct historical slash calls from CSVs.
+
+The bot can record its own command invocations, including commands whose
+responses are ephemeral. Those private invocation records never appear on
+public evaluation cards or feed the scoring model. For other bots, only
+visible public responses with Discord interaction metadata are observable.
+Follow-ups and repeated gateway events are deduplicated by application and
+interaction ID. A later edited response may enrich an unknown command name
+without changing the original timestamp or access-role snapshot.
+
+Legacy response metadata can supply the exact command name. Modern metadata
+may omit it; those calls remain unknown. Optionally configure
+`MESSAGE_CONTEXT_RANK_BOT_IDS` to recognize textual rank-and-level responses
+from trusted bots as **inferred rank responses**, separately from exact
+`/rank` observations. Image-only rank cards cannot be interpreted. Other bots'
+private/ephemeral command uses are unavailable.
+
+The overview reports observed rank checks, the busiest rolling 15-minute
+window, and, when `MESSAGE_CONTEXT_NSFW_ACCESS_ROLE_IDS` is configured, how
+many occurred without any configured NSFW-access role. This captures access
+state at observation time, not a numeric MEE6 level or whose level was queried.
+Missing role configuration/member cache yields unknown eligibility. Frequency
+alone never deducts points or establishes an NSFW-access-farming motive.
 
 The archive stores text and message metadata. It does not download attachment,
 image, or video files. It stores attachment counts and filenames only.
@@ -64,6 +156,8 @@ MESSAGE_CONTEXT_TRACK_DELETES=true
 MESSAGE_CONTEXT_TRACK_EDITS=true
 MESSAGE_CONTEXT_IGNORE_BOTS=true
 MESSAGE_CONTEXT_RETENTION_DAYS=
+MESSAGE_CONTEXT_NSFW_ACCESS_ROLE_IDS=
+MESSAGE_CONTEXT_RANK_BOT_IDS=
 ```
 
 - `MESSAGE_CONTEXT_ENABLED` defaults to `false`. No live content is stored
@@ -121,13 +215,12 @@ without crashing.
   [include_links] [post_to]` produces a neutral staff recap.
 - `/context timeline after:<time> [before] [channel] [topic] [granularity] [post_to]`
   builds a chronological narrative.
-- `/context user user:<member> timeframe:<24h|3d|7d|14d|30d|60d|90d>
+- `/context user user:<member> [timeframe:<24h|3d|7d|14d|30d|60d|90d>]
   [channel] [include_bots] [max_messages] [post_to]` is an authorized-staff command
-  that posts a public, high-level evaluation of that member's stored
-  participation. It uses a 0–100 community-contribution score based on
-  observable activity, plus strengths, constructive growth opportunities, and
-  up to five representative verbatim quotes with their source links. NSFW
-  quotes are permitted; staff/moderation information is not.
+  that posts a public overview and a separate rubric scorecard. Defaults are
+  90 days and 2,500 messages (maximum 5,000), sampled across the requested
+  period/channels when capped. See the rubric and command-observation details
+  above. NSFW quotes are permitted; staff/moderation information is not.
 - `/context channel channel:<channel> timeframe:<1h|6h|12h|24h|3d|7d|14d|30d>
   [topic] [include_bots] [max_messages] [post_to]` reviews a stored channel timeframe.
 
@@ -142,7 +235,8 @@ Dates accept ISO dates/times plus `yesterday` and `today`. Examples:
 ```
 
 Gemini commands retrieve locally first, cap the number of rows, summarize
-bounded chunks, and combine those chunk summaries. The database is never sent
+bounded chunks, and combine those chunk summaries. User reviews sample across
+the period and channels; other commands retain their most-recent retrieval. The database is never sent
 wholesale. Large selections report that retrieval was capped and should be
 narrowed for finer detail.
 

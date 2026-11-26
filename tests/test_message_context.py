@@ -12,6 +12,7 @@ from unittest.mock import AsyncMock, patch
 import aiosqlite
 
 from cogs.message_context import MessageContext, PUBLIC_EVALUATION_SYSTEM_INSTRUCTION
+from tests.community_fixtures import evaluation_rows
 from scripts.import_message_context import ensure_schema, input_files, process_file
 from utils.message_context import (
     MESSAGE_CONTEXT_TABLE_SQL,
@@ -377,7 +378,8 @@ class PublicUserEvaluationDeliveryTests(unittest.IsolatedAsyncioTestCase):
                     "limitations": "Short review window.",
                     "contextQuotes": [
                         {
-                            "quote": "I can help with that.",
+                            "messageId": "1000",
+                        "quote": "I can help with that.",
                             "timestamp": "2026-07-14T20:00:00+00:00",
                             "channelName": "general",
                             "jumpUrl": "https://discord.com/channels/1/2/3",
@@ -391,7 +393,7 @@ class PublicUserEvaluationDeliveryTests(unittest.IsolatedAsyncioTestCase):
 
         await cog._send_structured_analysis(
             interaction,
-            [object()],
+            evaluation_rows(),
             kind="public_user",
             title="Community Evaluation: Alice",
             task="test",
@@ -408,9 +410,10 @@ class PublicUserEvaluationDeliveryTests(unittest.IsolatedAsyncioTestCase):
 
         payload = interaction.followup.send.await_args.kwargs
         self.assertFalse(payload["ephemeral"])
-        self.assertIn("discord.com/channels", str(payload["embed"].to_dict()))
-        self.assertIn("I can help with that.", str(payload["embed"].to_dict()))
-        self.assertNotIn("private raw fallback text", str(payload["embed"].to_dict()))
+        self.assertEqual(len(payload["embeds"]), 2)
+        self.assertIn("discord.com/channels", str(payload["embeds"][0].to_dict()))
+        self.assertIn("I can help with that.", str(payload["embeds"][0].to_dict()))
+        self.assertNotIn("private raw fallback text", str(payload["embeds"][0].to_dict()))
 
     async def test_public_evaluation_never_falls_back_to_raw_archive_text(self):
         cog = MessageContext(SimpleNamespace())
@@ -421,7 +424,7 @@ class PublicUserEvaluationDeliveryTests(unittest.IsolatedAsyncioTestCase):
 
         await cog._send_structured_analysis(
             interaction,
-            [object()],
+            evaluation_rows(),
             kind="public_user",
             title="Community Evaluation: Alice",
             task="test",
@@ -463,7 +466,7 @@ class PublicUserEvaluationDeliveryTests(unittest.IsolatedAsyncioTestCase):
         ):
             await cog._send_structured_analysis(
                 interaction,
-                [object()],
+                evaluation_rows(),
                 kind="public_user",
                 title="Community Evaluation: Alice",
                 task="test",

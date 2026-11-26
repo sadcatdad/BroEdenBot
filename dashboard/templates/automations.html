@@ -1,0 +1,117 @@
+{% extends "base.html" %}
+{% block page_assets %}
+<link rel="stylesheet" href="{{ static_asset_url(request, 'automations.css') }}">
+<script src="{{ static_asset_url(request, 'automations.js') }}" defer></script>
+{% endblock %}
+{% block content %}
+{% if not automations_configured %}
+<div class="page-heading"><div><h1>Automations</h1></div></div>
+<p class="card">Set <code>GUILD_ID</code> in the bot configuration to use Automations.</p>
+{% else %}
+<div id="automation-manager" data-csrf="{{ csrf_token }}" data-manage="{{ 'yes' if automation_manage else 'no' }}" data-enabled="{{ 'yes' if automations_enabled else 'no' }}">
+  {% if not automations_enabled %}
+  <p class="card">The bot module is off. Add <code>automations</code> to <code>ENABLED_MODULES</code> to activate rules.</p>
+  {% endif %}
+  <section id="automation-list-view" aria-labelledby="automation-list-title">
+    <div class="page-heading automation-list-header">
+      <div><h1 id="automation-list-title" tabindex="-1">Automations</h1></div>
+      {% if automation_manage %}
+      <div class="auto-row">
+        {% if gemini_available %}<button class="button secondary" id="automation-gemini" type="button">Draft with Gemini</button>{% endif %}
+        <button class="button" id="automation-new" type="button">New rule</button>
+      </div>
+      {% endif %}
+    </div>
+    <p id="automation-status" role="status" aria-live="polite" hidden></p>
+    <div class="card automation-list">
+      <div class="automation-list-controls auto-row auto-between">
+        <div class="auto-field">
+          <label for="automation-search">Search rules</label>
+          <input id="automation-search" type="search" placeholder="Name or trigger">
+        </div>
+        <label class="auto-check"><input type="checkbox" id="automation-archived"> Show archived rules</label>
+        <button class="button secondary" id="automation-refresh" type="button">Refresh</button>
+      </div>
+      <ul id="automation-rules" class="automation-rule-list" aria-label="Automation rules"></ul>
+    </div>
+  </section>
+
+  <form class="automation-editor" id="automation-editor" novalidate hidden>
+    <div class="automation-toolbar">
+      <button class="button secondary" id="automation-back" type="button">‹ All rules</button>
+      <div class="automation-editor-heading">
+        <h1 id="automation-editor-title" tabindex="-1">New rule</h1>
+        <span id="automation-revision" class="muted"></span>
+      </div>
+      <div class="auto-row automation-editor-actions">
+        {% if automation_manage %}
+        <button class="button secondary" id="automation-validate" type="button">Validate</button>
+        {% endif %}
+        <button class="button secondary" id="automation-test" type="button">Test rule</button>
+        {% if automation_manage %}
+        <button class="button secondary" id="automation-editor-toggle" type="button" hidden>Enable rule</button>
+        <button class="button" id="automation-save" type="submit">Save rule</button>
+        {% endif %}
+      </div>
+      <p id="automation-error" class="auto-feedback" role="status" aria-live="polite" tabindex="-1" hidden></p>
+    </div>
+    <div id="automation-fields" class="automation-canvas"></div>
+    <div class="auto-row automation-editor-footer">
+      <button class="button secondary" id="automation-history" type="button" hidden>History</button>
+      {% if automation_manage %}<button class="button secondary auto-archive" id="automation-archive" type="button" hidden>Archive</button>{% endif %}
+    </div>
+  </form>
+
+  <dialog id="automation-picker-dialog" class="automation-dialog automation-picker" aria-labelledby="automation-picker-title">
+    <div class="auto-row auto-between">
+      <h2 id="automation-picker-title">Choose a step</h2>
+      <button class="button secondary" type="button" data-close>Cancel</button>
+    </div>
+    <label for="automation-picker-search">Search options</label>
+    <input id="automation-picker-search" type="search" placeholder="Filter choices" autocomplete="off">
+    <div id="automation-picker-options" class="automation-picker-options"></div>
+  </dialog>
+
+  <dialog id="automation-test-dialog" class="automation-dialog" aria-labelledby="automation-test-title">
+    <div class="auto-row auto-between">
+      <h2 id="automation-test-title">Test rule</h2>
+      <button class="button secondary" type="button" data-close>Close</button>
+    </div>
+    <p class="muted">Simulate an event using sample values. Tests leave Discord and cooldowns untouched.</p>
+    <form id="automation-test-form" novalidate>
+      <div id="automation-test-inputs"></div>
+      <button class="button" type="submit">Run test</button>
+    </form>
+    <div id="automation-trace" aria-live="polite"></div>
+  </dialog>
+
+  <dialog id="automation-history-dialog" class="automation-dialog" aria-labelledby="automation-history-title">
+    <div class="auto-row auto-between">
+      <h2 id="automation-history-title">Rule history</h2>
+      <button class="button secondary" type="button" data-close>Close</button>
+    </div>
+    <div id="automation-history-content" aria-live="polite"></div>
+  </dialog>
+
+  {% if automation_manage and gemini_available %}
+  <dialog id="automation-gemini-dialog" class="automation-dialog" aria-labelledby="automation-gemini-title">
+    <div class="auto-row auto-between">
+      <h2 id="automation-gemini-title">Draft with Gemini</h2>
+      <button class="button secondary" type="button" data-close>Close</button>
+    </div>
+    <p class="muted">Describe the event, who it applies to, and what the bot should do. Share only the details needed to build the rule.</p>
+    <div id="automation-chat" class="automation-chat" aria-live="polite"></div>
+    <form id="automation-chat-form">
+      <label for="automation-prompt">Message to Gemini</label>
+      <textarea id="automation-prompt" placeholder="When a member joins, send a welcome message in channel ID …" maxlength="4000" rows="3" required></textarea>
+      <div class="auto-row">
+        <button class="button" type="submit">Send</button>
+        <button class="button secondary" id="automation-use-draft" type="button" hidden>Open draft in builder</button>
+        <button class="button secondary" id="automation-chat-reset" type="button">Start over</button>
+      </div>
+    </form>
+  </dialog>
+  {% endif %}
+</div>
+{% endif %}
+{% endblock %}

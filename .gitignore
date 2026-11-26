@@ -32,6 +32,7 @@ __pycache__/
 **/exports/**/*.json
 *.json
 !/data/channel_categories.json
+!/automations/rules.json
 *.csv
 *.zip
 staff_context.db

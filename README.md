@@ -135,6 +135,67 @@ action finishes. Full setup,
 permissions, migration, validation, and recovery guidance is
 in [`docs/events.md`](docs/events.md).
 
+## Automations in The Garden
+
+Open **The Garden → Operations → Automations**. Choose what starts the rule
+under **When**, add optional conditions under **If**, and set the ordered
+actions under **Do**. The builder offers searchable choices and displays synced
+Discord role and channel names. Use **Test rule** with sample data, save the
+rule disabled, then enable it from the editor or rule list. Enabled rules pick
+up saved changes on the bot within a few seconds. The list shows the last execution
+time, and **History** shows retained revisions and up to 25 recent runs with
+per-action outcomes. Archiving disables a rule and keeps its revisions.
+
+- **Triggers** include messages, member joins and updates, reaction adds and
+  removes, thread and forum post creation, voice transitions, and automation
+  button clicks. A member-update trigger can filter for a role gain or loss.
+- **Conditions** can group checks with AND, OR, and single-child NOT. Target the
+  actor, a related subject, or a specific Discord user ID. A reply's author takes
+  precedence over the first mention for message subjects. The subject of a
+  reaction or button click is the message author. Unavailable data stays
+  unavailable through NOT. Regex matches are bounded. Use a user, channel, or
+  server cooldown to limit successful matches.
+- **Actions** run in order. Send, reply, DM, edit, delete, or pin messages, assign
+  or remove roles, issue timeouts, create threads or forum posts, add members to
+  threads, tag or close forum posts, and reply privately to button clicks.
+  Message templates support fields such as `{actor.mention}`,
+  `{subject.name}`, and `{message.link}`. Discord mentions render silently.
+  Cross-channel actions respect the trigger channel's visibility, and role and
+  moderation actions require the bot's Discord permissions and role hierarchy.
+- **Buttons** are defined on a message action with a stable button ID. Make a
+  separate **Automation button clicked** rule for that ID. Use the posting rule
+  ID filter to distinguish buttons with the same ID. The posting rule must
+  stay enabled and keep the button in its configuration. Posted buttons survive
+  bot restarts.
+- **Gemini** can draft rules from a conversation when AI is configured. Only
+  the submitted text and the previous generated draft are sent to Gemini.
+  It can ask for missing details such as a channel ID. **Open draft in builder**
+  loads an unsaved, disabled draft for inspection, validation and simulation.
+  Draft requests share the staff AI cooldown and budget.
+
+Both processes use the existing `DATABASE_PATH` and scope rules to the configured
+`GUILD_ID`. Add `automations` to an explicit `ENABLED_MODULES` list. An empty
+module list loads all modules. The first start in a guild with no rules inserts a
+disabled sample from `automations/rules.json`. Use the Discord Developer Portal
+**Presence Intent** toggle together with `AUTOMATIONS_PRESENCE_INTENT=true`
+only if you need presence conditions. Other rules use the bot's guild message,
+message content, member, reaction, and voice intents.
+
+The Owner and Administrator Garden roles start with `automations.view` and
+`automations.manage`. Grant both only to people trusted to use the bot's server
+permissions. View access alone permits reading rules and history and running
+saved-rule simulations. The Garden checks current membership and mapped roles
+for Discord sign-ins. In Discord, administrators of the configured guild can
+use `/automation list`, `/automation toggle`, `/automation reload`, and
+`/automation test`.
+
+Tests evaluate sample input and current cooldown timestamps without consuming
+them or calling Discord actions. Live runs record action outcomes without
+storing incoming messages, retain run history for 30 days, and are capped at
+30 starts per minute per rule. The bot ignores its own events and ignores other
+bot actors unless explicitly allowed. An action request already in progress can
+finish after a rule is disabled.
+
 ## The Garden: Event Drops
 
 **Events → Event Drops** creates reusable collectible campaigns with explicit
@@ -692,20 +753,44 @@ Markdown is escaped, and only Discord message URLs become jump links.
   [include_links] [post_to]` — Chunked Gemini summary of a bounded scope.
 - `/context timeline <after> [before] [channel] [topic] [granularity] [post_to]` —
   Chronological staff narrative.
-- `/context user <user> <timeframe> [channel] [include_bots] [max_messages] [post_to]`
-  — Authorized staff can post a public member evaluation with a `0`–`100`
-  community-contribution score, strengths, constructive growth opportunities,
-  and up to five representative verbatim quotes with source channel/date/jump
-  links. NSFW-channel quotes are permitted. It never posts secrets, staff-only
-  concerns, moderation history, or other members' content. Scores are
-  calibrated with `70`–`79` as generally respectful/genuine and `80`–`89` as
-  actively positive or consistently constructive; unavailable VC activity,
-  concise messages, GIFs, personal sharing, and NSFW participation are not
-  deductions. Timeframes include `24h`, `3d`, `7d`, `14d`, `30d`, `60d`, and
-  `90d`.
+- `/context user <user> [timeframe] [channel] [include_bots] [max_messages] [post_to]`
+  — Authorized staff can post **two embeds in one message**: a member overview
+  and a separate **Community Contribution Score** rubric card. Defaults are
+  **90 days and 2,500 messages**, adjustable up to **5,000**. Capped reviews
+  sample across weeks/channels instead of taking only the latest messages.
+  The score is calculated by the bot as `70 + evidence-backed bonuses -
+  supported conduct deductions`, with five category ratings (connection 10,
+  inclusion 7, support 6, initiative 4, constructive conduct 3), conduct ceilings,
+  confidence, and reviewed/available coverage. Insufficient evidence or serious
+  concerns withhold a numerical judgment. Direct evidence is required for
+  ratings and growth opportunities; neither missing VC activity nor concise,
+  GIF, personal-sharing, or appropriate NSFW participation is misconduct.
+  Up to five verbatim target quotes have their metadata verified against source
+  rows. Nearby messages provide interpretation only, never other-member quotes.
+  NSFW quotes are permitted; secrets, staff/moderation history, and other members'
+  identities are not. The two embeds share Discord's 6,000-character budget.
+  Optional timeframes: `24h`, `3d`, `7d`, `14d`, `30d`, `60d`, and `90d`.
+  The retained `include_bots` option is compatibility-only; contribution
+  evaluations require a human and exclude bot-authored activity.
 - `/context channel <channel> <timeframe> [topic] [include_bots] [max_messages] [post_to]`
   — Channel recap. Timeframes include `1h`, `6h`, `12h`, `24h`, `3d`, `7d`,
   `14d`, and `30d`.
+
+With message-context tracking enabled, new command observations are recorded
+in `message_context_command_usage` in the same database. Own command invocation
+metadata is private and stores no arguments. Public evaluation cards show only
+observed third-party public responses with interaction metadata, including
+rank-check totals and peak 15-minute usage. Exact command names and inferred
+rank responses are distinguished; frequency alone causes no deduction or
+inference about motives. Configure `MESSAGE_CONTEXT_NSFW_ACCESS_ROLE_IDS` to
+snapshot access-role state and `MESSAGE_CONTEXT_RANK_BOT_IDS` to recognize
+trusted bots' textual rank cards when exact command metadata is unavailable.
+Missing role configuration/cache remains unknown, never a claimed numeric
+level. Other bots' ephemeral uses and image-only rank details cannot be read.
+Observations respect archive channel/parent exclusions and retention; this
+starts tracking after deployment and does not backfill historical commands.
+The additive command-observation table is created automatically at startup;
+restart/deploy the bot to register the updated slash defaults and limits.
 
 Access requires `MESSAGE_CONTEXT_ALLOWED_ROLE_IDS` or `BOT_OWNER_USER_IDS`.
 Search, summarize, timeline, channel, and user commands accept optional
@@ -1722,7 +1807,7 @@ updated from the authenticated local dashboard without rewriting `.env`.
 | Variable | Purpose |
 | --- | --- |
 | `DISCORD_TOKEN` | Discord bot token. Required. |
-| `ENABLED_MODULES` | Optional comma/space-separated module gate. Keep existing values and add `bumps,events,reminders,streaks,stats,visual`; blank loads every cog. `events` requires `reminders`; `visual` enables Discord-backed Asset Library storage. |
+| `ENABLED_MODULES` | Optional comma/space-separated module gate. Keep existing values and add `automations,bumps,events,reminders,streaks,stats,visual`; blank loads every cog. `events` requires `reminders`; `visual` enables Discord-backed Asset Library storage. |
 | `BOT_OWNER_USER_IDS` | Comma-separated Discord user IDs allowed to use `/bot` commands. |
 | `BOT_OWNER_ALLOW_ADMINS` | Allows server administrators to use `/bot` when `true`. Defaults to `false`. |
 | `CHECKLIST_ALLOWED_ROLE_IDS` | Comma-separated Discord role IDs allowed to use `/checklist`; bot owners are also allowed. Blank makes checklist management owner-only. |
@@ -1799,6 +1884,8 @@ updated from the authenticated local dashboard without rewriting `.env`.
 | `MESSAGE_CONTEXT_TRACK_EDITS` | Updates captured rows to the latest message content. Defaults to `true`. |
 | `MESSAGE_CONTEXT_IGNORE_BOTS` | Ignores bot-authored messages. Defaults to `true`. |
 | `MESSAGE_CONTEXT_RETENTION_DAYS` | Optional positive retention period. Blank retains indefinitely. |
+| `MESSAGE_CONTEXT_NSFW_ACCESS_ROLE_IDS` | Optional comma-separated NSFW-access role IDs for command-time eligibility snapshots; blank means unknown. |
+| `MESSAGE_CONTEXT_RANK_BOT_IDS` | Optional trusted rank-bot IDs for inferred textual rank/level response recognition. Exact command metadata needs no allowlist. |
 | `MESSAGE_CONTEXT_MODEL` | Optional primary Gemini model for `/context`; falls back to `MODAI_MODEL`. |
 | `MESSAGE_CONTEXT_FALLBACK_MODEL` | Optional fallback Gemini model for `/context`; falls back to `MODAI_FALLBACK_MODEL`. |
 | `STAFF_NOTES_ALLOWED_ROLE_IDS` | Comma-separated Discord role IDs allowed to use staff notes. |

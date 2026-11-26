@@ -7,6 +7,7 @@ from unittest.mock import AsyncMock, Mock, patch
 import discord
 
 from cogs.message_context import MessageContext
+from tests.community_fixtures import evaluation_rows, evaluation_data
 
 
 class ContextDeliveryTests(unittest.IsolatedAsyncioTestCase):
@@ -93,6 +94,36 @@ class ContextDeliveryTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(self.interaction.followup.send.await_args.kwargs['ephemeral'])
         self.assertEqual(self.guild.fetch_member.await_args_list[-1].args, (10,))
 
+    async def test_two_embeds_are_sent_atomically_with_existing_access_checks(self):
+        cards = [self.embed, discord.Embed(title='Community Contribution Score')]
+        await self.cog._send_result(self.interaction, cards, public_result=True)
+        payload = self.interaction.followup.send.await_args.kwargs
+        self.assertIs(payload['embeds'], cards)
+        self.assertFalse(payload['ephemeral'])
+        await self.cog._send_result(self.interaction, cards, post_to=self.destination)
+        self.assertIs(self.destination.send.await_args.kwargs['embeds'], cards)
+        self.destination.send.reset_mock()
+        self.member.roles = []
+        await self.cog._send_result(self.interaction, cards, post_to=self.destination)
+        self.destination.send.assert_not_awaited()
+        self.assertTrue(self.interaction.followup.send.await_args.kwargs['ephemeral'])
+
+    async def test_command_only_member_gets_two_cards_without_an_ai_score(self):
+        self.cog._synthesize_structured = AsyncMock()
+        await self.cog._send_structured_analysis(
+            self.interaction, [], kind='public_user', title='Community Evaluation: Member',
+            task='Evaluate', request='90d', schema={}, timeframe_text='90 days; 0 messages',
+            total_matching_count=0, target_label='user=15', timeframe_label='90d',
+            source_command='/context user', task_type='public_context_user',
+            public_result=True, post_to=self.destination,
+            command_usage='20 public command invocations observed. Rank checks: 20.',
+        )
+        self.cog._synthesize_structured.assert_not_awaited()
+        cards = self.destination.send.await_args.kwargs['embeds']
+        self.assertEqual(len(cards), 2)
+        self.assertIn('Rank checks: 20', str(cards[0].to_dict()))
+        self.assertIn('Insufficient evidence', cards[1].description)
+
     async def test_posting_requires_invoker_and_bot_channel_permissions(self):
         for actor, permission in (
             ('member', 'view_channel'), ('member', 'send_messages'),
@@ -143,11 +174,14 @@ class ContextDeliveryTests(unittest.IsolatedAsyncioTestCase):
             'channel_id': '99', 'channel_name': 'general',
             'author_display_name': 'Member', 'author_name': 'Member',
             'author_id': '10', 'content': 'Hello',
-            'jump_url': None, 'source': 'live_discord',
+            'jump_url': None, 'source': 'live_discord', 'is_deleted': 0, 'message_id': '1000',
         }]
         self.cog._search_rows = AsyncMock(return_value=rows)
         self.cog._range_rows = AsyncMock(return_value=rows)
         self.cog._count_rows = AsyncMock(return_value=1)
+        self.cog._evaluation_rows = AsyncMock(return_value=(rows, 1))
+        self.cog._evaluation_nearby = AsyncMock(return_value={})
+        self.cog._command_usage_summary = AsyncMock(return_value="No public commands observed.")
         source_channel = SimpleNamespace(id=99, name='general')
         cases = [
             ('search', {'query': 'Hello', 'channel': source_channel}),
@@ -198,7 +232,7 @@ class ContextDeliveryTests(unittest.IsolatedAsyncioTestCase):
     async def test_public_user_fallback_stays_private_with_destination(self):
         self.cog._synthesize_structured = AsyncMock(return_value=(None, 'private raw recap'))
         await self.cog._send_structured_analysis(
-            self.interaction, [object()], kind='public_user', title='Evaluation',
+            self.interaction, evaluation_rows(), kind='public_user', title='Evaluation',
             task='Evaluate', request='Today', schema={}, timeframe_text='Today',
             total_matching_count=1, target_label='user=15', timeframe_label='24h',
             source_command='/context user', task_type='public_context_user',
