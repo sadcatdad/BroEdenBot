@@ -10,7 +10,7 @@ from typing import Optional
 
 import discord
 
-from utils.community_contribution import BASELINE, Scorecard
+from utils.community_contribution import BASELINE, Scorecard, scorecard_label
 from utils.message_context import parse_timestamp, safe_discord_jump_url
 from utils.privacy import redact_sensitive_text
 from utils.ui import branded_embed, truncate
@@ -418,21 +418,34 @@ def build_public_user_evaluation_embed(data: dict, metadata: dict) -> discord.Em
     return truncate_embed(embed)
 
 
-def build_community_score_embed(scorecard: Scorecard, metadata: dict) -> discord.Embed:
+def build_community_score_embed(scorecard: Scorecard, metadata: dict, *,
+                                matrix_image_url: Optional[str] = None) -> discord.Embed:
     """A second public embed explains the actual deterministic rubric result."""
     title = str(metadata["title"]).replace("Community Evaluation:", "Community Contribution Score:")
-    if scorecard.score is None:
-        label = "Staff review required" if scorecard.status == "review_required" else "Insufficient evidence"
-    else:
-        score = scorecard.score
-        label = ("Exceptional sustained contribution" if score >= 90 else
-                 "Clearly positive contributor" if score >= 80 else
-                 "Healthy community participation" if score >= 70 else
-                 "Repeated detracting behavior" if score >= 60 else
-                 "Substantial harmful behavior")
+    label = scorecard_label(scorecard)
     embed = branded_embed(title, description=(
         f"**{scorecard.score}/100 — {label}**" if scorecard.score is not None else f"**{label}**"
     ), footer="Community rubric v1 • AI evidence assessment; bot-calculated total")
+    if matrix_image_url:
+        embed.set_image(url=matrix_image_url)
+        if scorecard.status == "scored":
+            # Compact screen-reader text complements the image and its
+            # attachment description. The complete text fallback is kept below.
+            embed.add_field(name="Rubric results", value="\n".join(
+                f"{category.name}: {category.rating}/4 · +{category.bonus:g}/{category.maximum}"
+                for category in scorecard.categories
+            ) or "No supported category ratings.", inline=False)
+            embed.add_field(name="Calculation", value=(
+                f"{BASELINE} + {scorecard.bonus:g} − {scorecard.penalty} → **{scorecard.score}/100**"
+                + (f" · ceiling {scorecard.ceiling}" if scorecard.ceiling is not None else "")
+            ), inline=False)
+        else:
+            embed.add_field(name="Score status", value=scorecard.explanation, inline=False)
+        embed.add_field(name="Coverage", value=(
+            f"{scorecard.confidence} confidence · {scorecard.exchanges} interpretable sessions\n"
+            f"{metadata['timeframe_text']}"
+        ), inline=False)
+        return truncate_embed(embed, max_total=1_500)
     for category in scorecard.categories:
         explanation = truncate(clean_markdown(category.explanation), 180, "Not observed.")
         embed.add_field(name=category.name, value=(

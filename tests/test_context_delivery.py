@@ -8,6 +8,7 @@ import discord
 
 from cogs.message_context import MessageContext
 from tests.community_fixtures import evaluation_rows, evaluation_data
+from utils.community_contribution import calculate_scorecard
 
 
 class ContextDeliveryTests(unittest.IsolatedAsyncioTestCase):
@@ -37,7 +38,7 @@ class ContextDeliveryTests(unittest.IsolatedAsyncioTestCase):
             view_channel=True, send_messages=True
         )
         self.bot_permissions = discord.Permissions(
-            view_channel=True, send_messages=True, embed_links=True
+            view_channel=True, send_messages=True, embed_links=True, attach_files=True
         )
         self.destination.permissions_for.side_effect = lambda member: (
             self.member_permissions if member.id == 10 else self.bot_permissions
@@ -108,6 +109,79 @@ class ContextDeliveryTests(unittest.IsolatedAsyncioTestCase):
         self.destination.send.assert_not_awaited()
         self.assertTrue(self.interaction.followup.send.await_args.kwargs['ephemeral'])
 
+    async def test_matrix_image_is_attached_to_second_embed_in_both_delivery_paths(self):
+        rows = evaluation_rows()
+        score = calculate_scorecard(evaluation_data(rows), rows, total_matching=28)
+        metadata = {'title': 'Community Evaluation: Member', 'timeframe_text': '90 days; 28 messages reviewed'}
+        for destination in [None, self.destination]:
+            with self.subTest(selected_destination=destination is not None):
+                captured = {}
+                async def capture(**kwargs):
+                    captured.update(kwargs)
+                    captured['png'] = kwargs['files'][0].fp.getvalue()
+                    return SimpleNamespace(jump_url='https://discord.com/channels/42/100/1')
+                self.interaction.followup.send.side_effect = None
+                self.destination.send.side_effect = None
+                sender = self.destination.send if destination else self.interaction.followup.send
+                sender.side_effect = capture
+                await self.cog._send_public_evaluation(self.interaction, self.embed, score, metadata, post_to=destination)
+                self.assertEqual(len(captured['embeds']), 2)
+                self.assertEqual(captured['embeds'][1].image.url, 'attachment://community-contribution.png')
+                self.assertEqual(captured['files'][0].filename, 'community-contribution.png')
+                self.assertIn('93/100', captured['files'][0].description)
+                self.assertTrue(captured['png'].startswith(b'\x89PNG'))
+                self.assertTrue(captured['files'][0].fp.closed)
+                self.assertEqual(captured['allowed_mentions'].to_dict(), {'parse': []})
+
+    async def test_missing_attach_files_uses_complete_text_rubric(self):
+        rows = evaluation_rows()
+        score = calculate_scorecard(evaluation_data(rows), rows, total_matching=28)
+        metadata = {'title': 'Community Evaluation: Member', 'timeframe_text': '90 days'}
+        self.bot_permissions.attach_files = False
+        await self.cog._send_public_evaluation(self.interaction, self.embed, score, metadata, post_to=self.destination)
+        payload = self.destination.send.await_args.kwargs
+        self.assertNotIn('files', payload)
+        self.assertIsNone(payload['embeds'][1].image.url)
+        self.assertIn('Connection and conversation', {f.name for f in payload['embeds'][1].fields})
+        self.assertIn('93/100', payload['embeds'][1].description)
+        self.destination.send.assert_awaited_once()
+
+    async def test_default_channel_attachment_permission_uses_text_fallback(self):
+        self.interaction.app_permissions = discord.Permissions(attach_files=False)
+        rows = evaluation_rows()
+        await self.cog._send_public_evaluation(self.interaction, self.embed,
+            calculate_scorecard(evaluation_data(rows), rows, total_matching=28),
+            {'title': 'Community Evaluation: Member', 'timeframe_text': '90 days'})
+        payload = self.interaction.followup.send.await_args.kwargs
+        self.assertNotIn('files', payload)
+        self.assertEqual(len(payload['embeds']), 2)
+        self.assertFalse(payload['ephemeral'])
+
+    async def test_render_failure_preserves_valid_text_score_without_more_ai(self):
+        rows = evaluation_rows()
+        with patch('cogs.message_context.render_community_matrix', side_effect=RuntimeError('font failure')):
+            await self.cog._send_public_evaluation(self.interaction, self.embed,
+                calculate_scorecard(evaluation_data(rows), rows, total_matching=28),
+                {'title': 'Community Evaluation: Member', 'timeframe_text': '90 days'})
+        payload = self.interaction.followup.send.await_args.kwargs
+        self.assertNotIn('files', payload)
+        self.assertIn('93/100', payload['embeds'][1].description)
+
+    async def test_definitively_rejected_upload_falls_back_once_to_text(self):
+        rows = evaluation_rows()
+        self.destination.send.side_effect = [discord.HTTPException(
+            SimpleNamespace(status=413, reason='Payload Too Large'), 'Image rejected'),
+            SimpleNamespace(jump_url='https://discord.com/channels/42/100/1')]
+        await self.cog._send_public_evaluation(self.interaction, self.embed,
+            calculate_scorecard(evaluation_data(rows), rows, total_matching=28),
+            {'title': 'Community Evaluation: Member', 'timeframe_text': '90 days'}, post_to=self.destination)
+        first, second = self.destination.send.await_args_list
+        self.assertIn('files', first.kwargs)
+        self.assertTrue(first.kwargs['files'][0].fp.closed)
+        self.assertNotIn('files', second.kwargs)
+        self.assertIsNone(second.kwargs['embeds'][1].image.url)
+        self.assertEqual(self.destination.send.await_count, 2)
+
     async def test_command_only_member_gets_two_cards_without_an_ai_score(self):
         self.cog._synthesize_structured = AsyncMock()
         await self.cog._send_structured_analysis(
@@ -167,7 +241,7 @@ class ContextDeliveryTests(unittest.IsolatedAsyncioTestCase):
         self.cog._staff_ai_cooldown = AsyncMock(return_value=False)
         self.cog._synthesize = AsyncMock(return_value='Neutral recap.')
         self.cog._synthesize_structured = AsyncMock(
-            return_value=({'summary': 'Neutral recap.'}, 'raw private recap')
+            return_value=(evaluation_data(), 'raw private recap')
         )
         rows = [{
             'timestamp': '2026-11-25T00:00:00+00:00',

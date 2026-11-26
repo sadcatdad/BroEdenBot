@@ -1,5 +1,6 @@
 import asyncio
 import json
+import re
 import unittest
 from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
@@ -11,6 +12,7 @@ from cogs.message_context import MessageContext, PUBLIC_USER_EVALUATION_SCHEMA, 
 from utils.message_context import MESSAGE_CONTEXT_TABLE_SQL, MESSAGE_CONTEXT_INDEX_SQL
 from utils.context_commands import COMMAND_USAGE_SQL, COMMAND_USAGE_INDEX_SQL
 from tests.community_fixtures import evaluation_rows, evaluation_data
+from utils.public_evaluation import EVIDENCE_SCHEMA, PublicEvaluationError
 
 
 class EvaluationArchiveTests(unittest.IsolatedAsyncioTestCase):
@@ -102,15 +104,18 @@ class EvaluationSynthesisTests(unittest.IsolatedAsyncioTestCase):
 
         async def generate(**kwargs):
             nonlocal active, peak
-            if kwargs.get('response_schema'):
+            if kwargs.get('response_schema') == PUBLIC_USER_EVALUATION_SCHEMA:
                 return SimpleNamespace(ok=True, blocked_by_budget=False, text=json.dumps(evaluation_data(rows)), model_used='test')
             active += 1
             peak = max(peak, active)
             await asyncio.sleep(0)
             active -= 1
-            if 'Chunk: 2 of' in kwargs['prompt']:
+            if 'Evidence batch 2/' in kwargs['prompt']:
                 raise RuntimeError('One batch failed')
-            return SimpleNamespace(ok=True, blocked_by_budget=False, text='Supported target evidence.', error=None)
+            ids = re.findall(r'(?m)^TARGET messageId=([^\n]+)', kwargs['prompt'])
+            evidence = {'observations': [{'category': 'connection', 'explanation': 'Welcoming replies.',
+                        'evidenceMessageIds': ids[:2], 'concernType': ''}], 'quoteMessageIds': ids[:1]}
+            return SimpleNamespace(ok=True, blocked_by_budget=False, text=json.dumps(evidence), error=None)
         interaction = SimpleNamespace(user=SimpleNamespace(id=1), guild_id=42, channel_id=99)
         with patch('cogs.message_context.MAX_GEMINI_ROWS_PER_CHUNK', 2), patch('cogs.message_context.generate_ai_response', side_effect=generate):
             parsed, _ = await cog._synthesize_structured(rows, task='Rubric', request='90d',

@@ -690,7 +690,12 @@ The shared AI framework lives in `utils/ai_config.py`, `utils/ai_costs.py`,
   fast tier for cheaper/simple future tasks.
 - Requests are checked against daily and monthly budget limits before calling
   Gemini. The preflight check estimates worst-case cost from prompt size and
-  configured output limit.
+  configured output limit, including response-schema input. Concurrent requests
+  reserve their estimates so they cannot spend the same remaining allowance.
+  Budget-blocked attempts record zero tokens/cost; historical blocked estimates
+  are excluded from bot budget decisions without deleting their audit records.
+  Actual provider usage includes thinking tokens, including empty/truncated
+  responses that were still generated. Truncated responses are failures.
 - Usage is logged to `ai_usage_logs` with metadata, token counts, estimated
   cost, success/failure, and budget-block state.
 - `/ask` feedback is stored in `ask_feedback` so dashboard admins can review
@@ -781,7 +786,14 @@ Markdown is escaped, and only Discord message URLs become jump links.
   Chronological staff narrative.
 - `/context user <user> [timeframe] [channel] [include_bots] [max_messages] [post_to]`
   — Authorized staff can post **two embeds in one message**: a member overview
-  and a separate **Community Contribution Score** rubric card. Defaults are
+  and a separate **Community Contribution Score** rubric card with an attached
+  PNG matrix. The matrix highlights each category's 0–4 rating, earned bonus,
+  short explanation, final score, calculation, deductions, confidence, and
+  coverage. It is rendered locally from the verified score without another AI
+  call. A compact text summary and image description remain accessible; missing
+  Attach Files permission, render failures, or definitively rejected uploads
+  fall back to the complete text rubric. This works in the invoking channel
+  and through `post_to`, with existing live destination checks. Defaults are
   **90 days and 2,500 messages**, adjustable up to **5,000**. Capped reviews
   sample across weeks/channels instead of taking only the latest messages.
   The score is calculated by the bot as `70 + evidence-backed bonuses -
@@ -798,9 +810,24 @@ Markdown is escaped, and only Discord message URLs become jump links.
   Optional timeframes: `24h`, `3d`, `7d`, `14d`, `30d`, `60d`, and `90d`.
   The retained `include_bots` option is compatibility-only; contribution
   evaluations require a human and exclude bot-authored activity.
+
 - `/context channel <channel> <timeframe> [topic] [include_bots] [max_messages] [post_to]`
   — Channel recap. Timeframes include `1h`, `6h`, `12h`, `24h`, `3d`, `7d`,
   `14d`, and `30d`.
+
+[Illustrative matrix preview](docs/screenshots/community-contribution-matrix-preview.png)
+(example data, not an evaluation of a real member).
+
+User evaluations extract compact structured evidence through the fast tier,
+then validate a complete rubric from the default tier. Final input is bounded
+locally and balanced across categories/dates. Summary-only, incomplete, or
+truncated responses are private generation errors, never a public
+"Insufficient evidence" judgment about the member. A full-review budget
+precheck and minimum input/output checks run before batch requests. Completed,
+verified evidence batches are held in a bounded in-memory cache for 20 minutes,
+so a final-response retry can reuse them; edited source text/context changes
+the cache key. Only one evaluation per member runs at a time. No budget cap is
+raised or bypassed. See [message-context troubleshooting](docs/message-context.md).
 
 With message-context tracking enabled, new command observations are recorded
 in `message_context_command_usage` in the same database. Own command invocation
@@ -1880,7 +1907,7 @@ updated from the authenticated local dashboard without rewriting `.env`.
 | `AI_MONTHLY_BUDGET_USD` | Monthly estimated AI framework budget. Defaults to `10.00`. |
 | `AI_MAX_INPUT_TOKENS` | Maximum estimated framework input tokens. Defaults to `12000`. |
 | `AI_MAX_OUTPUT_TOKENS` | Ceiling on framework output tokens per call (billed on actual usage, not the cap). Defaults to `6144`; must exceed `AI_STRUCTURED_THINKING_BUDGET` plus the answer size. |
-| `AI_STRUCTURED_THINKING_BUDGET` | Thinking-token cap for reasoning-heavy calls like `/context` summaries. Billed as output tokens, so this is the main cost lever. `0` disables thinking (fields come back empty); higher values improve quality at higher cost. Defaults to `512`. |
+| `AI_STRUCTURED_THINKING_BUDGET` | Thinking-token cap for reasoning-heavy calls like `/context` summaries. Billed as output tokens, so this is the main cost lever. `0` disables thinking; final rubric generation also validates completeness. Higher values allow more reasoning at higher cost. Defaults to `512`. |
 | `AI_DEFAULT_TEMPERATURE` | Default framework generation temperature. Defaults to `0.4`. |
 | `AI_MEMBER_COOLDOWN_SECONDS` | Reusable member-facing AI cooldown helper value. Defaults to `20`. |
 | `AI_STAFF_COOLDOWN_SECONDS` | Reusable staff/admin AI cooldown helper value. Defaults to `5`. |

@@ -12,7 +12,7 @@ from unittest.mock import AsyncMock, patch
 import aiosqlite
 
 from cogs.message_context import MessageContext, PUBLIC_EVALUATION_SYSTEM_INSTRUCTION
-from tests.community_fixtures import evaluation_rows
+from tests.community_fixtures import evaluation_rows, evaluation_data
 from scripts.import_message_context import ensure_schema, input_files, process_file
 from utils.message_context import (
     MESSAGE_CONTEXT_TABLE_SQL,
@@ -371,6 +371,7 @@ class PublicUserEvaluationDeliveryTests(unittest.IsolatedAsyncioTestCase):
         cog._synthesize_structured = AsyncMock(
             return_value=(
                 {
+                    **evaluation_data(),
                     "summary": "Helpful in discussions.",
                     "communityContributionScore": 81,
                     "strengths": ["Welcomes newcomers."],
@@ -449,6 +450,7 @@ class PublicUserEvaluationDeliveryTests(unittest.IsolatedAsyncioTestCase):
         cog._synthesize_structured = AsyncMock(
             return_value=(
                 {
+                    **evaluation_data(),
                     "summary": "Helpful in discussions.",
                     "communityContributionScore": 81,
                     "strengths": [],

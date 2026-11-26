@@ -123,6 +123,17 @@ class Scorecard:
     exchanges: int
 
 
+def scorecard_label(scorecard: Scorecard) -> str:
+    if scorecard.score is None:
+        return "Staff review required" if scorecard.status == "review_required" else "Insufficient evidence"
+    score = scorecard.score
+    return ("Exceptional sustained contribution" if score >= 90 else
+            "Clearly positive contributor" if score >= 80 else
+            "Healthy community participation" if score >= 70 else
+            "Repeated detracting behavior" if score >= 60 else
+            "Substantial harmful behavior")
+
+
 def _sessions(rows: list[dict]) -> dict[str, tuple]:
     """Conservatively group a member's messages into channel sessions (30m gap)."""
     sessions = {}

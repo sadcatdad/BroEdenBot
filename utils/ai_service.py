@@ -3,8 +3,11 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import time
+import weakref
+from functools import wraps
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Any, Optional
@@ -29,6 +32,7 @@ AI_BUDGET_MESSAGE = (
 )
 AI_EMPTY_RESPONSE_MESSAGE = "AI returned an empty response. Please try again later."
 AI_GENERIC_ERROR_MESSAGE = "AI could not complete that request right now."
+AI_TRUNCATED_RESPONSE_MESSAGE = "AI reached its output limit before completing the response."
 
 FUTURE_TASK_TYPES = {
     "ask_server_guide",
@@ -45,6 +49,7 @@ FUTURE_TASK_TYPES = {
 
 _COOLDOWNS: dict[tuple[str, str], float] = {}
 _COOLDOWN_LOCK = asyncio.Lock()
+_BUDGET_STATES = weakref.WeakKeyDictionary()
 
 
 @dataclass(frozen=True)
@@ -57,6 +62,7 @@ class AIResult:
     estimated_cost_usd: float
     blocked_by_budget: bool = False
     error: Optional[str] = None
+    finish_reason: Optional[str] = None
 
     def as_dict(self) -> dict[str, object]:
         return {
@@ -154,7 +160,7 @@ async def get_daily_ai_usage_usd(connection: aiosqlite.Connection) -> float:
         """
         SELECT COALESCE(SUM(estimated_cost_usd), 0)
         FROM ai_usage_logs
-        WHERE created_at LIKE ?
+        WHERE created_at LIKE ? AND COALESCE(blocked_by_budget, 0) = 0
         """,
         (_day_prefix() + "%",),
     )
@@ -170,7 +176,7 @@ async def get_monthly_ai_usage_usd(connection: aiosqlite.Connection) -> float:
         """
         SELECT COALESCE(SUM(estimated_cost_usd), 0)
         FROM ai_usage_logs
-        WHERE created_at LIKE ?
+        WHERE created_at LIKE ? AND COALESCE(blocked_by_budget, 0) = 0
         """,
         (_month_prefix() + "%",),
     )
@@ -188,6 +194,7 @@ async def can_run_ai_request(
     max_output_tokens: int,
     model: str,
     config: Optional[AIConfig] = None,
+    reserved_cost_usd: float = 0.0,
 ) -> tuple[bool, str, float, float, float]:
     ai_config = config or get_ai_config()
     estimated_cost = estimate_ai_cost_usd(
@@ -201,9 +208,9 @@ async def can_run_ai_request(
     await initialize_ai_usage_schema(connection)
     daily_spend = await get_daily_ai_usage_usd(connection)
     monthly_spend = await get_monthly_ai_usage_usd(connection)
-    if daily_spend + estimated_cost > ai_config.budgets.daily_usd:
+    if daily_spend + estimated_cost + reserved_cost_usd > ai_config.budgets.daily_usd:
         return False, "daily", daily_spend, monthly_spend, estimated_cost
-    if monthly_spend + estimated_cost > ai_config.budgets.monthly_usd:
+    if monthly_spend + estimated_cost + reserved_cost_usd > ai_config.budgets.monthly_usd:
         return False, "monthly", daily_spend, monthly_spend, estimated_cost
     return True, "", daily_spend, monthly_spend, estimated_cost
 
@@ -222,7 +229,8 @@ async def log_ai_usage(
     if connection is None:
         return
     await initialize_ai_usage_schema(connection)
-    usage = result.usage or AITokenUsage(0, 0, 0, usage_was_estimated=True)
+    usage = (AITokenUsage(0, 0, 0, True) if result.blocked_by_budget else
+             result.usage or AITokenUsage(0, 0, 0, usage_was_estimated=True))
     await connection.execute(
         """
         INSERT INTO ai_usage_logs (
@@ -245,7 +253,7 @@ async def log_ai_usage(
             usage.input_tokens,
             usage.output_tokens,
             usage.total_tokens,
-            result.estimated_cost_usd,
+            0.0 if result.blocked_by_budget else result.estimated_cost_usd,
             1 if usage.usage_was_estimated else 0,
             1 if result.ok else 0,
             1 if result.blocked_by_budget else 0,
@@ -293,6 +301,7 @@ def _combined_prompt_text(
     prompt: str,
     system_instruction: Optional[str],
     context: Optional[object],
+    response_schema: Optional[dict[str, object]] = None,
 ) -> str:
     parts = []
     if system_instruction:
@@ -300,6 +309,8 @@ def _combined_prompt_text(
     if context:
         parts.append(str(context))
     parts.append(str(prompt or ""))
+    if response_schema is not None:
+        parts.append(json.dumps(response_schema, ensure_ascii=False))
     return "\n\n".join(parts)
 
 
@@ -318,10 +329,11 @@ def _usage_from_response(
     usage_metadata = getattr(response, "usage_metadata", None)
     input_tokens = getattr(usage_metadata, "prompt_token_count", None)
     output_tokens = getattr(usage_metadata, "candidates_token_count", None)
+    thinking_tokens = getattr(usage_metadata, "thoughts_token_count", None)
     total_tokens = getattr(usage_metadata, "total_token_count", None)
-    if input_tokens is not None or output_tokens is not None or total_tokens is not None:
+    if any(value is not None for value in (input_tokens, output_tokens, thinking_tokens, total_tokens)):
         input_value = int(input_tokens or 0)
-        output_value = int(output_tokens or 0)
+        output_value = int(output_tokens or 0) + int(thinking_tokens or 0)
         total_value = int(total_tokens or input_value + output_value)
         return AITokenUsage(input_value, output_value, total_value, False)
     input_value = estimate_tokens_from_text(prompt_text)
@@ -342,6 +354,49 @@ def _friendly_error(exc: Exception) -> str:
     return AI_GENERIC_ERROR_MESSAGE
 
 
+def _reserve_request_budget(generate):
+    """Concurrent requests cannot all spend the same remaining budget."""
+    @wraps(generate)
+    async def guarded(**kwargs):
+        db = kwargs.get("db")
+        config = get_ai_config()
+        prompt = _combined_prompt_text(prompt=kwargs["prompt"],
+            system_instruction=kwargs.get("system_instruction"), context=kwargs.get("context"),
+            response_schema=kwargs.get("response_schema"))
+        input_tokens = estimate_tokens_from_text(prompt)
+        if db is None or not config.available or input_tokens > config.token_limits.max_input_tokens:
+            return await generate(**kwargs)
+        loop = asyncio.get_running_loop()
+        lock, reservations = _BUDGET_STATES.setdefault(loop, (asyncio.Lock(), {}))
+        key = id(db)
+        model, tier = select_ai_model(kwargs.get("requested_tier"), config)
+        output_limit = max(1, min(kwargs.get("max_output_tokens") or config.token_limits.max_output_tokens,
+                                  config.token_limits.max_output_tokens))
+        async with lock:
+            allowed, _, _, _, estimated = await can_run_ai_request(db,
+                estimated_input_tokens=input_tokens, max_output_tokens=output_limit, model=model,
+                config=config, reserved_cost_usd=reservations.get(key, 0.0))
+            if allowed:
+                reservations[key] = reservations.get(key, 0.0) + estimated
+        if not allowed:
+            result = AIResult(False, None, model, tier, AITokenUsage(0, 0, 0, True),
+                              0.0, blocked_by_budget=True, error=AI_BUDGET_MESSAGE)
+            await log_ai_usage(db, result, **{name: kwargs.get(name) for name in
+                ("guild_id", "channel_id", "user_id", "source_command", "task_type", "requested_tier")})
+            return result
+        try:
+            return await generate(**kwargs)
+        finally:
+            async with lock:
+                remaining = max(0.0, reservations.get(key, 0.0) - estimated)
+                if remaining < 1e-12:
+                    reservations.pop(key, None)
+                else:
+                    reservations[key] = remaining
+    return guarded
+
+
+@_reserve_request_budget
 async def generate_ai_response(
     *,
     task_type: str,
@@ -391,6 +446,7 @@ async def generate_ai_response(
         prompt=prompt,
         system_instruction=system_instruction,
         context=context,
+        response_schema=response_schema,
     )
     input_tokens = estimate_tokens_from_text(prompt_text)
     if input_tokens > ai_config.token_limits.max_input_tokens:
@@ -435,8 +491,8 @@ async def generate_ai_response(
             text=None,
             model_used=model,
             tier_used=tier,
-            usage=AITokenUsage(input_tokens, output_limit, input_tokens + output_limit, True),
-            estimated_cost_usd=preflight_cost,
+            usage=AITokenUsage(0, 0, 0, True),
+            estimated_cost_usd=0.0,
             blocked_by_budget=True,
             error=AI_BUDGET_MESSAGE,
         )
@@ -502,15 +558,27 @@ async def generate_ai_response(
             response_text = response.text
         except Exception as exc:
             raise RuntimeError("Gemini returned a blocked response.") from exc
-        if not response_text or not response_text.strip():
+        usage = _usage_from_response(response, prompt_text=prompt_text, response_text=response_text or "")
+        estimated_cost = estimate_ai_cost_usd(model=model, input_tokens=usage.input_tokens,
+                                             output_tokens=usage.output_tokens)
+        candidates = getattr(response, "candidates", None) or []
+        reason = getattr(candidates[0], "finish_reason", None) if candidates else None
+        finish_reason = str(getattr(reason, "value", reason) or "") or None
+        if finish_reason == "MAX_TOKENS":
+            logger.warning("AI output truncated: task=%s source=%s model=%s output_limit=%s",
+                           task_type, source_command, model, output_limit)
+            result = AIResult(False, None, model, tier, usage, estimated_cost,
+                              error=AI_TRUNCATED_RESPONSE_MESSAGE, finish_reason=finish_reason)
+        elif not response_text or not response_text.strip():
             result = AIResult(
                 ok=False,
                 text=None,
                 model_used=model,
                 tier_used=tier,
-                usage=AITokenUsage(input_tokens, 0, input_tokens, True),
-                estimated_cost_usd=0.0,
+                usage=usage,
+                estimated_cost_usd=estimated_cost,
                 error=AI_EMPTY_RESPONSE_MESSAGE,
+                finish_reason=finish_reason,
             )
         else:
             text = response_text.strip()
@@ -531,6 +599,7 @@ async def generate_ai_response(
                 tier_used=tier,
                 usage=usage,
                 estimated_cost_usd=estimated_cost,
+                finish_reason=finish_reason,
             )
             if ai_config.logging.log_responses and not sensitive_content:
                 logger.info(

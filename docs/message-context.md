@@ -42,8 +42,30 @@ A successful `/context user` response posts **two embeds in one message**:
    staff concerns, moderation history, and other members' content are not.
 2. A Community Contribution Score card with five category ratings, earned
    bonuses, supported conduct deductions, the calculation, confidence, and
-   archive coverage. Discord's 6,000-character budget is enforced across both
-   embeds together, including delivery through `post_to`.
+   archive coverage, displayed as an attached PNG matrix. The second embed
+   references `attachment://community-contribution.png`; the image is uploaded
+   atomically with both embeds, including delivery through `post_to`.
+
+The matrix is rendered locally with Pillow and the bundled fonts from the
+already calculated rubric; it makes no AI request and stores no per-member
+image files. Rating zero is neutral, and unscored/review states show N/A rather
+than a fake zero. Unreviewed allegations do not appear in review-state images.
+A compact text summary and an attachment description are provided for
+accessibility. Discord's 6,000-character budget still applies across the two
+embeds' text. PNG generation runs off the event loop, and file buffers close
+after delivery or failure.
+
+The image requires the bot's Attach Files permission in the destination. If
+that permission is unavailable, rendering fails, or Discord definitively
+rejects the upload (HTTP 400/403/413), the bot posts the complete text rubric
+instead. Ambiguous transport/server failures are not automatically resent.
+For `post_to`, destination permissions and archive access are rechecked before
+publication, including the text fallback; revoked access never becomes permission
+to post the fallback. A restart/deployment activates this bot-side change; no dashboard
+assets or extra dependency configuration are involved.
+
+See the [illustrative preview](screenshots/community-contribution-matrix-preview.png)
+for the layout; its member and scores are example data.
 
 ### Community contribution rubric v1
 
@@ -107,9 +129,49 @@ requested period and archive exclusions. Nearby messages are labeled context
 only and cannot become the selected member's contributions or public quotes.
 Deleted, webhook, known automation, and unattributable imported Deleted User
 rows are excluded from user evaluations. This is not an exhaustive historical
-bot classifier. Public AI chunk recaps run at bounded concurrency (three)
-with existing AI budget checks; failures report partial coverage or remain
-private when no usable evaluation is available.
+bot classifier. Public evidence extraction runs on the fast tier at bounded
+concurrency (three), with verified target IDs and at most ten compact facts
+per batch. The default-tier final assessment receives locally bounded evidence
+balanced across categories and months, plus actual source quotation candidates.
+Condensed evidence is disclosed and cannot receive high confidence. Successful
+batches alone support ratings and quotes.
+
+### Incomplete evaluations and budget errors
+
+A summary without the complete rubric is a generation failure, not evidence
+that a member contributed too little. Public evaluations require complete JSON
+and all five valid category results; truncated JSON is never salvaged into a
+public card. Generation failures remain private. Genuine insufficient member
+evidence is still reported when a complete rubric cannot support a score.
+
+Before extraction, the bot checks estimated whole-review cost against existing
+daily/monthly limits and validates that input/output limits can fit the rubric.
+The default 6,144 output-token cap leaves room for both reasoning and the
+answer; at least 4,096 tokens and 3,072 tokens beyond the configured thinking
+budget are required. The final input includes schema overhead and is bounded
+to `AI_MAX_INPUT_TOKENS`. This never overrides a configured limit.
+
+Up to 128 verified evidence batches are retained only in bot memory for 20
+minutes. Retrying an identical source selection after final generation fails
+reuses completed batches; updated message text or nearby context invalidates
+the affected batch. The cache is cleared on restart/unload and never bypasses
+fresh archive retrieval or destination permissions. Concurrent evaluations of
+the same member are rejected before AI work. Failed final generation is not
+automatically retried or converted into an invented score.
+
+Budget-blocked attempts never call Gemini and record zero tokens/cost.
+Historical blocked estimates are ignored by the bot's daily/monthly budget
+checks without erasing audit history. Concurrent provider calls reserve their
+estimated costs. Provider-returned thinking tokens count as output usage;
+empty/truncated generated responses still count their actual returned usage.
+The configured spending caps remain unchanged.
+
+If the budget guard refuses a retry, completed evidence may still be reusable
+within its cache lifetime after capacity becomes available. Do not repeatedly
+rerun a failed full review; the bot now returns a private generation/configuration
+error rather than publishing an incomplete scorecard. A self-hosted deployment
+and bot restart are needed to activate these changes; local checks alone do
+not verify a production fix.
 
 With archive tracking enabled, `message_context_command_usage` stores minimal
 live command metadata: invocation IDs, member/application/channel/parent IDs,

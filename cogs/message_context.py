@@ -4,10 +4,14 @@ from __future__ import annotations
 
 import asyncio
 import datetime as dt
+import hashlib
+import io
 import json
 import logging
 import os
 import re
+import time
+from dataclasses import replace
 from pathlib import Path
 from typing import Literal, Optional, Union
 
@@ -21,9 +25,12 @@ from google.genai import types
 from utils.ai_service import (
     AI_BUDGET_MESSAGE,
     check_ai_cooldown,
+    can_run_ai_request,
     generate_ai_response,
     set_ai_cooldown,
 )
+from utils.ai_config import get_ai_config
+from utils.ai_costs import estimate_ai_cost_usd, estimate_tokens_from_text
 from utils.context_render import (
     build_community_score_embed,
     build_channel_context_embed,
@@ -36,10 +43,15 @@ from utils.context_render import (
     truncate_embed,
 )
 from utils.community_contribution import (
-    RUBRIC_INSTRUCTION, RUBRIC_SCHEMA, calculate_scorecard, verified_public_quotes,
+    RUBRIC_INSTRUCTION, RUBRIC_SCHEMA, Scorecard, calculate_scorecard, verified_public_quotes,
 )
+from utils.community_matrix import MATRIX_FILENAME, matrix_alt_text, render_community_matrix
 from utils.context_commands import (
     COMMAND_USAGE_SQL, COMMAND_USAGE_INDEX_SQL, command_name, public_command_response,
+)
+from utils.public_evaluation import (
+    EVIDENCE_SCHEMA, EVIDENCE_SYSTEM, PublicEvaluationError, pack_evidence,
+    parse_evidence, strict_object, validate_evaluation,
 )
 from utils.message_context import (
     MESSAGE_CONTEXT_FTS_SQL,
@@ -85,6 +97,8 @@ STRUCTURED_TIMEOUT_MAX_SECONDS = 600
 PUBLIC_CHUNK_CONCURRENCY = 3
 PUBLIC_TIMEOUT_MAX_SECONDS = 840
 DEFAULT_USER_MESSAGES = 2_500
+PUBLIC_EVIDENCE_CACHE_SECONDS = 1_200
+PUBLIC_EVIDENCE_CACHE_ENTRIES = 128
 TIMEFRAME_SECONDS = {
     "1h": 60 * 60,
     "6h": 6 * 60 * 60,
@@ -287,6 +301,10 @@ CHANNEL_CONTEXT_SCHEMA = {
 }
 
 
+class ContextAttachmentUnavailable(ValueError):
+    """Use the complete text scorecard when an image cannot be attached."""
+
+
 class MessageContext(commands.Cog):
     context = app_commands.Group(
         name="context",
@@ -338,6 +356,8 @@ class MessageContext(commands.Cog):
         self.client = genai.Client(api_key=api_key) if api_key else None
         self.nsfw_access_role_ids = parse_id_set(os.getenv("MESSAGE_CONTEXT_NSFW_ACCESS_ROLE_IDS", ""))
         self.rank_bot_ids = parse_id_set(os.getenv("MESSAGE_CONTEXT_RANK_BOT_IDS", ""))
+        self._public_evidence_cache: dict[str, tuple[float, dict]] = {}
+        self._active_public_evaluations: set[tuple] = set()
 
     async def cog_load(self) -> None:
         self.database_path.parent.mkdir(parents=True, exist_ok=True)
@@ -417,6 +437,7 @@ class MessageContext(commands.Cog):
 
     async def cog_unload(self) -> None:
         self.retention_task.cancel()
+        self._public_evidence_cache.clear()
         if self.db is not None:
             await self.db.close()
             self.db = None
@@ -490,7 +511,8 @@ class MessageContext(commands.Cog):
         return True
 
     async def _posting_destination(
-        self, interaction: discord.Interaction, post_to: discord.TextChannel
+        self, interaction: discord.Interaction, post_to: discord.TextChannel, *,
+        require_attachments: bool = False,
     ) -> discord.TextChannel:
         """Resolve current membership and overwrites before sharing archive output."""
         guild = interaction.guild
@@ -515,6 +537,8 @@ class MessageContext(commands.Cog):
             raise ValueError(
                 "I need View Channel, Send Messages, and Embed Links in the destination channel."
             )
+        if require_attachments and not bot_permissions.attach_files:
+            raise ContextAttachmentUnavailable("I need Attach Files to publish the rubric image.")
         return destination
 
     async def _posting_error(
@@ -551,29 +575,72 @@ class MessageContext(commands.Cog):
         *,
         post_to: Optional[discord.TextChannel] = None,
         public_result: bool = False,
+        files: Optional[list[discord.File]] = None,
+        fallback_embeds: Optional[list[discord.Embed]] = None,
     ) -> None:
         payload = {"embeds": embed} if isinstance(embed, list) else {"embed": embed}
-        if post_to is None:
-            await interaction.followup.send(
-                **payload,
-                ephemeral=not public_result,
-                allowed_mentions=discord.AllowedMentions.none(),
-            )
-            return
+        if files:
+            payload["files"] = files
         try:
+            if post_to is None:
+                permissions = getattr(interaction, "app_permissions", None)
+                if files and permissions is not None and not permissions.attach_files:
+                    raise ContextAttachmentUnavailable("Attach Files is unavailable in this channel.")
+                await interaction.followup.send(
+                    **payload, ephemeral=not public_result,
+                    allowed_mentions=discord.AllowedMentions.none(),
+                )
+                return
             # AI generation may take several minutes; recheck before publishing.
-            destination = await self._posting_destination(interaction, post_to)
+            destination = await self._posting_destination(
+                interaction, post_to, **({"require_attachments": True} if files else {}))
             message = await destination.send(
                 **payload, allowed_mentions=discord.AllowedMentions.none()
             )
+        except ContextAttachmentUnavailable as exc:
+            if fallback_embeds is not None:
+                await self._send_result(interaction, fallback_embeds, post_to=post_to, public_result=public_result)
+            else:
+                await self._posting_error(interaction, exc)
+            return
         except (ValueError, discord.HTTPException) as exc:
+            # These are definite HTTP rejections, not ambiguous transport
+            # failures. Retrying without the image cannot duplicate a post.
+            if files and fallback_embeds is not None and isinstance(exc, discord.HTTPException) and exc.status in (400, 403, 413):
+                await self._send_result(interaction, fallback_embeds, post_to=post_to, public_result=public_result)
+                return
             await self._posting_error(interaction, exc)
             return
+        finally:
+            for file in files or []:
+                file.close()
+                file.fp.close()
         await interaction.followup.send(
             f"[Posted context response]({message.jump_url}) in {destination.mention}.",
             ephemeral=True,
             allowed_mentions=discord.AllowedMentions.none(),
         )
+
+    async def _send_public_evaluation(
+        self, interaction: discord.Interaction, overview: discord.Embed,
+        scorecard: Scorecard, metadata: dict, *, post_to: Optional[discord.TextChannel] = None,
+    ) -> None:
+        """Attach the deterministic matrix; image trouble never discards a valid rubric."""
+        fallback = fit_public_evaluation_embeds(
+            overview.copy(), build_community_score_embed(scorecard, metadata))
+        try:
+            png = await asyncio.to_thread(render_community_matrix, scorecard, metadata)
+            score = build_community_score_embed(scorecard, metadata,
+                matrix_image_url=f"attachment://{MATRIX_FILENAME}")
+            cards = fit_public_evaluation_embeds(overview.copy(), score)
+            attachment = discord.File(io.BytesIO(png), filename=MATRIX_FILENAME,
+                                      description=matrix_alt_text(scorecard))
+        except Exception:
+            logger.exception("Community matrix rendering failed; using the text rubric")
+            await self._send_result(interaction, fallback, post_to=post_to, public_result=True)
+            return
+        await self._send_result(interaction, cards, post_to=post_to, public_result=True,
+                                files=[attachment], fallback_embeds=fallback)
 
     @staticmethod
     def _channel_ids(channel: object) -> set[int]:
@@ -1398,6 +1465,143 @@ final Source coverage section. Do not overclaim.
             post_to=post_to,
         )
 
+    async def _synthesize_public_evaluation(
+        self, rows: list, *, task: str, request: str, schema: dict,
+        include_links: bool, interaction: discord.Interaction, source_command: str,
+        task_type: str, system_instruction: str, format_rules: str,
+        nearby: Optional[dict[str, list]],
+    ) -> tuple[dict, str]:
+        """Cache validated evidence, bound the final input, publish only complete JSON."""
+        run_key = (interaction.guild_id, str(rows[0]["author_id"]))
+        if run_key in self._active_public_evaluations:
+            raise PublicEvaluationError("A community evaluation for this member is already running. Please wait for it to finish.")
+        self._active_public_evaluations.add(run_key)
+        try:
+            config = get_ai_config()
+            required_output = max(4_096, 3_072 + config.token_limits.structured_thinking_budget)
+            final_output = min(max(FINAL_SYNTHESIS_MAX_OUTPUT_TOKENS, required_output),
+                               config.token_limits.max_output_tokens)
+            if final_output < required_output:
+                raise PublicEvaluationError(
+                    "The configured AI output limit is too small for a complete rubric. "
+                    f"Set AI_MAX_OUTPUT_TOKENS to at least {required_output} "
+                    f"({max(6144, required_output)} recommended) before retrying."
+                )
+            chunks = self._chunks(rows, include_links=include_links, nearby=nearby or {})
+            overhead = (len(system_instruction) + len(task) + len(request) + len(format_rules)
+                        + len(self._coverage(rows)) + len(json.dumps(schema)) + 2_000)
+            if config.token_limits.max_input_tokens * 4 - overhead < 2_000:
+                raise PublicEvaluationError("The configured AI input limit is too small for the rubric. Increase AI_MAX_INPUT_TOKENS before retrying.")
+            if any(estimate_tokens_from_text(EVIDENCE_SYSTEM + json.dumps(EVIDENCE_SCHEMA) + chunk) + 200
+                   > config.token_limits.max_input_tokens for chunk in chunks):
+                raise PublicEvaluationError("The configured AI input limit is too small for an evidence batch. Increase AI_MAX_INPUT_TOKENS before retrying.")
+            keys = [hashlib.sha256(("evidence-v1:" + str(interaction.guild_id) + ":" +
+                    config.models.fast + ":" + chunk).encode()).hexdigest() for chunk in chunks]
+            now = time.monotonic()
+            self._public_evidence_cache = {key: value for key, value in self._public_evidence_cache.items()
+                                           if now - value[0] < PUBLIC_EVIDENCE_CACHE_SECONDS}
+            cached = {key: self._public_evidence_cache[key][1] for key in keys if key in self._public_evidence_cache}
+            chunk_output = min(1_100, config.token_limits.max_output_tokens)
+            evidence_schema_text = json.dumps(EVIDENCE_SCHEMA)
+            batch_cost = sum(estimate_ai_cost_usd(model=config.models.fast,
+                input_tokens=estimate_tokens_from_text(EVIDENCE_SYSTEM + evidence_schema_text + chunk) + 200,
+                output_tokens=chunk_output) for key, chunk in zip(keys, chunks) if key not in cached)
+            allowed, _, _, _, _ = await can_run_ai_request(
+                getattr(self.bot, "db", None), estimated_input_tokens=config.token_limits.max_input_tokens,
+                max_output_tokens=final_output, model=config.models.default,
+                config=config, reserved_cost_usd=batch_cost,
+            )
+            if not allowed:
+                raise RuntimeError(AI_BUDGET_MESSAGE)
+            semaphore = asyncio.Semaphore(PUBLIC_CHUNK_CONCURRENCY)
+            budget_exhausted = False
+            reviewed_ids: set[str] = set()
+
+            async def extract(number: int, key: str, chunk: str) -> Optional[dict]:
+                nonlocal budget_exhausted
+                source_ids = set(re.findall(r"(?m)^TARGET messageId=([^\n]+)", chunk))
+                if key in cached:
+                    reviewed_ids.update(source_ids)
+                    return cached[key]
+                try:
+                    async with semaphore:
+                        if budget_exhausted:
+                            return None
+                        result = await asyncio.wait_for(generate_ai_response(
+                            task_type=task_type, prompt=f"Evidence batch {number}/{len(chunks)}.\n<archived_messages>\n{chunk}\n</archived_messages>",
+                            system_instruction=EVIDENCE_SYSTEM, requested_tier="fast",
+                            max_output_tokens=chunk_output, temperature=0.1,
+                            response_schema=EVIDENCE_SCHEMA, sensitive_content=True,
+                            user_id=interaction.user.id, guild_id=interaction.guild_id,
+                            channel_id=interaction.channel_id, source_command=source_command,
+                            db=getattr(self.bot, "db", None),
+                        ), timeout=CHUNK_CALL_TIMEOUT_SECONDS)
+                    if result.blocked_by_budget:
+                        budget_exhausted = True
+                        return None
+                    if not result.ok or not result.text:
+                        logger.warning("Public evidence batch failed: batch=%s model=%s reason=%s",
+                                       number, result.model_used, result.error)
+                        return None
+                    evidence = parse_evidence(result.text, source_ids)
+                except Exception as exc:
+                    logger.warning("Public evidence batch rejected: batch=%s type=%s", number, type(exc).__name__)
+                    return None
+                self._public_evidence_cache[key] = (time.monotonic(), evidence)
+                while len(self._public_evidence_cache) > PUBLIC_EVIDENCE_CACHE_ENTRIES:
+                    self._public_evidence_cache.pop(next(iter(self._public_evidence_cache)))
+                reviewed_ids.update(source_ids)
+                return evidence
+
+            batches = await asyncio.gather(*(extract(i, key, chunk)
+                                            for i, (key, chunk) in enumerate(zip(keys, chunks), 1)))
+            successful = [batch for batch in batches if batch is not None]
+            if budget_exhausted:
+                raise RuntimeError(AI_BUDGET_MESSAGE)
+            if not successful:
+                raise PublicEvaluationError("The history review could not be completed. No member score was published. Please try again later.")
+            prefix = (f"Task: {task}\nRequest: {request}\nCoverage: {self._coverage(rows)}\n"
+                      f"Successful batches: {len(successful)}/{len(chunks)}.\n"
+                      "Use compact evidence to complete ALL five rubric categories and all required fields. "
+                      "Every evidence ID must be a TARGET source ID. Dates describe their actual source messages. "
+                      "Choose quotations only from quoteCandidates, copying their text/metadata exactly. "
+                      "An empty observations list means no positive bonus is established, not misconduct.\n")
+            suffix = "\nReturn complete JSON only.\n" + format_rules
+            # Include schema overhead and a buffer in the configured input cap.
+            room = (config.token_limits.max_input_tokens * 4 - len(system_instruction) - len(prefix)
+                    - len(suffix) - len(json.dumps(schema)) - 1_024)
+            if room < 2_000:
+                raise PublicEvaluationError("The configured AI input limit is too small for the rubric. Increase AI_MAX_INPUT_TOKENS before retrying.")
+            evidence_text, condensed = pack_evidence(successful, rows, room)
+            result = await asyncio.wait_for(generate_ai_response(
+                task_type=task_type, prompt=prefix + evidence_text + suffix,
+                system_instruction=system_instruction, requested_tier="default",
+                max_output_tokens=final_output, temperature=0.1, response_schema=schema,
+                allow_thinking=True, sensitive_content=True, user_id=interaction.user.id,
+                guild_id=interaction.guild_id, channel_id=interaction.channel_id,
+                source_command=source_command, db=getattr(self.bot, "db", None),
+            ), timeout=FINAL_CALL_TIMEOUT_SECONDS)
+            if result.blocked_by_budget:
+                raise RuntimeError(AI_BUDGET_MESSAGE)
+            try:
+                if not result.ok or not result.text:
+                    raise ValueError(result.error)
+                parsed = strict_object(result.text)
+                validate_evaluation(parsed)
+            except (ValueError, TypeError):
+                logger.warning("Public evaluation final response rejected: model=%s finish=%s output_limit=%s successful_batches=%s",
+                               result.model_used, getattr(result, "finish_reason", None), final_output, len(successful))
+                raise PublicEvaluationError(
+                    "The AI did not finish a complete rubric. No member score was published. "
+                    "Retry within 20 minutes to reuse the completed history review."
+                ) from None
+            parsed["_rubricCoverage"] = {"reviewedIds": sorted(reviewed_ids),
+                "failedChunks": len(chunks) - len(successful), "evidenceCondensed": condensed,
+                "cachedBatches": len(cached)}
+            return parsed, result.text
+        finally:
+            self._active_public_evaluations.discard(run_key)
+
     async def _synthesize_structured(
         self,
         rows: list[aiosqlite.Row],
@@ -1423,6 +1627,12 @@ final Source coverage section. Do not overclaim.
         possible. Returns (parsed_json_or_None, raw_text) — callers fall back
         to rendering raw_text as plain text if parsing fails or the final
         synthesis call itself couldn't complete."""
+        if public_result:
+            return await self._synthesize_public_evaluation(
+                rows, task=task, request=request, schema=schema, include_links=include_links,
+                interaction=interaction, source_command=source_command, task_type=task_type,
+                system_instruction=system_instruction, format_rules=format_rules, nearby=nearby,
+            )
         chunks = self._chunks(rows, include_links=include_links, nearby=(nearby or {}) if public_result else None)
         partials: list[str] = []
         reviewed_ids: set[str] = set()
@@ -1684,9 +1894,8 @@ Return a single JSON object that matches the required schema exactly.
                     "limitations": "Only observed public command responses are available; these cannot establish a contribution score.",
                 }, metadata)
                 overview.add_field(name="Observed command usage", value=command_usage, inline=False)
-                score = build_community_score_embed(calculate_scorecard({}, [], total_matching=0), metadata)
-                await self._send_result(interaction, fit_public_evaluation_embeds(overview, score),
-                                        post_to=post_to, public_result=True)
+                await self._send_public_evaluation(interaction, overview,
+                    calculate_scorecard({}, [], total_matching=0), metadata, post_to=post_to)
                 return
             await interaction.followup.send(empty_message, ephemeral=True)
             return
@@ -1733,11 +1942,14 @@ Return a single JSON object that matches the required schema exactly.
                 chunk_estimate,
                 self.model,
             )
-            message = (
-                AI_BUDGET_MESSAGE
-                if str(exc) == AI_BUDGET_MESSAGE
-                else CONTEXT_FAILURE_MESSAGE
-            )
+            if str(exc) == AI_BUDGET_MESSAGE:
+                message = AI_BUDGET_MESSAGE
+            elif isinstance(exc, PublicEvaluationError):
+                message = str(exc)
+            elif public_result and isinstance(exc, asyncio.TimeoutError):
+                message = "The AI evaluation timed out. No score was published. Retry within 20 minutes to reuse completed history batches."
+            else:
+                message = CONTEXT_FAILURE_MESSAGE
             await interaction.followup.send(message, ephemeral=True)
             return
 
@@ -1749,6 +1961,16 @@ Return a single JSON object that matches the required schema exactly.
                 ephemeral=True,
             )
             return
+
+        if public_result:
+            try:
+                validate_evaluation(parsed)
+            except (ValueError, TypeError, AttributeError):
+                await interaction.followup.send(
+                    "The AI returned an incomplete rubric. No member score was published. Please try again later.",
+                    ephemeral=True,
+                )
+                return
 
         metadata = {"title": title, "timeframe_text": timeframe_text}
         if parsed is not None:
@@ -1770,6 +1992,10 @@ Return a single JSON object that matches the required schema exactly.
                         failed_chunks=coverage.get("failedChunks", 0),
                         context_available_ids=available_context,
                     )
+                    if coverage.get("evidenceCondensed"):
+                        scorecard = replace(scorecard,
+                            confidence="Medium" if scorecard.confidence == "High" else scorecard.confidence,
+                            explanation=scorecard.explanation + " Selected evidence was condensed across the processed history.")
                     if scorecard.status == "review_required":
                         parsed = {"summary": "A complete public evaluation is unavailable pending staff review.",
                                   "strengths": [], "growthOpportunities": [], "contextQuotes": [],
@@ -1779,7 +2005,6 @@ Return a single JSON object that matches the required schema exactly.
                     embed = build_public_user_evaluation_embed(parsed, metadata)
                     if command_usage:
                         embed.add_field(name="Observed command usage", value=command_usage, inline=False)
-                    score_embed = build_community_score_embed(scorecard, metadata)
                 else:
                     embed = build_channel_context_embed(parsed, metadata)
             except Exception:
@@ -1810,10 +2035,10 @@ Return a single JSON object that matches the required schema exactly.
             )
             embed = truncate_embed(embed)
 
-        await self._send_result(
-            interaction, fit_public_evaluation_embeds(embed, score_embed) if kind == "public_user" else embed,
-            post_to=post_to, public_result=public_result
-        )
+        if kind == "public_user":
+            await self._send_public_evaluation(interaction, embed, scorecard, metadata, post_to=post_to)
+        else:
+            await self._send_result(interaction, embed, post_to=post_to, public_result=public_result)
 
     @context.command(name="help", description="Show private archive command help")
     @app_commands.guild_only()
